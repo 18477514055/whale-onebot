@@ -1,0 +1,21 @@
+{
+  "name": "whale-onebot",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Independent OneBot 11 server and isolated QQ bridge engineering project",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --import ./test/preload.mjs --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "test:java": "node scripts/run-java-logic-tests.mjs"
+  },
+  "dependencies": {
+    "sharp": "0.35.5",
+    "ws": "8.18.3"
+  }
+}

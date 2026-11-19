@@ -1,0 +1,66 @@
+# ---- 依赖与构建产物 ----
+.dsh-ledger.json
+node_modules/
+dist/
+out/
+android/out/
+android/out-ui/
+android/out-config/
+android/.build-*/
+android/app/assets/*.so
+android/app/assets/proot
+android/app/assets/busybox
+android/app/assets/libexec/
+android/keys/
+*.apk
+*.aab
+*.idsig
+
+# ---- 本机工具链 / 第三方 SDK（体积巨大且非本项目代码）----
+.tools/
+*.node
+*.dll
+*.so
+*.dylib
+
+# ---- 运行时与数据（绝不进仓库）----
+.tmp/
+data/
+logs/
+runtime/
+evidence/
+backups/
+# 只忽略**仓库根**的 archive/（历史归档目录）；src/archive/ 是源码，不能忽略
+/archive/
+_stash/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+qr.png
+qr.url
+bot.json
+identity.json
+
+# ---- 凭据 / 环境 ----
+.env*
+*.pem
+*.p12
+*.jks
+*.keystore
+apikey*.txt
+
+# ---- 测试与实验的临时快照 ----
+.tmp/integrated-inputs-*/
+runtime/integrated/*
+experiments/phone-arm64-firstload/*.bin
+
+# ---- 记忆库（含真实账号、内网、对话细节，只在本地保留）----
+/qq-onebot-ledger-memory/
+
+# 构建时从 android/*.mjs 复制进来的资产副本（源头在 android/ 下，不要提交两份）
+android/app/assets/
+
+# 开发记录（实测记录/审计/交接/变更日志等）只留在本机，不进仓库
+/_notes/

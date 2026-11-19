@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.whaleonebot"
+    android:versionCode="101"
+    android:versionName="1.0.1">
+
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 厂商省电策略会在后台约十分钟后杀掉进程（2026-11-19 实测 SmartPower died->invisible 638s），
+         只有进了电池白名单才会放过它；这个权限用于弹「加入白名单」的设置页。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+    <application
+        android:label="WhaleOneBot"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:debuggable="true"
+        android:usesCleartextTraffic="true">
+
+        <activity android:name=".MainActivity" android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".ContainerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 被杀之后自爬：闹钟由系统持有，进程死了也会把它唤醒（见 Watchdog.java 的补偿层声明）。 -->
+        <receiver android:name=".WatchdogReceiver" android:exported="false" />
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
