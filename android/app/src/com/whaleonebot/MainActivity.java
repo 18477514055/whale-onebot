@@ -75,10 +75,11 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         shell = new AppShell(this, this);
         setContentView(shell.getView());
         handler.post(tick);
-        refreshRuntimeIndexOnce();
+        // Retired runtime archive index is not consulted; the core page uses the signed channel.
         askBatteryExemptionOnce();
         // 被杀之后自爬：排一次系统闹钟（进程死了闹钟仍在）。
         Watchdog.schedule(this);
+        // Environment provisioning belongs to the signed core installer.
     }
 
     /**
@@ -300,6 +301,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
      * 零迁移风险；其它机器人读写自己的文件，第一次打开时从活配置**播种**一份副本。
      */
     private File botConfigFile(String botId) {
+        String core=InstalledRuntimeHost.core(getFilesDir(),botId);if(core!=null)return new File(InstalledRuntimeHost.data(getFilesDir(),core),"config.json");
         return new File(new File(getFilesDir(), "rootfs/agent/data/bots/" + safeBotId(botId)),
                 "config.json");
     }
@@ -333,7 +335,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         BotRegistry.Bot p = BotRegistry.primary();
         if (p == null || p.id == null || p.id.length() == 0) return true;
         String use = (botId == null || botId.length() == 0) ? p.id : botId;
-        return use.equals(p.id);
+        return use.equals("whale-1") && BindingControl.legacy(getFilesDir(),false);
     }
 
     @Override public String loadConfigJson() {
@@ -341,10 +343,8 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         if (isLiveBot(bot)) return readUtf8(liveConfigFile());
         File f = botConfigFile(bot);
         if (!f.isFile()) {
-            // 第一次给这个机器人改配置：从活配置播种一份，保证它开箱可用
-            String live = readUtf8(liveConfigFile());
-            if (live != null) writeUtf8Quietly(f, live);
-            return live;
+            // Never clone legacy provider secrets or OneBot tokens into another runtime.
+            return "{}";
         }
         return readUtf8(f);
     }
@@ -565,4 +565,5 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
             return "（读日志失败：" + e.getMessage() + "）";
         }
     }
+
 }

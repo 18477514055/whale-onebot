@@ -1,0 +1,1 @@
+{"dependencies":{"jce":"0.2.3","node-html-parser":"^9.0.5","silk-wasm":"^3.7.1","undici":"^8.12.3","ws":"^8.22.0"},"engines":{"node":">=22.19.0"},"license":"MIT","name":"qq-agent-plus","type":"module","version":"0.9.13"}

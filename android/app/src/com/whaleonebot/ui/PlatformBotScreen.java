@@ -75,7 +75,7 @@ final class PlatformBotScreen extends Screen {
         LinearLayout.LayoutParams l1 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l1.topMargin = dp(Theme.S1 + 2);
         col.addView(entryCard(IconView.PLAY, "启动",
-                "启动 / 停止机器人，看运行状态与日志", new View.OnClickListener() {
+                BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         shell.pushBotStart(bot.id);
@@ -85,17 +85,18 @@ final class PlatformBotScreen extends Screen {
         LinearLayout.LayoutParams l2 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2.topMargin = dp(Theme.S2);
         col.addView(entryCard(IconView.TUNE, "配置",
-                name + " 在 " + label + " 上的全部设置", new View.OnClickListener() {
+                BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        shell.pushBotConfig(bot.id);
+                        if (BotRegistry.legacyQQ(bot)) shell.pushBotConfig(bot.id);
+                        else shell.pushBot(bot.id);
                     }
                 }), l2);
 
         // 用户 2026-11-18 追加：与「启动 / 配置」同层的第三项 —— 看板（只读观测，不写任何配置）。
         LinearLayout.LayoutParams l3 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l3.topMargin = dp(Theme.S2);
-        col.addView(entryCard(IconView.DOT, "看板",
+        if (BotRegistry.legacyQQ(bot)) col.addView(entryCard(IconView.DOT, "看板",
                 "实时状态、会话、调用、记忆", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -104,7 +105,7 @@ final class PlatformBotScreen extends Screen {
                 }), l3);
 
         TextView note = Ui.text(activity,
-                "配置改完保存即生效。",
+                "绑定配置与在线状态分开显示；请在启动页核验连接。",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams nlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);

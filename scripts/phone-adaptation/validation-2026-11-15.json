@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "kind": "offline-phone-adaptation-preflight",
+  "status": "BLOCKED",
+  "deploymentAllowed": false,
+  "deviceConnected": false,
+  "targetExecuted": false,
+  "credentialRead": false,
+  "productionTouched": false,
+  "suppliedFactsTrust": "none",
+  "suppliedFacts": null,
+  "baseline": {
+    "schema": 1,
+    "kind": "historical-static-baseline-not-phone-execution",
+    "qqVersion": "3.2.35-54395",
+    "qqArchiveSha256": "5f93ea62347dd772c7be4115413c95d2a60d189f3dd81bc194834bd4d7343cf2",
+    "nodeVersion": "v24.20.0",
+    "nodeArchiveSha256": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
+    "nodeElfSha256": "23a5637c2470fde09fcc1acc77c1b92e04e3d7e3e6e80ff7df6f5831958d1477",
+    "wrapperSha256": "2ec220b7569cbdcfee11e628bd0268c80c6c8ef0c6bbd33cceffe148fd2743e7",
+    "nodeNeeded": [
+      "libdl.so.2",
+      "libstdc++.so.6",
+      "libm.so.6",
+      "libgcc_s.so.1",
+      "libpthread.so.0",
+      "libc.so.6",
+      "ld-linux-aarch64.so.1"
+    ],
+    "wrapperNeeded": [
+      "libpthread.so.0",
+      "libvips-cpp.so.42",
+      "libX11.so.6",
+      "libX11-xcb.so.1",
+      "libbugly.so",
+      "libz.so.1",
+      "librt.so.1",
+      "libXext.so.6",
+      "libm.so.6",
+      "libgcc_s.so.1",
+      "libc.so.6",
+      "ld-linux-aarch64.so.1"
+    ],
+    "neededClosureComplete": false,
+    "allStrongUndefinedMatched": false,
+    "missingNeededCount": 0,
+    "allVersionNeedsMatched": true,
+    "unresolvedWirelessPhotoCount": 12,
+    "initializerReachability": "unknown",
+    "phoneExecution": false,
+    "qqExecuted": false,
+    "sources": [
+      {
+        "name": "linux-arm64-onebot-smoke.json",
+        "sha256": "d6a68f363639b1939faa5824bd063ac34b70829ce3e12896edb7671321a19152"
+      },
+      {
+        "name": "native-dependencies-linux-arm64-supplemental.json",
+        "sha256": "2ef8830bdf197ab2a673eec0e6f709de1eb69c86be719366ca7fdbe8bc6c425e"
+      },
+      {
+        "name": "native-relocations-linux-arm64.json",
+        "sha256": "d0bff6718718a8c695e784bf951ec2edcb5b8918dcbfe2872517c59315e1f361"
+      },
+      {
+        "name": "native-host-scope-linux-arm64.json",
+        "sha256": "2c4ecc9f28ab1c0c3adc06d56c6ef596a598825cca9c8587b3abe60a97454289"
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "node",
+      "path": ".tools/node-v24.20.0-linux-arm64/bin/node",
+      "sha256": "23a5637c2470fde09fcc1acc77c1b92e04e3d7e3e6e80ff7df6f5831958d1477",
+      "elfClass": 64,
+      "byteOrder": "little",
+      "machine": "aarch64",
+      "type": "executable",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libdl.so.2",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-aarch64.so.1"
+      ],
+      "soname": null,
+      "libc": "glibc",
+      "symbolResolutionProven": false,
+      "initializerReachabilityProven": false
+    },
+    {
+      "id": "wrapper",
+      "path": ".tools/qq-linux-arm64-inspection-NGwyZl/wrapper.node",
+      "sha256": "2ec220b7569cbdcfee11e628bd0268c80c6c8ef0c6bbd33cceffe148fd2743e7",
+      "elfClass": 64,
+      "byteOrder": "little",
+      "machine": "aarch64",
+      "type": "shared-or-pie",
+      "interpreter": null,
+      "needed": [
+        "libpthread.so.0",
+        "libvips-cpp.so.42",
+        "libX11.so.6",
+        "libX11-xcb.so.1",
+        "libbugly.so",
+        "libz.so.1",
+        "librt.so.1",
+        "libXext.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-aarch64.so.1"
+      ],
+      "soname": "wrapper.node",
+      "libc": "glibc",
+      "symbolResolutionProven": false,
+      "initializerReachabilityProven": false
+    },
+    {
+      "id": "host-provider",
+      "path": ".tmp/native-host-arm64-0wfTF4/libonebot-node-host.so",
+      "sha256": "e27fe84e0c418e1083779276468b313f740c1cac764165e7136014eb3337a593",
+      "elfClass": 64,
+      "byteOrder": "little",
+      "machine": "aarch64",
+      "type": "shared-or-pie",
+      "interpreter": null,
+      "needed": [],
+      "soname": null,
+      "libc": "unknown",
+      "symbolResolutionProven": false,
+      "initializerReachabilityProven": false
+    },
+    {
+      "id": "host-loader",
+      "path": ".tmp/native-host-arm64-0wfTF4/loader.node",
+      "sha256": "a69138c30cfe5010057d69d2926484c24a7a5210f2b556ad738b65250c9295b6",
+      "elfClass": 64,
+      "byteOrder": "little",
+      "machine": "aarch64",
+      "type": "shared-or-pie",
+      "interpreter": null,
+      "needed": [],
+      "soname": null,
+      "libc": "unknown",
+      "symbolResolutionProven": false,
+      "initializerReachabilityProven": false
+    }
+  ],
+  "nativePaths": {
+    "packageWrapperMember": "opt/QQ/resources/app/wrapper.node",
+    "inspectedWrapper": ".tools/qq-linux-arm64-inspection-NGwyZl/wrapper.node",
+    "originalHostProvider": ".tmp/native-host-arm64-0wfTF4/libonebot-node-host.so",
+    "originalHostLoader": ".tmp/native-host-arm64-0wfTF4/loader.node",
+    "phonePathsVerified": false,
+    "projectMediaAddon": "sharp@0.35.5: target-specific addon/libvips not acquired or loaded"
+  },
+  "gates": [
+    {
+      "id": "fixed-arm64-baseline",
+      "status": "PASS_STATIC",
+      "reason": "Fixed local evidence bindings checked; not target execution."
+    },
+    {
+      "id": "android-abi",
+      "status": "NOT_PROVEN",
+      "reason": "Requires actual arm64-v8a device evidence in a new test instance; supplied facts are unverified declarations."
+    },
+    {
+      "id": "node24-runtime",
+      "status": "NOT_PROVEN",
+      "reason": "Node24 executable, child/worker/timer/network/exit behavior must run in the new UID; PC Node version is not phone evidence."
+    },
+    {
+      "id": "native-architecture",
+      "status": "NOT_PROVEN",
+      "reason": "The fixed QQ candidate is AArch64, not x64/arm32; same CPU does not establish libc or private ABI compatibility."
+    },
+    {
+      "id": "libc-route",
+      "status": "NOT_PROVEN",
+      "reason": "New-UID glibc compatibility layer, loader and search paths are not validated on Android. Copying ELF files is not a runtime."
+    },
+    {
+      "id": "fixed-native-files",
+      "status": "PASS_STATIC",
+      "reason": "Pinned node/wrapper/original host-provider/host-loader bytes, ELF machine and DT_NEEDED re-read without execution."
+    },
+    {
+      "id": "project-native-addons",
+      "status": "NOT_PROVEN",
+      "reason": "Original host provider/loader synthetic QEMU success is not real QQ/Android ABI proof. Sharp 0.35.5 media decoder needs its matching target addon/libvips; PC x64 node_modules cannot be copied as phone dependencies."
+    },
+    {
+      "id": "qq-dependency-closure",
+      "status": "BLOCKED",
+      "reason": "Historical static missing DT_NEEDED count is zero, but RPATH inheritance/complete dependency closure is not proven."
+    },
+    {
+      "id": "qq-provider-symbols",
+      "status": "BLOCKED",
+      "reason": "12 unresolved wireless-photo targets; legitimate same-version providers, symbol scope and initializer reachability remain unresolved. No stubs or binding-policy workaround."
+    },
+    {
+      "id": "new-uid-filesystem-boundary",
+      "status": "NOT_PROVEN",
+      "reason": "Verify separate package/UID and two new synthetic canaries. A directory or PRoot rootfs is not UID isolation."
+    },
+    {
+      "id": "network-and-lifecycle",
+      "status": "NOT_PROVEN",
+      "reason": "Separate UID is not loopback/network isolation; require reviewed network policy, authenticated synthetic endpoints and verified cleanup/background behavior."
+    },
+    {
+      "id": "official-acquisition",
+      "status": "NOT_PROVEN",
+      "reason": "Historical Tencent source and local SHA256 only; previous official body fetches FAILED. No fresh fetch, signature proof or redistribution permission asserted."
+    },
+    {
+      "id": "phone-qq-load-and-operation",
+      "status": "NOT_PROVEN",
+      "reason": "No phone execution/login/session import performed. D13 normal Linux business scope does not authorize modifying existing phone production."
+    }
+  ],
+  "notProven": [
+    "android-abi",
+    "node24-runtime",
+    "native-architecture",
+    "libc-route",
+    "project-native-addons",
+    "new-uid-filesystem-boundary",
+    "network-and-lifecycle",
+    "official-acquisition",
+    "phone-qq-load-and-operation"
+  ],
+  "next": [
+    "Choose a new package/UID and matching bootstrap/prefix before any device test.",
+    "First prove Node24 + original synthetic bridge inside that new UID; no QQ or existing production resources.",
+    "Resolve fixed ARM64 QQ providers/initializers and glibc route before separately authorized QQ loading."
+  ],
+  "prohibition": [
+    "No device transport, installation, global dependencies or runtime launch.",
+    "No account/session/config/data import, production stop or automatic login recovery.",
+    "No claim of lower Tencent kick rate from this preflight."
+  ]
+}

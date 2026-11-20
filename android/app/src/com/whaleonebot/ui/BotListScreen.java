@@ -53,6 +53,11 @@ final class BotListScreen extends Screen {
         clp.topMargin = dp(Theme.S1);
         col.addView(crumb, clp);
 
+        control(col,"下载内置核心",true,()->shell.corePage("download",null));
+        java.util.List<CoreInventory.Instance> cores=BotRegistry.cores();int free=0;for(CoreInventory.Instance c:cores)if(c.ownerId.isEmpty())free++;
+        col.addView(sectionLabel("本机核心 · "+cores.size()+" 份  /  空闲 "+free),labelLp(Theme.S3));
+        for(CoreInventory.Instance c:cores){TextView row=Ui.text(activity,CoreManagerScreen.title(c)+"\n"+CoreManagerScreen.occupant(c),Theme.T_BODY,t.textPrimary);row.setPadding(dp(Theme.S3),dp(Theme.S2),dp(Theme.S3),dp(Theme.S2));row.setMinimumHeight(dp(Theme.TOUCH));row.setFocusable(true);row.setOnClickListener(v->shell.corePage("instance",c.id));col.addView(row);}
+        control(col,"接入自定义核心",false,()->shell.corePage("custom",null));control(col,"新建机器人",false,()->shell.pushNewBot());
         // 每次进页都重新读注册表：新建/删除之后回来看到的就是最新状态。
         List<BotRegistry.Bot> bots = BotRegistry.list();
         if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
@@ -71,16 +76,7 @@ final class BotListScreen extends Screen {
             }
         }
 
-        TextView newBtn = Ui.button(activity, t, "+ 新建机器人", true);
-        newBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                shell.pushNewBot();
-            }
-        });
-        LinearLayout.LayoutParams nlp = Ui.llp(MATCH_PARENT, dp(Theme.TOUCH));
-        nlp.topMargin = dp(Theme.S4);
-        col.addView(newBtn, nlp);
+        // Creation actions precede the bot list, alongside the inventory.
 
         TextView note = Ui.text(activity,
                 "一个机器人可以接多个平台。平台专属的设置（白名单、登录…）回首页点那个平台再配。",
@@ -90,6 +86,8 @@ final class BotListScreen extends Screen {
         tlp.topMargin = dp(Theme.S3);
         col.addView(note, tlp);
     }
+
+    private void control(LinearLayout col,String label,boolean primary,Runnable run){TextView b=Ui.button(activity,t,label,primary);b.setMinimumHeight(dp(Theme.TOUCH));b.setOnClickListener(v->run.run());col.addView(b,marginTop(Theme.S2));}
 
     // ------------------------------------------------------------------ 一行机器人
 
@@ -118,7 +116,10 @@ final class BotListScreen extends Screen {
         blp.leftMargin = dp(Theme.S3);
         blp.rightMargin = dp(Theme.S2);
         box.addView(nameLine(b), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        box.addView(platformLine(b), marginTop(Theme.S1 + 2));
+        for (BotRegistry.Binding binding : b.bindings) {
+            box.addView(Ui.strong(activity, binding.label(), Theme.T_BODY, t.textPrimary), marginTop(Theme.S2));
+            box.addView(Ui.text(activity, binding.detail(), Theme.T_BODY, t.textSecondary));
+        }
         row.addView(box, blp);
 
         IconView chev = new IconView(activity, IconView.CHEV_R, t.textTertiary);

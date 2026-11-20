@@ -2016,8 +2016,8 @@ export class NativeBridge extends EventEmitter {
       /**
        * 群名补充（我们自己的只读扩展，不是 OneBot 标准动作）。
        *
-       * <p>入参 `{ groups: ["200000006", ...] }`（≤ 50 个，actions.mjs 已校验）。
-       * 出参 `{ names: { "200000006": "群名" }, failed: ["..."] }`：
+       * <p>入参 `{ groups: ["871721981", ...] }`（≤ 50 个，actions.mjs 已校验）。
+       * 出参 `{ names: { "871721981": "群名" }, failed: ["..."] }`：
        * **拿不到名字的群只进 failed，不让整批失败**。
        */
       case 'get_chat_names': {

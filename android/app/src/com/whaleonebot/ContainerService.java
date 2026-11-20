@@ -26,7 +26,7 @@ import java.util.Map;
 
 /**
  * 前台服务：把 Debian rootfs 用 proot 跑起来。
- * 首启会从 /sdcard/Download/whale/rootfs.tar.gz 解包到私有目录，然后用 proot 进入容器执行。
+ * 旧环境仅可原地使用；新实例使用独立、已验证的公共环境。
  */
 public class ContainerService extends Service {
 
@@ -88,6 +88,30 @@ public class ContainerService extends Service {
         if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
     }
 
+    public static void startBiliProtocol(Context c,String bot,String binding,String peer){BiliProtocolControl.start(c,bot,binding,peer);}
+    public static void stopBiliProtocol(String bot,String binding){BiliProtocolControl.stop(bot,binding);}
+    public static org.json.JSONObject biliProtocolStatus(String bot,String binding){return BiliProtocolControl.status(bot,binding);}
+    public static boolean hasBiliSession(Context c,String bot,String binding){return BiliProtocolControl.hasSaved(c,bot,binding);}
+    public static boolean forgetBiliSession(Context c,String bot,String binding){return BiliProtocolControl.forget(c,bot,binding);}
+    public static void reauthorizeBiliProtocol(Context c,String bot,String binding,String peer){BiliProtocolControl.reauthorize(c,bot,binding,peer);}
+    public static String biliAuthorizationLink(String bot,String binding){return BiliProtocolControl.authorizationLink(bot,binding);}
+    public static void setBindingToken(Context c,String bot,String binding,String token){ BindingControl.token(c,bot,binding,token); }
+    public static void startBoundBot(Context c,String bot){SavedBindingStartup.onStart(c,bot); queueBoundBot(c,bot);}
+    static void queueBoundBot(Context c,String bot){
+        if(InstalledRuntimeHost.core(c.getFilesDir(),bot)!=null){dispatchBoundStart(c,bot,InstalledRuntimeHost.request(c.getFilesDir(),bot,true));return;}
+        dispatchBoundStart(c,bot,BindingControl.queue(bot));
+    }
+    static void onProtocolVerified(Context c,String bot,String binding){if(InstalledRuntimeHost.core(c.getFilesDir(),bot)!=null){dispatchBoundStart(c,bot,InstalledRuntimeHost.request(c.getFilesDir(),bot,false));return;}dispatchBoundStart(c,bot,BindingControl.verifiedTicket(c,bot,binding));}
+    private static void dispatchBoundStart(Context c,String bot,String ticket){
+        if(ticket==null)return;
+        Intent i=new Intent(c,ContainerService.class).setAction("com.whaleonebot.BOUND").putExtra("bot",bot).putExtra("ticket",ticket);
+        if(Build.VERSION.SDK_INT>=26)c.startForegroundService(i);else c.startService(i);
+    }
+    public static void stopBoundBot(String bot){ InstalledRuntimeHost.stop(bot);BindingControl.stop(bot); }
+    public static void stopInstalledBinding(String bot,String binding){InstalledRuntimeHost.stopBinding(bot,binding);}
+    public static java.io.Closeable pauseForMaintenance(Context c,String bot)throws java.io.IOException{return InstalledRuntimeHost.pause(c,bot);}
+    public static org.json.JSONObject bindingStatus(Context c,String bot){return InstalledRuntimeHost.core(c.getFilesDir(),bot)!=null?InstalledRuntimeHost.status(c,bot):BindingControl.status(c,bot); }
+
     public static boolean botRunning() { return botProc != null && botProc.isAlive(); }
 
     /** 停掉机器人进程（不杀容器本身）。 */
@@ -141,6 +165,14 @@ public class ContainerService extends Service {
             stopContainer();
             stopSelf();
             return START_NOT_STICKY;
+        }
+        if ("com.whaleonebot.BOUND".equals(action)) {
+            String bot=intent.getStringExtra("bot");
+            String ticket=intent.getStringExtra("ticket");new Thread(()->{if(InstalledRuntimeHost.core(getFilesDir(),bot)!=null)InstalledRuntimeHost.reconcile(this,bot,ticket);else BindingControl.launch(this,bot,ticket);},"bound-start").start();
+            return START_NOT_STICKY;
+        }
+        if ((ACTION_LOGIN.equals(action)||ACTION_REFRESH_QR.equals(action)||ACTION_BOT.equals(action)) && (new File(svcFilesDir(),"rootfs/.whale-public-environment").isFile()||!BindingControl.legacy(svcFilesDir(),false))) {
+            logLine("Legacy QQ not selected by registry"); return START_STICKY;
         }
         if (ACTION_LOGIN.equals(action)) {
             final File files = svcFilesDir();
@@ -242,6 +274,7 @@ public class ContainerService extends Service {
 
     @Override public void onDestroy() {
         log("service onDestroy");
+        if(http!=null)http.stop();
         stopContainer();
         super.onDestroy();
     }
@@ -255,7 +288,8 @@ public class ContainerService extends Service {
             File logs = new File(files, "logs");
             File rootfs = new File(files, "rootfs");
             File tmp = new File(files, "tmp");
-            mkdirs(bin, logs, rootfs, tmp);
+            // The authenticated first-use installer atomically creates rootfs; do not pre-create an empty one.
+            mkdirs(bin, logs, tmp);
             logw = new PrintWriter(new FileOutputStream(new File(logs, "container.log"), true), true);
             logFile = new File(logs, "container.log");
             log("=== boot " + now() + " ===");
@@ -275,22 +309,21 @@ public class ContainerService extends Service {
             extractAsset("libexec/proot/loader", new File(ld, "loader"), 0755);
             extractAsset("libexec/proot/loader32", new File(ld, "loader32"), 0755);
 
-            if (!isRootfsReady(rootfs)) {
-                log("rootfs 未就绪，开始解包");
-                if (!unpackRootfs(rootfs, bin)) {
-            log("!! rootfs 解包失败，无法继续");
-            writeRootfsState(false, "没有可用的容器骨架：把 rootfs.tar.gz 放到 Download/whale/，或在「配置 → 内置运行端」里下载");
-            return;
-        }
-            }
+            File envReceipt=new File(rootfs,".whale-public-environment");
+            final boolean managedImage=envReceipt.isFile();
+            if(managedImage && (!new File(rootfs,"bin/bash").isFile()||!new File(rootfs,"usr/bin/node").isFile())){writeRootfsState(false,"公共运行环境不完整；请修复后再启动");return;}
+            if (!managedImage && !isRootfsReady(rootfs)) {writeRootfsState(false,"请在设置 → 机器人下载核心并准备公共环境；旧环境包不再导入");return;}
             log("rootfs ok: " + rootfs);
         writeRootfsState(true, "");
             // 登录脚本随 APK 走（每次启动覆盖 rootfs 里的旧副本）。
             // 这样「出码 + 拉起手机 QQ」的改动只需重装 APK，不必重打 1.2GB 的 rootfs 包。
             File whaleDir = new File(rootfs, "opt/whale");
-            mkdirs(whaleDir, new File(whaleDir, "qq-state"));
+            mkdirs(whaleDir);
+            if(!managedImage){mkdirs(new File(whaleDir, "qq-state"));
             extractAssetAlways("container-login.mjs", new File(whaleDir, "container-login.mjs"), 0644);
-            extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
+            extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);}
+            extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
+            extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
             File bash = new File(rootfs, "usr/bin/bash");
             log("bash canExec=" + bash.canExecute() + " size=" + bash.length());
 
@@ -305,7 +338,8 @@ public class ContainerService extends Service {
             cmd.add("-b"); cmd.add("/dev"); cmd.add("-b"); cmd.add("/proc"); cmd.add("-b"); cmd.add("/sys");
             cmd.add("-r"); cmd.add(rootfs.getAbsolutePath());
             cmd.add("/bin/bash"); cmd.add("-lc");
-            cmd.add("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin;"
+            if(managedImage){cmd.add("exec /usr/bin/node --input-type=module -e \"import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync(':memory:');db.close();console.log('--- container ready ---');setInterval(()=>{},3600000)\"");}
+            else cmd.add("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin;"
                     + " export HOME=/root; export LANG=C.UTF-8;"
                     + " echo NODE=$(node -v 2>&1);"
                     + " echo PY=$(python3 -V 2>&1);"
@@ -334,10 +368,12 @@ public class ContainerService extends Service {
             log("容器 pid=" + containerPid);
             BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), "UTF-8"));
             String line;
+            boolean savedBindingsChecked=false;
             while ((line = r.readLine()) != null) {
                 log("[container] " + line);
+                if(!savedBindingsChecked && line.contains("--- container ready ---")){savedBindingsChecked=true;InstalledRuntimeHost.containerReady(this);SavedBindingStartup.onReady(this);}
                 // 容器一就绪就把机器人拉起来：不依赖任何按钮/HTTP，App 一开就是"能用的机器人"。
-                if (!autoBotStarted && line.contains("--- container ready ---")) {
+                if (!managedImage && !autoBotStarted && line.contains("--- container ready ---") && BindingControl.legacy(files,true)) {
                     autoBotStarted = true;
                     log("容器就绪 → 自动启动机器人");
                     startBot(this);
@@ -355,6 +391,9 @@ public class ContainerService extends Service {
     }
 
     private void stopContainer() {
+        InstalledRuntimeHost.stopAll();
+        BindingControl.stopAll();
+        BiliProtocolControl.stopAll();
         running = false;
         Process p = proc;
         if (p != null) { try { p.destroy(); } catch (Throwable ignored) {} }
@@ -371,152 +410,6 @@ public class ContainerService extends Service {
     private static boolean isRootfsReady(File rootfs) {
         return com.whaleonebot.ui.RootfsLayout.isReady(rootfs);
     }
-
-    /** 只保留最近一份换下来的旧骨架，别让 .old-* 越攒越多把手机塞满。 */
-    private void pruneRetired(File rootfs) {
-        File parent = rootfs.getParentFile();
-        File[] kids = parent == null ? null : parent.listFiles();
-        if (kids == null || kids.length == 0) return;
-        java.util.List<File> olds = new java.util.ArrayList<>();
-        for (File k : kids) {
-            if (k != null && k.isDirectory() && k.getName().startsWith(rootfs.getName() + com.whaleonebot.ui.RootfsLayout.RETIRED_PREFIX)) {
-                olds.add(k);
-            }
-        }
-        if (olds.size() <= 1) return;
-        java.util.Collections.sort(olds, new java.util.Comparator<File>() {
-            @Override public int compare(File a, File b) { return a.getName().compareTo(b.getName()); }
-        });
-        for (int i = 0; i < olds.size() - 1; i++) {
-            log("清理更旧的骨架副本 " + olds.get(i).getName());
-            deleteRecursive(olds.get(i));
-        }
-    }
-
-    /**
-     * 找**从 App 里下载下来**的运行端包（`files/runtimes/<版本>/` 下的 `rootfs.tar.gz` /
-     * `runtime.tar.gz` / `runtime.zip`），找不到返回 {@code null}。
-     *
-     * <p>这是「内置运行端」下载链路的落地点：下载器把包放在那里，这里负责解包。
-     * 之所以扫目录而不是耦合 `ui.RuntimeCatalog`：本类属于服务层，不该依赖面板包；
-     * 目录名就是版本号，挑一个**解出来的就能用**的即可（版本目录按名字倒序试）。
-     */
-    private File downloadedRuntimeArchive() {
-        return com.whaleonebot.ui.RuntimeArchivePick.pick(new File(getFilesDir(), "runtimes"));
-    }
-
-    /** 在解包结果里找第一个「文件名含反斜杠」的条目（Windows 打包的典型症状），没有返回 null。 */
-    private static String firstBackslashEntry(File dir) {
-        return firstBackslashEntry(dir, 0);
-    }
-
-    private static String firstBackslashEntry(File dir, int depth) {
-        if (dir == null || depth > 4) return null;
-        File[] kids = dir.listFiles();
-        if (kids == null) return null;
-        for (File k : kids) {
-            if (k == null) continue;
-            if (k.getName().indexOf('\\') >= 0) return k.getName();
-            if (k.isDirectory()) {
-                String deeper = firstBackslashEntry(k, depth + 1);
-                if (deeper != null) return deeper;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 按文件头判断是不是 zip：`PK\x03\x04`（本地文件头）或 `PK\x05\x06`（空包）。
-     *
-     * <p>为什么不信扩展名：下载器把包统一存成 `runtime.zip`，但索引里指向的资产完全可能是
-     * `rootfs.tar.gz`（`1f 8b`）—— 扩展名和内容不一致时，用错解包器会直接把包解废。
-     */
-    private static boolean looksLikeZip(File f) {
-        return com.whaleonebot.ui.RuntimeArchivePick.looksLikeZip(f);
-    }
-
-    /** 用 busybox tar 解包：toybox tar 会拒绝「符号链接目标不在解包根下」的条目，整包必失败。 */
-    private boolean unpackRootfs(File rootfs, File bin) {
-        // ① 优先用 App 内下载下来的包（内置运行端链路）；② 才是用户手动放进 /sdcard 的那份。
-        File src = downloadedRuntimeArchive();
-        boolean fromDownload = src != null;
-        if (src == null) {
-            File dir = new File("/sdcard/Download/whale");
-            File gz = new File(dir, "rootfs.tar.gz");
-            File plain = new File(dir, "rootfs.tar");
-            src = gz.isFile() ? gz : (plain.isFile() ? plain : null);
-        }
-        if (src == null) { log("!! /sdcard/Download/whale/ 下没有 rootfs.tar.gz，App 内也没有下载好的运行端"); return false; }
-
-        File bb = new File(bin, "busybox");
-        if (!bb.isFile()) { log("!! busybox 缺失"); return false; }
-
-        // 格式按**文件头**判，不按扩展名：下载器统一存成 runtime.zip，但索引里的资产也可能是
-        // rootfs.tar.gz（1f 8b）或未压缩 tar。
-        final boolean isZip = looksLikeZip(src);
-        // 解到暂存目录：包坏了也只是暂存目录白解一次，正在用的 rootfs 一根头发都不动。
-        final File staging = com.whaleonebot.ui.RootfsLayout.stagingDir(rootfs);
-        deleteRecursive(staging);
-        mkdirs(staging);
-        log("解包到暂存目录 " + staging.getName() + "（" + (src.length() / 1048576) + " MB，来源="
-                + (fromDownload ? "App 内下载" : "/sdcard") + "，格式=" + (isZip ? "zip" : "tar") + "）");
-
-        try {
-            ProcessBuilder pb = isZip
-                    ? new ProcessBuilder(bb.getAbsolutePath(), "unzip", "-o", "-q",
-                            src.getAbsolutePath(), "-d", staging.getAbsolutePath())
-                    : new ProcessBuilder(bb.getAbsolutePath(), "tar", "-xzf",
-                            src.getAbsolutePath(), "-C", staging.getAbsolutePath());
-            pb.redirectErrorStream(true);
-            pb.environment().put("LD_LIBRARY_PATH", bin.getAbsolutePath());
-            Process p = pb.start();
-            BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), "UTF-8"));
-            String line; int n = 0;
-            while ((line = r.readLine()) != null) { if ((n++ % 500) == 0) log((isZip ? "unzip: " : "tar: ") + line); }
-            int rc = p.waitFor();
-            log((isZip ? "unzip rc=" : "tar rc=") + rc);
-            if (rc != 0) return false;
-            // 统一补齐读/执行位（a+rX：目录与本来可执行的文件可执行），避免个别条目丢位导致 EACCES/EPERM。
-            try {
-                Process c = new ProcessBuilder("/system/bin/chmod", "-R", "a+rX",
-                        staging.getAbsolutePath()).redirectErrorStream(true).start();
-                int crc = c.waitFor();
-                log("chmod -R a+rX rc=" + crc);
-            } catch (Throwable t) {
-                log("chmod 失败: " + t);
-            }
-            File ldr = new File(staging, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1");
-            log("loader canExec=" + ldr.canExecute() + " size=" + ldr.length());
-            boolean ready = com.whaleonebot.ui.RootfsLayout.isReady(staging);
-            if (!ready && isZip) {
-                // 实测过的坑：用 Windows 的 Compress-Archive 打的包，条目名里是**反斜杠**，
-                // 解出来会变成一个叫 `usr\bin\x` 的怪文件（而不是目录层级）⇒ rootfs 永远不就绪。
-                String bad = firstBackslashEntry(staging);
-                if (bad != null) {
-                    log("!! 包内路径用了反斜杠（示例：" + bad + "），请在 Linux 下用 zip -r 打包，"
-                            + "或改用 rootfs.tar.gz");
-                }
-            }
-            if (!ready) {
-                log("!! 暂存目录未就绪（包不完整或格式不对），继续用原来的 rootfs");
-                return false;
-            }
-            long stamp = System.currentTimeMillis();
-            if (!com.whaleonebot.ui.RootfsLayout.promote(staging, rootfs, stamp)) {
-                log("!! 换上新骨架失败，继续用原来的 rootfs");
-                return false;
-            }
-            log("骨架已切换：rootfs 更新，" + com.whaleonebot.ui.RootfsLayout.retiredDir(rootfs, stamp).getName()
-                    + " 是换下来的旧副本");
-            pruneRetired(rootfs);
-            return true;
-        } catch (Throwable t) {
-            log("!! tar 异常: " + t);
-            return false;
-        }
-    }
-
-    // ------------------------------------------------------------- 工具
 
     private void extractAsset(String name, File dest, int mode) {
         try {
@@ -629,7 +522,16 @@ public class ContainerService extends Service {
     }
 
     /** 组装「在容器里跑一条命令」的进程：execInContainer / spawnInContainer 共用一份参数。 */
-    private static ProcessBuilder containerBuilder(File files, String cmd) {
+    synchronized ProcessBuilder installedBuilder(File files,File app,File state)throws Exception {
+        File envRoot=com.whaleonebot.install.CoreInstaller.environmentForApp(files,app);
+        File bin=new File(files,"bin"),ld=new File(files,"libexec/proot");mkdirs(bin,ld,new File(files,"tmp"),state);
+        for(String n:new String[]{"proot","libtalloc.so.2","libandroid-shmem.so"})extractAsset(n,new File(bin,n),n.equals("proot")?0755:0644);
+        for(String n:new String[]{"loader","loader32"})extractAsset("libexec/proot/"+n,new File(ld,n),0755);
+        java.io.ByteArrayOutputStream buf=new java.io.ByteArrayOutputStream();try(InputStream in=getAssets().open("binding-host.mjs")){byte[] block=new byte[8192];int n;while((n=in.read(block))>0)buf.write(block,0,n);}byte[] bytes=buf.toByteArray();StringBuilder hex=new StringBuilder();for(byte v:java.security.MessageDigest.getInstance("SHA-256").digest(bytes))hex.append(String.format(Locale.ROOT,"%02x",v));
+        File adapter=new File(files,"managed-adapters/"+hex),script=new File(adapter,"binding-host.mjs");mkdirs(adapter);if(!script.isFile()||!java.util.Arrays.equals(bytes,java.nio.file.Files.readAllBytes(script.toPath()))){File partial=File.createTempFile("script",".tmp",adapter);java.nio.file.Files.write(partial.toPath(),bytes);java.nio.file.Files.move(partial.toPath(),script.toPath(),java.nio.file.StandardCopyOption.ATOMIC_MOVE,java.nio.file.StandardCopyOption.REPLACE_EXISTING);}
+        ProcessBuilder pb=containerBuilder(files,"exec /usr/bin/node /opt/whale/host-adapter/binding-host.mjs");List<String> args=pb.command();int at=args.indexOf("-r");args.set(at+1,envRoot.getCanonicalPath());args.addAll(at,Arrays.asList("-b",app.getCanonicalPath()+":/opt/whale/instance-app","-b",state.getCanonicalPath()+":/opt/whale/instance-state","-b",adapter.getCanonicalPath()+":/opt/whale/host-adapter"));return pb;
+    }
+    static ProcessBuilder containerBuilder(File files, String cmd) {
         File bin = new File(files, "bin");
         File rootfs = new File(files, "rootfs");
         File tmp = new File(files, "tmp");
@@ -682,7 +584,7 @@ public class ContainerService extends Service {
                     cmd = new String(b, 0, n, "UTF-8").replace('\0', ' ');
                 }
             } catch (Throwable t) { continue; }
-            if (cmd.contains("container-bot.mjs") || cmd.contains("agent-app/src/server.js")) {
+            if (!cmd.contains("--whale-binding-worker") && (cmd.contains("container-bot.mjs") || cmd.contains("agent-app/src/server.js"))) {
                 try { android.os.Process.killProcess(pid); killed++; } catch (Throwable ignored) {}
             }
         }

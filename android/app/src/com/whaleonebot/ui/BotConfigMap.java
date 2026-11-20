@@ -33,7 +33,7 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
  * 键值映射（{@link BotConfigSchema#MAP}）控件：一行一条「键 → 值」，可增、可改、可删。
  *
  * <p>第一个用户是 {@code store.groupSliderPos}（群号 → 回复概率 %，
- * 形如 {@code {"200000003":10,"200000006":0.5}}）—— 以前手机上改不了，群被设成 0.5% 也只能干看着。
+ * 形如 {@code {"597813964":10,"871721981":0.5}}）—— 以前手机上改不了，群被设成 0.5% 也只能干看着。
  *
  * <p><b>纯自绘</b>：没有 XML 布局、没有 AndroidX；配色 / 圆角 / 字号全部走 {@link Theme} 与
  * {@link Drawables}，浮起感走 {@link Ui#elevate}（≤2dp，且它会把 ambient shadow 着色置 0，

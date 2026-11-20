@@ -24,10 +24,7 @@ final class HomeScreen extends Screen {
     private final ArrayList<View> cards = new ArrayList<View>();
 
     private LinearLayout col;
-    private TextView qqSub;
-    private IconView qqDot;
-    private String lastSub;
-    private int lastDot = Integer.MIN_VALUE;
+    private final java.util.Map<String,TextView> platformCounts = new java.util.LinkedHashMap<>();
     private View fab;
 
     HomeScreen(AppShell shell) {
@@ -79,8 +76,8 @@ final class HomeScreen extends Screen {
                 Ui.alpha(t.accent, 0.16f), t.accent, false);
         addCard(IconView.MUSIC, "抖音", "短视频与直播",
                 Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true);
-        addCard(IconView.TV, "bilibili", "视频、直播与动态",
-                Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true);
+        addCard(IconView.TV, "bilibili", "查看本平台机器人",
+                Ui.alpha(t.accent, 0.16f), t.accent, false);
         addCard(IconView.BOX, "小黑盒", "游戏社区与战绩",
                 Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true);
 
@@ -168,7 +165,7 @@ final class HomeScreen extends Screen {
             card.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    host().toast("还在路上，先用 QQ 吧");
+                    host().toast("此平台尚未开放；可先配置 QQ 或 bilibili");
                 }
             });
             card.setAlpha(0.62f); // 明确的「不可用」，但文字仍可读
@@ -179,7 +176,7 @@ final class HomeScreen extends Screen {
                     // 用户 2026-11-18 定：点平台先进「这个平台的机器人选择」，
                     // 再点机器人进「启动 / 配置」。V1 只有 QQ 可点，所以平台 id 先写死 QQ；
                     // 等别的平台开放时给 addCard 加一个 platformId 参数即可（就这一处）。
-                    shell.pushPlatformBots(BotRegistry.P_QQ);
+                    shell.pushPlatformBots(icon == IconView.TV ? BotRegistry.P_BILIBILI : BotRegistry.P_QQ);
                 }
             });
         }
@@ -189,10 +186,7 @@ final class HomeScreen extends Screen {
         col.addView(card, clp);
         cards.add(card);
 
-        if (staticSub == null) {
-            qqSub = sub;
-            qqDot = dot;
-        }
+        if (!soon) platformCounts.put(icon == IconView.TV ? BotRegistry.P_BILIBILI : BotRegistry.P_QQ, sub);
     }
 
     @Override
@@ -205,28 +199,9 @@ final class HomeScreen extends Screen {
 
     @Override
     void refresh() {
-        boolean running = host().containerRunning();
-        String uin = host().loginUin();
-        boolean logged = uin != null && uin.length() > 0;
-
-        String sub;
-        if (!running) {
-            sub = "容器未启动";
-        } else if (logged) {
-            sub = "已登录 " + uin;
-        } else {
-            sub = "未登录";
-        }
-        if (qqSub != null && !sub.equals(lastSub)) {
-            qqSub.setText(sub);
-            lastSub = sub;
-        }
-
-        int dotColor = !running ? Ui.alpha(t.textTertiary, 0.55f)
-                : (logged ? t.accent : t.textSecondary);
-        if (qqDot != null && dotColor != lastDot) {
-            qqDot.setColor(dotColor);
-            lastDot = dotColor;
+        for (java.util.Map.Entry<String,TextView> entry : platformCounts.entrySet()) {
+            String sub = BotRegistry.forPlatform(entry.getKey()).size() + " 台机器人";
+            if (!sub.contentEquals(entry.getValue().getText())) entry.getValue().setText(sub);
         }
     }
 }

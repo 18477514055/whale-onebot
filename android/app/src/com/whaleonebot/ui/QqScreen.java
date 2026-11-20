@@ -130,7 +130,7 @@ final class QqScreen extends Screen {
 
         box.addView(Ui.strong(activity, "容器骨架未就绪", Theme.T_CARD, t.textPrimary),
                 Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        TextView body = Ui.text(activity, reason.length() > 0 ? reason : "缺少 rootfs.tar.gz",
+        TextView body = Ui.text(activity, reason.length() > 0 ? reason : "请到设置 → 机器人准备公共运行环境",
                 Theme.T_CAP, t.textSecondary);
         body.setLineSpacing(dp(3), 1f);
         box.addView(body, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(4)));

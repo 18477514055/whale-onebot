@@ -26,7 +26,7 @@ foreach ($f in @('proot','libtalloc.so.2','libandroid-shmem.so')) {
 
 # The container scripts ship as assets and are force-copied into the rootfs on every
 # start, so changing the login / bot logic only needs an APK reinstall, not a 1.2GB rootfs repack.
-foreach ($script in @('container-login.mjs', 'container-bot.mjs')) {
+foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'binding-host.mjs', 'bili-protocol-host.mjs')) {
   $src = Join-Path $PSScriptRoot $script
   if (-not (Test-Path $src)) { throw "missing: $src" }
   Copy-Item $src (Join-Path $assetsDir $script) -Force
@@ -104,7 +104,7 @@ if ($Release) {
   if (-not $ksPass) { throw '缺少 WHALE_RELEASE_KS_PASS（口令见 android/keys/RELEASE-KEYSTORE.txt）' }
   $apk = Join-Path $OutDir 'whale-onebot-release.apk'
   Write-Host '[6/6] apksigner (release)'
-  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-key-alias whale-release --ks-pass "pass:$ksPass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out $apk $aligned
+  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-key-alias whale-release --ks-pass env:WHALE_RELEASE_KS_PASS --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out $apk $aligned
   if ($LASTEXITCODE -ne 0) { throw 'apksigner sign 失败' }
   & (Join-Path $buildTools 'apksigner.bat') verify --print-certs $apk | Select-Object -First 3
 } else {

@@ -60,6 +60,10 @@ final class SettingsScreen extends Screen {
                         }),
                 Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
+        for(String[] entry:new String[][]{{"备份","导出、恢复或删除本地备份","backups"},{"版本管理","核心、平台插件与更新策略","versions"}}){
+            LinearLayout.LayoutParams space=Ui.llp(MATCH_PARENT,WRAP_CONTENT);space.topMargin=dp(Theme.S2);
+            col.addView(entryCard(IconView.TUNE,entry[0],Ui.text(activity,entry[1],Theme.T_CAP,t.textSecondary),v->shell.corePage(entry[2],null)),space);
+        }
         // ---------- 主题 ----------
         themeValue = Ui.text(activity, t.name, Theme.T_CAP, t.textSecondary);
         LinearLayout.LayoutParams cardLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);

@@ -81,13 +81,17 @@ final class PlatformBotsScreen extends Screen {
             }
         }
 
-        TextView note = Ui.text(activity,
-                "点机器人进「启动 / 配置」",
-                Theme.T_CAP, t.textTertiary);
-        note.setLineSpacing(dp(3), 1f);
-        LinearLayout.LayoutParams nlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        nlp.topMargin = dp(Theme.S3 + 2);
-        col.addView(note, nlp);
+        if (!bots.isEmpty() && BotRegistry.P_BILIBILI.equals(platformId) && !BotRegistry.list().isEmpty()) {
+            TextView attach=Ui.button(activity,t,"绑定已有机器人",false);
+            attach.setMinimumHeight(dp(Theme.TOUCH));
+            attach.setOnClickListener(v -> {
+                List<BotRegistry.Bot> choices=BotRegistry.list(); String[] names=new String[choices.size()];
+                for(int i=0;i<names.length;i++) names[i]=choices.get(i).name+"  /  "+choices.get(i).id;
+                new android.app.AlertDialog.Builder(activity).setTitle("选择机器人").setItems(names,(d,i)->shell.pushBiliAccounts(choices.get(i).id,"config")).setNegativeButton("取消",null).show();
+            });
+            col.addView(attach,marginTop(Theme.S3));
+        }
+
     }
 
     // ------------------------------------------------------------------ 一个机器人
@@ -113,7 +117,14 @@ final class PlatformBotsScreen extends Screen {
         blp.leftMargin = dp(Theme.S3);
         blp.rightMargin = dp(Theme.S2);
         box.addView(nameLine(b), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        box.addView(Ui.text(activity, "点进去：启动 / 配置", Theme.T_CAP, t.textSecondary), marginTop(Theme.S1 + 2));
+        CoreInventory.Instance core=BotRegistry.coreForBot(b.id);
+        if(core!=null && CoreManagerScreen.managed(core)){
+            boolean ready=false;try{java.io.File app=com.whaleonebot.install.CoreInstaller.active(activity.getFilesDir(),core.id);ready=app!=null && new java.io.File(app,"src/platform-modules/"+platformId+"/.bot-module.json").isFile();}catch(Exception ignored){}
+            box.addView(Ui.text(activity,ready?"平台插件已安装":"平台插件待安装 · 设置 → 机器人",Theme.T_BODY,t.textSecondary));
+        }
+        for (BotRegistry.Binding binding : b.bindings) if (binding.platform.equals(platformId)) {
+            box.addView(Ui.text(activity, binding.label() + "\n" + binding.detail(), Theme.T_BODY, t.textSecondary), marginTop(Theme.S1));
+        }
         row.addView(box, blp);
 
         IconView chev = new IconView(activity, IconView.CHEV_R, t.textTertiary);
@@ -125,7 +136,8 @@ final class PlatformBotsScreen extends Screen {
         card.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                shell.pushPlatformBot(b.id);
+                if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(b.id,"start");
+                else shell.pushPlatformBot(b.id);
             }
         });
         return card;
@@ -196,14 +208,14 @@ final class PlatformBotsScreen extends Screen {
         box.addView(tile, Ui.llp(dp(52), dp(52)));
 
         TextView guide = Ui.text(activity,
-                "还没有机器人，请先去 设置 → 机器人 → 新建机器人",
+                "本平台还没有机器人，请前往「设置 → 机器人」。",
                 Theme.T_BODY, t.textPrimary);
         guide.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams glp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         glp.topMargin = dp(Theme.S3);
         box.addView(guide, glp);
 
-        TextView go = Ui.button(activity, t, "去新建机器人", true);
+        TextView go = Ui.button(activity, t, "去设置 · 机器人", true);
         go.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

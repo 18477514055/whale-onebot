@@ -1,0 +1,283 @@
+'use strict';
+
+// Current production UI integration for capabilities that graduated from the
+// experiment page. This file deliberately hooks existing render boundaries
+// instead of watching every DOM mutation: message/status refreshes must not
+// repeatedly delete and recreate controls.
+
+import { applyIcons } from './core/icons.js';
+import { QARegistry } from './core/registry.js';
+import { state } from './core/state.js';
+import { api } from './core/api.js';
+(function installStableFeatureUi() {
+  const promotedExperimentControls = [
+    '#cfg-identity-pilot-enabled',
+    '#cfg-auto-friend-enabled',
+    '#cfg-slang-pilot-enabled',
+    '#cfg-incident-pilot-enabled'
+  ];
+
+  const legacyOwnerInputs = [
+    '#cfg-identity-friend-owner',
+    '#cfg-incident-owner',
+    '#cfg-slang-owner',
+    '#auto-update-owner'
+  ];
+
+  const textReplacements = [
+    ['启停由“设置 → 实验功能”统一控制', '正式功能，随服务恒定启动'],
+    ['启停由「设置 → 实验功能」统一控制', '正式功能，随服务恒定启动'],
+    ['异常处理试点运行中', '异常处理基础设施运行中'],
+    ['异常处理试点', '异常处理基础设施'],
+    ['主动发送实验开关已关闭', '主动好友候选已整体退役（2026-09-25）'],
+    ['统一身份库总开关已关闭', '人物统一印象为正式功能']
+  ];
+
+  let adminValue = '';
+  let adminLoaded = false;
+  let adminLoading = null;
+
+  function currentAdminFromState() {
+    try {
+      return String(state?.config?.admin?.ownerUin || '').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  // 走共享的 api()（ui/core/api.js）：这里原来是它的第 6 份手抄（自己拼 header、自己判 ok），
+  // 于是拿不到中央的 401 处理（弹登录框 + 收起 loading 壳），令牌常量也各写一份（2026-10-01 审查）。
+  async function configRequest(method = 'GET', body = null) {
+    const data = await api('/api/config', {
+      method,
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+    return data.config || data;
+  }
+
+  function syncAdminInputs() {
+    const stateValue = currentAdminFromState();
+    if (stateValue || !adminLoaded) adminValue = stateValue || adminValue;
+
+    const globalInput = document.querySelector('#cfg-global-admin-owner');
+    if (globalInput && document.activeElement !== globalInput) {
+      globalInput.value = adminValue;
+    }
+    document.querySelectorAll('[data-global-admin-mirror="true"]').forEach((input) => {
+      input.value = adminValue;
+    });
+  }
+
+  function loadAdmin() {
+    const fromState = currentAdminFromState();
+    if (fromState) {
+      adminValue = fromState;
+      adminLoaded = true;
+      syncAdminInputs();
+      return Promise.resolve(adminValue);
+    }
+    if (adminLoaded) {
+      syncAdminInputs();
+      return Promise.resolve(adminValue);
+    }
+    if (adminLoading) return adminLoading;
+    adminLoading = configRequest()
+      .then((config) => {
+        adminValue = String(config?.admin?.ownerUin || '').trim();
+        adminLoaded = true;
+        syncAdminInputs();
+        return adminValue;
+      })
+      .catch(() => '')
+      .finally(() => { adminLoading = null; });
+    return adminLoading;
+  }
+
+  function replaceText(root) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      let next = node.nodeValue || '';
+      for (const [from, to] of textReplacements) next = next.replaceAll(from, to);
+      if (next !== node.nodeValue) node.nodeValue = next;
+    }
+  }
+
+  function removeControlContainer(control) {
+    if (!control) return;
+    const container = control.closest('.control-key-row')
+      || control.closest('.checkbox-row')
+      || control.closest('.field')
+      || control.closest('label')
+      || control;
+    container.remove();
+  }
+
+  function stripPromotedExperimentHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = String(html || '');
+    for (const selector of promotedExperimentControls) {
+      removeControlContainer(template.content.querySelector(selector));
+    }
+    // Automated slang research is retired completely. A manually maintained
+    // slang asset library is a different feature and remains available.
+    removeControlContainer(template.content.querySelector('#cfg-slang-owner'));
+    template.content.querySelectorAll('[data-asset-kind="slang-research"]')
+      .forEach((node) => node.remove());
+    const result = template.content.querySelector('#experiment-launch-result');
+    if (result && !template.content.querySelector('.control-key-row')) result.remove();
+    return template.innerHTML;
+  }
+
+  function replaceLegacyOwnerInput(selector) {
+    const input = document.querySelector(selector);
+    if (!input || input.dataset.globalAdminMirror === 'true') return;
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.id = input.id;
+    hidden.dataset.globalAdminMirror = 'true';
+    hidden.value = adminValue || currentAdminFromState() || String(input.value || '').trim();
+    const wrapper = input.closest('.field') || input.closest('label') || input;
+    wrapper.replaceWith(hidden);
+  }
+
+  function normalizeFeaturePage(rootSelector) {
+    const root = document.querySelector(rootSelector);
+    if (!root) return;
+    replaceText(root);
+    for (const selector of legacyOwnerInputs) replaceLegacyOwnerInput(selector);
+
+    const dispatch = root.querySelector('#cfg-identity-friend-dispatch');
+    const dispatchRow = dispatch?.closest('.checkbox-row') || dispatch?.closest('.field');
+    if (dispatchRow) {
+      const note = document.createElement('div');
+      note.className = 'hint';
+      note.dataset.stableFriendDispatch = 'true';
+      note.textContent = '主动好友派发已随候选功能整体退役（2026-09-25），该开关不再生效。';
+      dispatchRow.replaceWith(note);
+    }
+    syncAdminInputs();
+  }
+
+  /**
+   * 改导航项的主名，但**不碰图标、也不碰说明那行**。
+   * 历史上这里直接写 `el.textContent = '…'`，会把 applyIcons 注入的 `<span class="ico">` 一起抹掉 ——
+   * 「人物印象」与「异常处理」两项因此在每次启动后都变成没有图标的导航项
+   * （2026-10-08 真机实测：12 个 tab 里就这两项 hasSvg=false）。
+   * 现在导航项是"主名 + 一行说明"两行结构，主名在 `.tab-label b` 里，所以只改那一个节点，
+   * 并顺手补一次 applyIcons（幂等）兜底"图标还没注入就先跑了这条"的顺序问题。
+   */
+  function setNavLabel(el, label) {
+    el.classList.remove('hidden');
+    const title = el.querySelector('.tab-label b');
+    if (title) { if (title.textContent.trim() !== label) title.textContent = label; }
+    else {
+      // 兜底：万一模板换了结构（没有 .tab-label），退回"只替换文字节点"的老做法
+      const textNode = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue.trim());
+      if (!textNode) el.appendChild(document.createTextNode(label));
+      else if (textNode.nodeValue.trim() !== label) textNode.nodeValue = label;
+    }
+    applyIcons(el);
+  }
+
+  function normalizeNavigation() {
+    document.querySelectorAll('[data-feature-nav="identity"]').forEach((el) => setNavLabel(el, '人物印象'));
+    document.querySelectorAll('[data-feature-nav="auto-friend"]').forEach((el) => {
+      el.classList.remove('hidden');
+    });
+    document.querySelectorAll('[data-feature-nav="incidents"]').forEach((el) => setNavLabel(el, '异常处理'));
+    document.querySelectorAll('[data-feature-nav="slang"], #view-slang')
+      .forEach((el) => el.remove());
+  }
+
+  async function saveAdmin(panel) {
+    const input = panel.querySelector('#cfg-global-admin-owner');
+    const result = panel.querySelector('[data-global-admin-result]');
+    const button = panel.querySelector('[data-global-admin-save]');
+    const ownerUin = String(input?.value || '').trim();
+    if (ownerUin && !/^\d{5,15}$/.test(ownerUin)) {
+      if (result) result.textContent = '管理员 QQ 必须为 5 到 15 位数字。';
+      return;
+    }
+    if (button) button.disabled = true;
+    if (result) result.textContent = '正在保存…';
+    try {
+      const config = await configRequest('POST', { admin: { ownerUin } });
+      adminValue = String(config?.admin?.ownerUin || '').trim();
+      adminLoaded = true;
+      try { if (state?.config) state.config = config; } catch { /* legacy console */ }
+      syncAdminInputs();
+      if (result) {
+        result.textContent = adminValue
+          ? `已保存全局管理员 QQ：${adminValue}；已自动加入私聊白名单。`
+          : '已清空全局管理员 QQ；人物/好友/异常基础设施继续运行，但 QQ 通知和私聊审批不可用。';
+      }
+    } catch (error) {
+      if (result) result.textContent = `保存失败：${String(error?.message || error)}`;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function installGlobalAdminPanel() {
+    const form = document.querySelector('#settings-form');
+    if (!form || form.querySelector('[data-global-admin-settings]')) return;
+
+    const panel = document.createElement('section');
+    panel.dataset.globalAdminSettings = 'true';
+    panel.className = 'settings-card';
+    panel.innerHTML = `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <h3 style="margin:0 0 4px;color:var(--text);font-size:var(--fs-lg);font-weight:650;letter-spacing:.2px">全局管理员 QQ</h3>
+          <div class="hint">好友审批、异常告警、自动更新等所有管理员能力统一使用此 QQ。保存后会自动加入私聊白名单。</div>
+        </div>
+        <button type="button" class="btn btn-primary btn-small" data-global-admin-save>保存管理员</button>
+      </div>
+      <div class="field-row" style="margin-top:12px">
+        <div class="field">
+          <label for="cfg-global-admin-owner">管理员 QQ</label>
+          <input type="text" id="cfg-global-admin-owner" inputmode="numeric" autocomplete="off" placeholder="5 到 15 位 QQ 号" />
+        </div>
+      </div>
+      <div class="hint" data-global-admin-result></div>`;
+    panel.querySelector('[data-global-admin-save]')?.addEventListener('click', () => saveAdmin(panel));
+    panel.querySelector('#cfg-global-admin-owner')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveAdmin(panel);
+      }
+    });
+    form.prepend(panel);
+    loadAdmin();
+  }
+
+  // 钩子经 QARegistry 注册（改进方案 §11 C2「去插件化」）：原先这里是 `window[name] = wrapped`，
+  // 只在"脚本顺序刚好、且双方都还是 classic script"时成立 —— ES module 的绑定只读、
+  // 模块作用域也不挂 window，任何一步模块化都会让覆盖**静默失效**。改成显式注册后，
+  // 漏挂/顺序错会当场看得出来（钩子没生效），而不是悄悄不生效。
+  // Remove promoted/retired controls before the experiment section reaches DOM.
+  QARegistry.onTransform('renderExperimentalSettingsSection', (html) => stripPromotedExperimentHtml(html));
+
+  // Settings pages are rebuilt on every section switch, so install the one
+  // global administrator entry exactly once per render.
+  QARegistry.onAfter('renderSettings', () => {
+    installGlobalAdminPanel();
+    for (const selector of legacyOwnerInputs) replaceLegacyOwnerInput(selector);
+    syncAdminInputs();
+  });
+
+  // Feature pages have their own render paths outside Settings.
+  QARegistry.onAfter('renderIdentityFeaturePage', () => normalizeFeaturePage('#identity-page'));
+  QARegistry.onAfter('renderFriendFeaturePage', () => normalizeFeaturePage('#friend-page'));
+  QARegistry.onAfter('renderIncidentFeaturePage', () => normalizeFeaturePage('#incident-page'));
+
+  normalizeNavigation();
+  // Normalize any content that was rendered synchronously before this script
+  // loaded. No observer is installed; future updates go through the registry hooks.
+  normalizeFeaturePage('#identity-page');
+  normalizeFeaturePage('#friend-page');
+  normalizeFeaturePage('#incident-page');
+  installGlobalAdminPanel();
+})();

@@ -140,6 +140,11 @@ public class AppShell {
     static final int P_PLUGINS = 26;
     /** 看板 · 待对账：held/failed 不为 0 的会话 + 解锁 / 重试失败（**唯一会写状态的子页**）。 */
     static final int P_RECONCILE = 27;
+    static final int P_BILI_ACCOUNT = 28;
+    static final int P_CORE_MANAGER=29;
+    void corePage(String mode,String coreId){push(P_CORE_MANAGER,mode,coreId);}
+
+    void pushBiliAccounts(String id,String tab) { push(P_BILI_ACCOUNT,id,tab); }
 
     final Activity activity;
     final Host host;
@@ -174,6 +179,7 @@ public class AppShell {
         if (activity == null || host == null) throw new IllegalArgumentException("activity/host 不能为空");
         this.activity = activity;
         this.host = host;
+        com.whaleonebot.install.CoreInstaller.checkAuto(activity.getApplicationContext());
         this.store = new ThemeStore(activity);
         this.theme = store.theme();
         BotRegistry.Bot firstBot = BotRegistry.primary();
@@ -233,6 +239,7 @@ public class AppShell {
 
     /** 选图返回。返回 true 表示这个 requestCode 归本类处理。 */
     public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        if(requestCode==CoreManagerScreen.FILE_REQUEST){if(current instanceof CoreManagerScreen)((CoreManagerScreen)current).picked(resultCode==Activity.RESULT_OK && data!=null?data.getData():null);return true;}
         if (requestCode != REQ_PICK_IMAGE) return false;
         if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
             host.toast("已取消选择");
@@ -456,8 +463,10 @@ public class AppShell {
      * 每个机器人一份 {@code config.json}，见 {@code MainActivity#loadConfigJson}。
      */
     public String currentBotId() {
-        Entry top = stack.isEmpty() ? null : stack.get(stack.size() - 1);
-        if (top != null && top.arg != null && top.arg.length() > 0) return top.arg;
+        for (int i=stack.size()-1;i>=0;i--) {
+            Entry entry=stack.get(i);
+            if (entry.arg!=null && (entry.kind==P_BOT || entry.kind==P_PLATFORMBOT || entry.kind==P_BILI_ACCOUNT || entry.kind==P_QQ || entry.kind==P_BOTCONFIG || entry.kind==P_RUNTIMEDL)) return entry.arg;
+        }
         if (botId != null && botId.length() > 0) return botId;
         BotRegistry.Bot b = BotRegistry.primary();
         return b == null ? "" : b.id;
@@ -508,6 +517,16 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+            BotRegistry.Bot owner=BotRegistry.get(currentBotId());
+            CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
+            if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
+                Screen scoped=placeholder("此实例未提供此面板","请回到机器人详情管理本实例的配置。");scoped.build();return scoped;
+            }
+            if(owner!=null && !RuntimeSurfaces.builtin(owner)) {
+                Screen neutral=new CustomRuntimeScreen(this,owner,e.kind==P_BILI_ACCOUNT?BotRegistry.P_BILIBILI:platformOfStack());neutral.build();return neutral;
+            }
+        }
         if (e != null) {
             Screen cached = screenCache.get(e);
             if (cached != null) return cached;
@@ -525,7 +544,11 @@ public class AppShell {
                     s = new ThemeScreen(this);
                     break;
                 case P_QQ:
-                    s = new QqScreen(this);
+                    BotRegistry.Bot target = BotRegistry.get(arg == null ? currentBotId() : arg);
+                    s = BotRegistry.legacyQQ(target) ? new QqScreen(this) : new BoundStartScreen(this,target);
+                    break;
+                case P_BILI_ACCOUNT:
+                    s = new BiliPlatformScreen(this,BotRegistry.get(arg),arg2);
                     break;
                 case P_PLATFORMBOTS:
                     s = new PlatformBotsScreen(this, arg);
@@ -600,15 +623,18 @@ public class AppShell {
                 case P_NEWBOT:
                     s = new NewBotScreen(this);         // T2 · ui/NewBotScreen.java
                     break;
+                case P_CORE_MANAGER:
+                    s = new CoreManagerScreen(this,arg,arg2);
+                    break;
                 case P_RUNTIMEDL:
-                    s = new RuntimeDownloadScreen(this); // T3 · ui/RuntimeDownloadScreen.java
+                    s = new CoreManagerScreen(this,"download",""); // Old persisted navigation routes go to the signed installer only.
                     break;
                 default:
                     s = new HomeScreen(this);
                     break;
             }
             s.build();
-            if (e != null) screenCache.put(e, s);
+            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_CORE_MANAGER) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "androidApi": null,
+  "androidAbis": [],
+  "runtimePlatform": null,
+  "runtimeArch": null,
+  "nodeVersion": null,
+  "libc": null,
+  "executionRoute": "unselected"
+}

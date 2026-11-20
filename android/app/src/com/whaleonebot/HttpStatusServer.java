@@ -60,13 +60,16 @@ final class HttpStatusServer implements Runnable {
             }
             String body;
             String type = "text/plain; charset=utf-8";
-            if (path.startsWith("/status")) {
+            if (path.startsWith("/bindings?")) {
+                type = "application/json; charset=utf-8";
+                body = ContainerService.bindingStatus(svc,param(path,"bot")).toString();
+            } else if (path.startsWith("/status")) {
                 type = "application/json; charset=utf-8";
                 body = "{\"running\":" + ContainerService.isRunning()
                         + ",\"pid\":" + ContainerService.containerPid() + "}";
             } else if (path.startsWith("/exec")) {
                 String cmd = param(path, "cmd");
-                body = cmd.isEmpty() ? "(need cmd)" : ContainerService.execInContainer(svc.getFilesDir(), cmd);
+                body = !legacyDebugEnabled() ? "debug disabled" : cmd.isEmpty() ? "(need cmd)" : ContainerService.execInContainer(svc.getFilesDir(), cmd);
             } else if (path.startsWith("/botstart")) {
                 ContainerService.startBot(svc);
                 body = "bot-start-requested";
@@ -77,10 +80,11 @@ final class HttpStatusServer implements Runnable {
                 body = tail(new File(svc.getFilesDir(), "rootfs/opt/whale/qq-state/bot.log"), 200);
             } else if (path.startsWith("/bot")) {
                 type = "application/json; charset=utf-8";
-                body = readAll(new File(svc.getFilesDir(), "rootfs/opt/whale/qq-state/bot.json"));
+                body = BindingControl.legacy(svc.getFilesDir(),false) && ContainerService.botRunning()
+                        ? readAll(new File(svc.getFilesDir(), "rootfs/opt/whale/qq-state/bot.json")) : "{\"phase\":\"stopped\"}";
             } else if (path.startsWith("/raw")) {
                 String cmd = param(path, "cmd");
-                body = cmd.isEmpty() ? "(need cmd)" : ContainerService.execHost(svc.getFilesDir(), cmd);
+                body = !legacyDebugEnabled() ? "debug disabled" : cmd.isEmpty() ? "(need cmd)" : ContainerService.execHost(svc.getFilesDir(), cmd);
             } else {
                 body = tail(new File(svc.getFilesDir(), "logs/container.log"), 300);
             }
@@ -94,6 +98,18 @@ final class HttpStatusServer implements Runnable {
         } catch (Throwable t) {
             svc.logLine("http handler error: " + t);
         }
+    }
+
+    // Loopback is shared with other Android apps. Never expose a modern session through a shell.
+    private boolean legacyDebugEnabled() {
+        return (svc.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
+                && new File(svc.getFilesDir(),"allow-legacy-debug-shell").isFile()
+                && legacyDebugRegistry();
+    }
+    private boolean legacyDebugRegistry(){
+        try{if(!BindingControl.legacy(svc.getFilesDir(),true))return false;
+            org.json.JSONObject bot=BindingControl.find(BindingControl.bots(svc.getFilesDir()),"whale-1");return bot.getJSONArray("platforms").length()==1&&(bot.optJSONArray("bindings")==null||bot.getJSONArray("bindings").length()==1);
+        }catch(Exception e){return false;}
     }
 
     /** 从 "/exec?cmd=xxx" 里取并 URL 解码参数。 */

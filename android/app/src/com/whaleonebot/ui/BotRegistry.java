@@ -43,7 +43,103 @@ public final class BotRegistry {
             Arrays.asList(P_QQ, P_DOUYIN, P_BILIBILI, P_XIAOHEIHE));
 
     /** V1 真正接通的平台。以后接通抖音/bilibili，往这里加一项即可，界面自动跟着变。 */
-    private static final String[] SUPPORTED = {P_QQ};
+    private static final String[] SUPPORTED = {P_QQ, P_BILIBILI};
+
+    public static final class Binding {
+        public final String id, platform, accountId, memoryMode, httpUrl, wsUrl, peerId;
+        Binding(String id,String platform,String accountId,String mode,String http,String ws) { this(id,platform,accountId,mode,http,ws,""); }
+        Binding(String id, String platform, String accountId, String mode, String http, String ws, String peerId) {
+            this.peerId = peerId;
+            this.id = id; this.platform = platform; this.accountId = accountId;
+            this.memoryMode = mode; this.httpUrl = http; this.wsUrl = ws;
+        }
+        public boolean localQQ() {
+            if(!P_QQ.equals(platform)||!accountId.isEmpty()||!httpUrl.isEmpty()||!wsUrl.isEmpty())return false;
+            Bot owner=BotRegistry.get("whale-1");return legacyQQ(owner)&&owner.bindings.contains(this);
+        }
+        public String label() {
+            if(localQQ())return "QQ  本机账号";
+            return PLATFORM_LABEL(platform) + "  " + (accountId.isEmpty() ? "待填写账号" : accountId);
+        }
+        public boolean hostedBili() { return P_BILIBILI.equals(platform) && !accountId.isEmpty() && httpUrl.isEmpty() && wsUrl.isEmpty(); }
+        public String detail() {
+            if(localQQ())return "本机协议端  /  连接状态见启动页";
+            return ("isolated".equals(memoryMode) ? "独立记忆与知识库" : "共享本机器人记忆与知识库")
+                + "  /  " + (hostedBili() ? "本机协议端" : httpUrl.isEmpty() || wsUrl.isEmpty() ? "待配置" : "已配置");
+        }
+    }
+
+    static void syncPlatforms(Bot b) {
+        b.bindings.removeIf(v -> !b.platforms.contains(v.platform));
+        for (String p : b.platforms) {
+            boolean found = false;
+            for (Binding v : b.bindings) if (p.equals(v.platform)) found = true;
+            if (!found) b.bindings.add(new Binding("initial-" + p, p, "", "shared", "", ""));
+        }
+    }
+
+    public static boolean legacyQQ(Bot b) {
+        if (b == null || !b.enabled || !"whale-1".equals(b.id) || !KIND_BUILTIN.equals(b.runtimeKind)) return false;
+        boolean found=false;
+        for (Binding v : b.bindings) {
+            if (P_BILIBILI.equals(v.platform)) continue;
+            if (found || !P_QQ.equals(v.platform) || !v.accountId.isEmpty() || !v.httpUrl.isEmpty() || !v.wsUrl.isEmpty()) return false;
+            found=true;
+        }
+        return found;
+    }
+
+    static synchronized boolean changeLink(Bot bot,RuntimeUiLink remove,RuntimeUiLink add){
+        if(bot==null || get(bot.id)!=bot || !KIND_CUSTOM.equals(bot.runtimeKind))return false;
+        List<RuntimeUiLink> previous=new ArrayList<>(bot.runtimeUi);
+        if(remove!=null && !bot.runtimeUi.remove(remove))return false;
+        if(add!=null){if(bot.runtimeUi.size()>=16)return false;bot.runtimeUi.add(add);}
+        if(persist())return true;bot.runtimeUi.clear();bot.runtimeUi.addAll(previous);return false;
+    }
+
+    static boolean endpoint(String value, String scheme) {
+        try {
+            java.net.URI u = new java.net.URI(value);
+            return value.matches(scheme + "://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/?") && u.getPort() > 0 && u.getPort() <= 65535 && u.getPort() != 80;
+        } catch (Exception ex) { return false; }
+    }
+
+    private static boolean portConflict(Binding a, Binding b) {
+        for (String left : Arrays.asList(a.httpUrl,a.wsUrl)) for (String right : Arrays.asList(b.httpUrl,b.wsUrl)) {
+            try { int p=java.net.URI.create(left).getPort(); if(p>0 && p==java.net.URI.create(right).getPort()) return true; }
+            catch(IllegalArgumentException ignored) { /* invalid legacy endpoints will not launch */ }
+        }
+        return false;
+    }
+
+    static synchronized String changeBinding(Bot b, Binding before, Binding after) {
+        if (b == null || get(b.id) != b || (before != null && !b.bindings.contains(before))) return "绑定已变化，请返回重试";
+        if(after==null && before==null)return "请选择绑定";
+        if(after!=null && !coreForBot(b.id).platforms.contains(after.platform))return "核心不支持此平台";
+        if (after != null) {
+            if (!PLATFORM_SUPPORTED(after.platform) || !after.accountId.matches("[1-9][0-9]{0,15}") || Long.parseLong(after.accountId)>9007199254740991L) return "请输入有效的平台账号数字 ID（不超过 9007199254740991）";
+            if (!after.peerId.isEmpty() && (!after.hostedBili() || !after.peerId.matches("[1-9][0-9]{0,15}") || Long.parseLong(after.peerId)>9007199254740991L || after.accountId.equals(after.peerId))) return "私信对端必须是与本人不同的有效 UID";
+            if (before==null && b.bindings.size()>=32) return "每台机器人最多绑定 32 个账号";
+            if (!(after.hostedBili() && KIND_BUILTIN.equals(b.runtimeKind)) && (!endpoint(after.httpUrl, "http") || !endpoint(after.wsUrl, "ws"))) return "请填写本机 127.0.0.1 的 HTTP 和 WS 地址及端口，不含凭据、查询或片段";
+            if (!"shared".equals(after.memoryMode) && !"isolated".equals(after.memoryMode)) return "请选择记忆模式";
+            for (Bot bot : BOTS) for (Binding v : bot.bindings) {
+                if (v == before) continue;
+                if (v.platform.equals(after.platform) && v.accountId.equals(after.accountId)) return "这个平台账号已有绑定";
+                if (portConflict(v,after)) return "协议端口已被其他绑定使用，请为每个账号配置独立的监听端口";
+            }
+        }
+        List<Binding> old = b.bindings; List<String> oldPs = b.platforms; long oldTime = b.updatedAt;
+        b.bindings = new ArrayList<>(old);
+        if (before == null) b.bindings.add(after);
+        else if (after == null) b.bindings.remove(before);
+        else b.bindings.set(b.bindings.indexOf(before), after);
+        b.platforms = new ArrayList<>();
+        for (Binding v : b.bindings) if (!b.platforms.contains(v.platform)) b.platforms.add(v.platform);
+        b.updatedAt = System.currentTimeMillis();
+        if (persist()) return null;
+        b.bindings = old; b.platforms = oldPs; b.updatedAt = oldTime;
+        return "无法保存绑定，请检查本机存储后重试";
+    }
 
     /** 平台显示名。未知 id 原样返回（不吞数据，界面上至少能看出是什么）。 */
     public static String PLATFORM_LABEL(String platformId) {
@@ -91,6 +187,8 @@ public final class BotRegistry {
         public String persona;
         /** 平台 id 集合，至少 1 个。 */
         public List<String> platforms = new ArrayList<String>();
+        public List<Binding> bindings = new ArrayList<>();
+        final List<RuntimeUiLink> runtimeUi = new ArrayList<>();
         /** "builtin" | "custom"。 */
         public String runtimeKind = KIND_BUILTIN;
         /** builtin：版本号/tag；custom：仓库地址。 */
@@ -104,8 +202,9 @@ public final class BotRegistry {
         boolean running;
         String account;
 
-        public Bot() {
-        }
+        public final String coreInstanceId;
+        public Bot() {this("");}
+        Bot(String coreInstanceId){this.coreInstanceId=coreInstanceId;}
 
         /** 这个机器人是否接入某个平台。 */
         public boolean serves(String platformId) {
@@ -157,83 +256,35 @@ public final class BotRegistry {
     /** bots.json 所在目录；null 表示 {@link #init(File)} 还没被调用（只在内存里跑）。 */
     private static File storeDir;
 
-    /** init 是否已跑过。跑过之后就不再「自动补默认机器人」，否则删空机器人会删不掉。 */
-    private static boolean inited;
+    private static final java.util.LinkedHashMap<String,CoreInventory.Instance> CORES=new java.util.LinkedHashMap<>();
+    private static boolean writable;
+    private BotRegistry() {}
 
-    private BotRegistry() {
+    /** Empty installs remain empty. Existing registry owners are projected in place, without IO on init. */
+    public static synchronized void init(File dir) {
+        storeDir=dir;BOTS.clear();CORES.clear();writable=dir!=null;
+        if(dir==null)return;
+        File file=new File(dir,BotStore.FILE_NAME);
+        if(!file.exists())return;
+        try {BotStore.load(file,BOTS,CORES);sortByCreatedAt();}
+        catch(Exception ex){BOTS.clear();CORES.clear();writable=false;} // Don't clobber corrupt/future registries.
     }
-
-    // ---------------------------------------------------------------- 初始化与持久化
-
-    /**
-     * 启动时调用一次（{@code MainActivity} 传 {@code getFilesDir()}）。
-     *
-     * <p>三种情况的处理：
-     * <ul>
-     *   <li>文件不存在（首次启动）⇒ 建默认机器人 whale-1，并立刻落盘；</li>
-     *   <li>文件有效（哪怕是空的 bots 数组）⇒ 原样采用，<b>不</b>强塞默认机器人
-     *       —— 用户把机器人删光了就该看到空态引导；</li>
-     *   <li>文件损坏 / 读不出 ⇒ <b>不崩</b>，内存里回退到默认机器人，
-     *       并且<b>不覆盖</b>那个坏文件（留着以后人工排查）。</li>
-     * </ul>
-     *
-     * <p>可重复调用（幂等）：每次都重新读一遍文件。
-     */
-    public static void init(File dir) {
-        storeDir = dir;
-        inited = true;
-
-        List<Bot> loaded = null;
-        if (dir != null) {
-            try {
-                loaded = BotStore.load(new File(dir, BotStore.FILE_NAME));
-            } catch (Throwable ignored) {
-                loaded = null; // BotStore 自己已经兜了异常，这里再兜一层：启动流程绝不能因为注册表崩
-            }
-        }
-
-        BOTS.clear();
-        if (loaded != null) {
-            for (int i = 0; i < loaded.size(); i++) {
-                Bot b = loaded.get(i);
-                if (b == null || b.id == null) continue;
-                BOTS.add(b);
-            }
-            sortByCreatedAt();
-            return;
-        }
-
-        // 读不出来：回退默认机器人（内存里），坏文件保持原样。
-        BOTS.add(defaultBot());
-        boolean fileMissing = dir == null || !new File(dir, BotStore.FILE_NAME).isFile();
-        if (fileMissing) persist(); // 首次启动才落地；损坏的文件不要被默认数据覆盖
+    private static boolean persist(){return writable && BotStore.save(new File(storeDir,BotStore.FILE_NAME),BOTS,CORES.values());}
+    private static CoreInventory.Instance current(CoreInventory.Instance c){
+        if(c==null || c.legacy || !KIND_BUILTIN.equals(c.kind))return c;
+        String v=CoreInventory.activeVersion(storeDir,c.id);return v==null || v.equals(c.version)?c:c.withVersion(v);
     }
-
-    /** 默认机器人：whale-1 / Whale OneBot / [qq] / builtin（合同 §2 指定的回退值）。 */
-    private static Bot defaultBot() {
-        long now = System.currentTimeMillis();
-        Bot b = new Bot();
-        b.id = "whale-1";
-        b.name = "Whale OneBot";
-        b.persona = "";
-        b.platforms = new ArrayList<String>();
-        b.platforms.add(P_QQ);
-        b.runtimeKind = KIND_BUILTIN;
-        b.runtimeRef = "";
-        b.enabled = true;
-        b.createdAt = now;
-        b.updatedAt = now;
-        return b;
+    public static synchronized List<CoreInventory.Instance> cores(){List<CoreInventory.Instance> rows=new ArrayList<>();for(CoreInventory.Instance c:CORES.values())rows.add(current(c));return rows;}
+    public static synchronized CoreInventory.Instance coreForBot(String id){Bot b=get(id);return b==null?null:current(CORES.get(b.coreInstanceId));}
+    public static synchronized CoreInventory.Instance importDescriptor(String json){return insert(CoreInventory.parseDescriptor(json));}
+    public static synchronized CoreInventory.Instance registerBuiltin(String id,String version){
+        CoreInventory.Instance c=CoreInventory.builtin(id,version);
+        if(!CoreInventory.hasReceipt(storeDir,id,version))throw new IllegalArgumentException("Missing committed core receipt");
+        return insert(c);
     }
-
-    /** 落盘。没有 init 过（storeDir == null）时只留在内存里，返回 false。 */
-    private static boolean persist() {
-        if (storeDir == null) return false;
-        try {
-            return BotStore.save(new File(storeDir, BotStore.FILE_NAME), BOTS);
-        } catch (Throwable t) {
-            return false; // 落盘失败不许让界面崩：内存里的改动仍然生效
-        }
+    private static CoreInventory.Instance insert(CoreInventory.Instance c){
+        if(!writable || CORES.containsKey(c.id) || CORES.size()>=1024)throw new IllegalStateException("Cannot register instance");
+        CORES.put(c.id,c);if(persist())return c;CORES.remove(c.id);throw new IllegalStateException("Registry write failed");
     }
 
     private static void sortByCreatedAt() {
@@ -247,23 +298,15 @@ public final class BotRegistry {
         });
     }
 
-    /** init 没跑过时（例如测试/异常启动）也别让界面拿到空列表。 */
-    private static void ensureSeeded() {
-        if (inited || !BOTS.isEmpty()) return;
-        BOTS.add(defaultBot());
-    }
-
     // ---------------------------------------------------------------- 查询
 
     /** 全部机器人（含停用），按 createdAt 升序。返回副本，调用方改不到内部列表。 */
-    public static List<Bot> list() {
-        ensureSeeded();
+    public static synchronized List<Bot> list() {
         return new ArrayList<Bot>(BOTS);
     }
 
     /** 按 id 取；不存在返回 null。 */
-    public static Bot get(String id) {
-        ensureSeeded();
+    public static synchronized Bot get(String id) {
         if (id == null) return null;
         for (int i = 0; i < BOTS.size(); i++) {
             Bot b = BOTS.get(i);
@@ -273,8 +316,7 @@ public final class BotRegistry {
     }
 
     /** 第一个可用机器人（优先 enabled，其次第一个）；列表为空返回 null，调用方要判空。 */
-    public static Bot primary() {
-        ensureSeeded();
+    public static synchronized Bot primary() {
         for (int i = 0; i < BOTS.size(); i++) {
             Bot b = BOTS.get(i);
             if (b.enabled && b.id != null) return b;
@@ -283,8 +325,7 @@ public final class BotRegistry {
     }
 
     /** 某平台上的全部机器人（含停用）—— 多机器人 / 多平台的查询入口。 */
-    public static List<Bot> forPlatform(String platformId) {
-        ensureSeeded();
+    public static synchronized List<Bot> forPlatform(String platformId) {
         List<Bot> out = new ArrayList<Bot>();
         for (int i = 0; i < BOTS.size(); i++) {
             Bot b = BOTS.get(i);
@@ -298,37 +339,50 @@ public final class BotRegistry {
     /** 名字长度上限（字符数）。超长截断而不是拒绝，校验让向导页去做。 */
     public static final int NAME_MAX = 40;
 
-    /**
-     * 新建机器人并落盘。
-     *
-     * <p>id 由本类生成：第一个是 {@code whale-1}，之后是 {@code bot-2}、{@code bot-3}…
-     * （扫现有 id 的数字尾巴取最大值 +1，绝不碰撞）。
-     *
-     * @return 新建的机器人；名字为空或平台集合为空时<b>不保存</b>，返回 null
-     *         （校验交给向导页，向导页也必须先校验，见合同 §5-T2）
-     */
-    public static Bot create(String name, String persona, String runtimeKind,
-                             String runtimeRef, List<String> platforms) {
-        String n = name == null ? "" : name.trim();
-        if (n.length() == 0) return null;
-        List<String> ps = sanitizePlatforms(platforms);
-        if (ps.isEmpty()) return null;
-
-        long now = System.currentTimeMillis();
-        Bot b = new Bot();
-        b.id = nextId();
-        b.name = truncate(n);
-        b.persona = persona == null ? "" : persona;
-        b.platforms = ps;
-        b.runtimeKind = KIND_CUSTOM.equals(runtimeKind) ? KIND_CUSTOM : KIND_BUILTIN;
-        b.runtimeRef = runtimeRef == null ? "" : runtimeRef.trim();
-        b.enabled = true;
-        b.createdAt = now;
-        b.updatedAt = now;
-        BOTS.add(b);
-        sortByCreatedAt();
-        persist();
-        return b;
+    /** Compatibility entry point: the reference must now identify an existing, explicitly chosen core. */
+    public static synchronized Bot create(String name,String persona,String kind,String ref,List<String> platforms){
+        CoreInventory.Instance c=CORES.get(ref);return c!=null && c.kind.equals(kind)?createOnCore(ref,name,persona,platforms):null;
+    }
+    public interface BeforeCreate {void prepare(String plannedBotId) throws java.io.IOException;}
+    public static synchronized Bot createOnCore(String id,String name,String persona,List<String> platforms){return createOnCore(id,name,persona,platforms,null);}
+    public static synchronized Bot createOnCore(String id,String name,String persona,List<String> platforms,BeforeCreate prepare){
+        return allocate(id,name,persona,platforms,null,prepare);
+    }
+    /** Restore only local slot identities and their sharing modes; never restore accounts, peers or endpoints. */
+    public static synchronized Bot restoreOnCore(String id,String name,String persona,List<String> platforms,List<String[]> slots,BeforeCreate prepare){
+        CoreInventory.Instance c=CORES.get(id);
+        if(c==null || !KIND_BUILTIN.equals(c.kind) || slots==null || slots.size()>32 || platforms==null)return null;
+        List<Binding> restored=new ArrayList<>();java.util.Set<String> ids=new java.util.HashSet<>(), covered=new java.util.HashSet<>();
+        for(String[] row:slots){
+            if(row==null || row.length!=3)return null;
+            String key=row[0],platform=row[1],mode=row[2];
+            if(key==null || !key.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,63}") || !ids.add(key) || !platforms.contains(platform)
+                    || !("shared".equals(mode) || "isolated".equals(mode)))return null;
+            restored.add(new Binding(key,platform,"",mode,"","",""));covered.add(platform);
+        }
+        if(!covered.containsAll(platforms))return null;
+        return allocate(id,name,persona,platforms,restored,prepare);
+    }
+    private static Bot allocate(String id,String name,String persona,List<String> platforms,List<Binding> restored,BeforeCreate prepare){
+        CoreInventory.Instance c=CORES.get(id);
+        if(!writable || c==null || c.legacy || !c.ownerId.isEmpty() || name==null || name.trim().isEmpty() || platforms==null || platforms.isEmpty() || !c.platforms.containsAll(platforms))return null;
+        if(prepare==null && new File(storeDir,"rootfs/opt/whale/instance-data/.maintenance-"+id).exists())return null;
+        String version=c.version;
+        if(KIND_BUILTIN.equals(c.kind)){version=CoreInventory.activeVersion(storeDir,id);if(version==null)return null;}
+        Bot b=new Bot(id);b.id="bot-"+java.util.UUID.randomUUID();b.name=truncate(name.trim());b.persona=persona==null?"":persona;
+        b.platforms=sanitizePlatforms(platforms);if(restored==null)syncPlatforms(b);else b.bindings.addAll(restored);b.runtimeKind=c.kind;b.runtimeRef=version;b.runtimeUi.addAll(c.pages);
+        b.createdAt=b.updatedAt=System.currentTimeMillis();
+        if(prepare!=null)try{prepare.prepare(b.id);}catch(java.io.IOException e){return null;}
+        if(CORES.get(id)!=c)return null;
+        CORES.put(id,c.owned(b.id));BOTS.add(b);if(persist())return b;
+        BOTS.remove(b);CORES.put(id,c);return null;
+    }
+    /** Metadata commit; caller coordinates quiesce, scoped reset and rollback under the same monitor. */
+    public static synchronized boolean releaseOwner(String id,String expectedBotId){
+        CoreInventory.Instance c=CORES.get(id);Bot b=get(expectedBotId);
+        if(!writable || c==null || c.legacy || !KIND_BUILTIN.equals(c.kind) || b==null || !c.ownerId.equals(b.id) || !id.equals(b.coreInstanceId))return false;
+        int i=BOTS.indexOf(b);BOTS.remove(i);CORES.put(id,c.owned(""));if(persist())return true;
+        CORES.put(id,c);BOTS.add(i,b);return false;
     }
 
     /**
@@ -339,53 +393,44 @@ public final class BotRegistry {
      *
      * @return false 表示 id 不存在、名字为空或平台集合为空（未保存）
      */
-    public static boolean update(Bot bot) {
+    public static synchronized boolean update(Bot bot) {
         if (bot == null || bot.id == null) return false;
         Bot cur = get(bot.id);
         if (cur == null) return false;
+        CoreInventory.Instance c=coreForBot(cur.id);
+        if(c==null || !c.kind.equals(bot.runtimeKind) || (!bot.coreInstanceId.isEmpty() && !cur.coreInstanceId.equals(bot.coreInstanceId)))return false;
         String n = bot.name == null ? "" : bot.name.trim();
         if (n.length() == 0) return false;
         List<String> ps = sanitizePlatforms(bot.platforms);
-        if (ps.isEmpty()) return false;
+        if (!c.platforms.containsAll(ps)) return false;
 
         cur.name = truncate(n);
         cur.persona = bot.persona == null ? "" : bot.persona;
         cur.platforms = ps;
+        syncPlatforms(cur);
         cur.runtimeKind = KIND_CUSTOM.equals(bot.runtimeKind) ? KIND_CUSTOM : KIND_BUILTIN;
         cur.runtimeRef = bot.runtimeRef == null ? "" : bot.runtimeRef.trim();
         cur.enabled = bot.enabled;
         cur.updatedAt = System.currentTimeMillis();
-        persist();
-        return true;
+        return persist();
     }
 
-    /** 删除并落盘。id 不存在返回 false。 */
-    public static boolean remove(String id) {
-        if (id == null) return false;
-        for (int i = 0; i < BOTS.size(); i++) {
-            Bot b = BOTS.get(i);
-            if (b.id != null && b.id.equals(id)) {
-                BOTS.remove(i);
-                persist();
-                return true;
-            }
-        }
-        return false;
-    }
+    /** Deleting a row would circumvent explicit release/reset. */
+    @Deprecated public static boolean remove(String id){return false;}
 
     // ---------------------------------------------------------------- 状态回填（不落盘）
 
     /**
-     * 界面层把真实状态喂进来（QqScreen / BotDetailScreen 每秒调一次）。
-     * 所有服务该平台的机器人一起更新 —— 这样「一个平台多个机器人」时也成立。
+     * 旧 QQ 面板的全局登录状态只能回填旧版单账号机器人。
+     * 新绑定的连接事实来自独立的身份核验；绝不向同平台其他机器人广播。
      *
      * @param account 已登录账号；未登录传 null。本类只存不打印。
      */
-    public static void report(String platformId, boolean running, String account) {
+    public static synchronized void report(String platformId, boolean running, String account) {
         String acc = (account == null || account.length() == 0) ? null : account;
         for (int i = 0; i < BOTS.size(); i++) {
             Bot b = BOTS.get(i);
-            if (!b.serves(platformId)) continue;
+            if (!P_QQ.equals(platformId) || !legacyQQ(b)) continue;
             b.running = running;
             b.account = acc;
         }
@@ -407,35 +452,6 @@ public final class BotRegistry {
     private static String truncate(String s) {
         if (s == null) return "";
         return s.length() <= NAME_MAX ? s : s.substring(0, NAME_MAX);
-    }
-
-    /** 生成一个没被占用的 id：第一个是 whale-1，之后 bot-(最大数字尾巴+1)。 */
-    private static String nextId() {
-        if (BOTS.isEmpty()) return "whale-1";
-        int max = 0;
-        for (int i = 0; i < BOTS.size(); i++) {
-            int n = trailingNumber(BOTS.get(i).id);
-            if (n > max) max = n;
-        }
-        int n = max + 1;
-        String id = "bot-" + n;
-        while (get(id) != null) {
-            n++;
-            id = "bot-" + n;
-        }
-        return id;
-    }
-
-    private static int trailingNumber(String s) {
-        if (s == null) return 0;
-        int i = s.length();
-        while (i > 0 && Character.isDigit(s.charAt(i - 1))) i--;
-        if (i == s.length()) return 0;
-        try {
-            return Integer.parseInt(s.substring(i));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
     }
 
     // ---------------------------------------------------------------- 兼容旧调用（不要在新代码里用）

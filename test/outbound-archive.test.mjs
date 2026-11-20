@@ -14,18 +14,18 @@ test('消息段摊成人话：文本、@、引用、表情、图片', () => {
   assert.equal(flattenSegments([{ type: 'text', data: { text: '你好' } }]), '你好');
   assert.equal(flattenSegments([
     { type: 'reply', data: { id: '42' } },
-    { type: 'at', data: { qq: '100000001' } },
+    { type: 'at', data: { qq: '3752609028' } },
     { type: 'text', data: { text: ' 在吗' } },
     { type: 'face', data: { id: '212' } },
     { type: 'image', data: { file: 'x.png' } },
-  ]), '[回复:42][@100000001] 在吗[表情212][图片]');
+  ]), '[回复:42][@3752609028] 在吗[表情212][图片]');
   assert.equal(flattenSegments('纯字符串'), '纯字符串');
   assert.equal(flattenSegments(undefined), '');
 });
 
 test('会话键：群聊记群号，私聊记对方号', () => {
-  assert.equal(chatOf('send_group_msg', { group_id: 200000001 }), 'group:200000001');
-  assert.equal(chatOf('send_private_msg', { user_id: 100000002 }), 'private:100000002');
+  assert.equal(chatOf('send_group_msg', { group_id: 991516986 }), 'group:991516986');
+  assert.equal(chatOf('send_private_msg', { user_id: 2423936413 }), 'private:2423936413');
   assert.equal(chatOf('send_msg', {}), 'unknown');
 });
 
@@ -35,13 +35,13 @@ test('只有被接受的发送才落库，非发送动作与非 0 结果都不�
   assert.equal(archive.maybeRecord({ action: 'get_status', params: {} }, { retcode: 0, data: {} }), false);
   assert.equal(archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 1, message: [] } },
     { retcode: 1503, wording: 'Action was not submitted' }), false);
-  assert.equal(archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 200000001,
+  assert.equal(archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 991516986,
     message: [{ type: 'text', data: { text: '我这边就是自带那套 没装别的' } }] } },
     { retcode: 0, data: { message_id: 795087261 } }), true);
 
   const rows = readArchive(file);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].chat, 'group:200000001');
+  assert.equal(rows[0].chat, 'group:991516986');
   assert.equal(rows[0].text, '我这边就是自带那套 没装别的');
   assert.equal(rows[0].message_id, 795087261);
   assert.equal(rows[0].accepted_without_receipt, false);
@@ -52,7 +52,7 @@ test('只有被接受的发送才落库，非发送动作与非 0 结果都不�
 test('拿不到回执的发送也要落库，并标记 accepted_without_receipt', t => {
   const file = workspace(t);
   const archive = new OutboundArchive(file);
-  archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 200000001,
+  archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 991516986,
     message: [{ type: 'text', data: { text: '活着' } }] } },
     { retcode: 0, data: { message_id: null, accepted_without_receipt: true } });
   const [row] = readArchive(file);
@@ -73,7 +73,7 @@ test('归档写不进去时只返回 false，绝不抛错（不能影响发送�
 test('超过单文件上限时滚成 .1，不无限增长', t => {
   const file = workspace(t);
   const archive = new OutboundArchive(file, { maxBytes: 1024 });
-  const send = () => archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 200000001,
+  const send = () => archive.maybeRecord({ action: 'send_group_msg', params: { group_id: 991516986,
     message: [{ type: 'text', data: { text: 'x'.repeat(120) } }] } }, { retcode: 0, data: { message_id: 1 } });
   for (let i = 0; i < 20; i++) send();
   assert(fs.existsSync(file), '当前文件应存在');
