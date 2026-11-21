@@ -10,6 +10,9 @@
   },
   "scripts": {
     "start": "node src/cli.mjs",
+    "start:bili": "node src/platforms/bilibili/cli.mjs",
+    "catalog:bili": "node scripts/bili-action-catalog.mjs",
+    "smoke:bili": "node scripts/bili-dm-smoke.mjs",
     "test": "node --import ./test/preload.mjs --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
     "test:java": "node scripts/run-java-logic-tests.mjs"

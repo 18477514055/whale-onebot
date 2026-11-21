@@ -109,16 +109,17 @@ final class Theme {
             cardStroke = 0x2EFFFFFF;
             ghostFill = 0x1AFFFFFF;
             ghostStroke = 0x33FFFFFF;
-            scrimTop = 0x5900070B;
-            scrimBottom = 0xCC00070B;
+            // On a white photo the old 35% tint left light labels on light gray.
+            scrimTop = 0xDC00070B;
+            scrimBottom = 0xE600070B;
         } else {
             // 浅色主题：白玻璃 + 柔阴影就够了，不画白描边（在白底上看不见，只会脏）
             cardFill = 0xD9FFFFFF;
             cardStroke = 0x00000000;
             ghostFill = 0x1A1B1714;
             ghostStroke = 0x261B1714;
-            scrimTop = 0x59FFFDF8;
-            scrimBottom = 0xD9FFFDF8;
+            scrimTop = 0xDCFFFDF8;
+            scrimBottom = 0xE6FFFDF8;
         }
     }
 
@@ -149,8 +150,10 @@ final class Theme {
 
     private Theme ink(int primary, int secondary, int tertiary) {
         textPrimary = primary;
-        textSecondary = secondary;
-        textTertiary = tertiary;
+        // Preserve hue while keeping small labels readable on tinted selection surfaces.
+        int inkTarget = dark ? 0xFFFFFFFF : 0xFF000000;
+        textSecondary = mix(secondary, inkTarget, dark ? 0.57f : 0.20f);
+        textTertiary = mix(tertiary, inkTarget, dark ? 0.54f : 0.20f);
         ghostText = primary;
         return this;
     }

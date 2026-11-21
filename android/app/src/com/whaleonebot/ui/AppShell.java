@@ -82,6 +82,8 @@ public class AppShell {
     static final int P_HOME = 0;
     static final int P_SETTINGS = 1;
     static final int P_THEME = 2;
+    /** 环境配置：容器与 QQ 安装包。新用户拿到 APK 后第一站。 */
+    static final int P_ENV = 60;
     static final int P_QQ = 3;
     /** 平台运行端配置面板：14 组 / 141 项，读写 /agent/data/config.json。 */
     static final int P_BOTCONFIG = 4;
@@ -140,6 +142,12 @@ public class AppShell {
     static final int P_PLUGINS = 26;
     /** 看板 · 待对账：held/failed 不为 0 的会话 + 解锁 / 重试失败（**唯一会写状态的子页**）。 */
     static final int P_RECONCILE = 27;
+    static final int P_BILI_ACCOUNT = 28;
+    static final int P_CORE_MANAGER=29, P_EXTERNAL_ACCOUNT=30;
+    void externalAccount(String bot,String binding){push(P_EXTERNAL_ACCOUNT,bot,binding==null?"":binding);}
+    void corePage(String mode,String coreId){push(P_CORE_MANAGER,mode,coreId);}
+
+    void pushBiliAccounts(String id,String tab) { push(P_BILI_ACCOUNT,id,tab); }
 
     final Activity activity;
     final Host host;
@@ -174,6 +182,7 @@ public class AppShell {
         if (activity == null || host == null) throw new IllegalArgumentException("activity/host 不能为空");
         this.activity = activity;
         this.host = host;
+        com.whaleonebot.install.CoreInstaller.checkAuto(activity.getApplicationContext());
         this.store = new ThemeStore(activity);
         this.theme = store.theme();
         BotRegistry.Bot firstBot = BotRegistry.primary();
@@ -233,6 +242,7 @@ public class AppShell {
 
     /** 选图返回。返回 true 表示这个 requestCode 归本类处理。 */
     public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        if(requestCode==CoreManagerScreen.FILE_REQUEST){if(current instanceof CoreManagerScreen)((CoreManagerScreen)current).picked(resultCode==Activity.RESULT_OK && data!=null?data.getData():null);return true;}
         if (requestCode != REQ_PICK_IMAGE) return false;
         if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
             host.toast("已取消选择");
@@ -311,6 +321,8 @@ public class AppShell {
     }
 
     /** 平台页第二层：这台机器人在本平台的「启动 / 配置」。 */
+    void pushManagedQqDashboard(String botId){push(P_QQ,botId,"dashboard");}
+
     void pushPlatformBot(String botId) {
         String use = resolveBotId(botId);
         if (use.length() > 0) this.botId = use;
@@ -325,6 +337,10 @@ public class AppShell {
     }
 
     /** 进「模型与 Key」页（运行端配置 → 模型与接口 → 入口卡）。 */
+    void pushEnv() {
+        push(P_ENV, null);
+    }
+
     void pushModels() {
         push(P_MODELS, null);
     }
@@ -456,8 +472,10 @@ public class AppShell {
      * 每个机器人一份 {@code config.json}，见 {@code MainActivity#loadConfigJson}。
      */
     public String currentBotId() {
-        Entry top = stack.isEmpty() ? null : stack.get(stack.size() - 1);
-        if (top != null && top.arg != null && top.arg.length() > 0) return top.arg;
+        for (int i=stack.size()-1;i>=0;i--) {
+            Entry entry=stack.get(i);
+            if (entry.arg!=null && (entry.kind==P_BOT || entry.kind==P_PLATFORMBOT || entry.kind==P_BILI_ACCOUNT || entry.kind==P_QQ || entry.kind==P_BOTCONFIG || entry.kind==P_RUNTIMEDL)) return entry.arg;
+        }
         if (botId != null && botId.length() > 0) return botId;
         BotRegistry.Bot b = BotRegistry.primary();
         return b == null ? "" : b.id;
@@ -508,6 +526,16 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+            BotRegistry.Bot owner=BotRegistry.get(currentBotId());
+            CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
+            if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
+                Screen scoped=placeholder("此实例未提供此面板","请回到机器人详情管理本实例的配置。");scoped.build();return scoped;
+            }
+            if(owner!=null && !RuntimeSurfaces.builtin(owner)) {
+                Screen neutral=new CustomRuntimeScreen(this,owner,e.kind==P_BILI_ACCOUNT?BotRegistry.P_BILIBILI:platformOfStack());neutral.build();return neutral;
+            }
+        }
         if (e != null) {
             Screen cached = screenCache.get(e);
             if (cached != null) return cached;
@@ -521,11 +549,18 @@ public class AppShell {
                 case P_SETTINGS:
                     s = new SettingsScreen(this);
                     break;
+                case P_ENV:
+                    s = new EnvConfigScreen(this);
+                    break;
                 case P_THEME:
                     s = new ThemeScreen(this);
                     break;
                 case P_QQ:
-                    s = new QqScreen(this);
+                    BotRegistry.Bot target = BotRegistry.get(arg == null ? currentBotId() : arg);
+                    s = BotRegistry.legacyQQ(target) ? new QqScreen(this) : new BoundStartScreen(this,target,"dashboard".equals(arg2));
+                    break;
+                case P_BILI_ACCOUNT:
+                    s = arg2!=null&&(arg2.startsWith("slot:")||arg2.startsWith("new:"))?new BiliEnrollScreen(this,arg,arg2):new BiliPlatformScreen(this,BotRegistry.get(arg),arg2);
                     break;
                 case P_PLATFORMBOTS:
                     s = new PlatformBotsScreen(this, arg);
@@ -600,15 +635,21 @@ public class AppShell {
                 case P_NEWBOT:
                     s = new NewBotScreen(this);         // T2 · ui/NewBotScreen.java
                     break;
+                case P_EXTERNAL_ACCOUNT:
+                    s = new BotDetailScreen(this,BotRegistry.get(arg),arg2==null?"":arg2);
+                    break;
+                case P_CORE_MANAGER:
+                    s = new CoreManagerScreen(this,arg,arg2);
+                    break;
                 case P_RUNTIMEDL:
-                    s = new RuntimeDownloadScreen(this); // T3 · ui/RuntimeDownloadScreen.java
+                    s = new CoreManagerScreen(this,"download",""); // Old persisted navigation routes go to the signed installer only.
                     break;
                 default:
                     s = new HomeScreen(this);
                     break;
             }
             s.build();
-            if (e != null) screenCache.put(e, s);
+            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。
@@ -740,9 +781,22 @@ public class AppShell {
         if (same) return;
 
         theme = store.theme();
+        root.setBackgroundColor(theme.g0);
         backdrop.applyTheme(theme);
         applyWindowColors();
+        // 原生弹窗/下拉也换一套深浅，否则换完主题之后新建的对话框还停在旧配色。
+        ThemeBridge.apply(activity, theme.dark);
         // 重建当前页：所有颜色都来自令牌，重建即完成「重新上色」。
+        //
+        // ★★★ 清缓存这一步不能省（2026-11-21 真机复现的根因就在这里）：
+        //   create() 会**优先返回 screenCache 里的旧实例**（见 create() 的 if (cached != null)）。
+        //   不清缓存时上面这行等于把**同一个旧 View** 原样挂回去 —— 背景由 BackdropView 重绘所以变了，
+        //   但卡片填充、文字色、选中勾都是建视图时定的，全部滞留在上一套：
+        //   切到浅色主题（晨纸）后白字压近白底，整屏不可读；主题页的勾也停在旧行不动。
+        //   冷启动之所以正常，正是因为它走的是「新建页面」这条路 —— 这也反证了色盘没错。
+        //   清整份缓存而不是只删当前页：返回上一层同样走 create()，也必须按新主题重建。
+        //   代价是各页的页内临时状态（如运行端配置停在组页）在**换主题这一次**会丢 —— 可接受。
+        screenCache.clear();
         Entry top = stack.get(stack.size() - 1);
         showScreen(create(top), MOTION_FADE);
     }

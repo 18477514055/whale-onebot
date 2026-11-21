@@ -119,7 +119,7 @@ async function startOneBotService({projectRoot,token,port=13800,wsPath,wsPort,ou
         stableConnectionMs,heartbeatMs,pingIntervalMs,pongTimeoutMs,dispatch:reverseDispatch,events:core,
         status:core.status,selfId,closeWsOnUnknownOutcome:closeWsOnUnknownOutcome||agentPlusCompatibility});
     });
-    transport=await createTransport({dispatch,events:core,status:core.status,token,port,wsPath,wsPort,closeWsOnUnknownOutcome,agentPlusCompatibility});
+    transport=await createTransport({dispatch,events:core,status:core.status,selfId,token,port,wsPath,wsPort,closeWsOnUnknownOutcome,agentPlusCompatibility});
     for(const start of startReverse)reverse.push(start());
     if(webhook!==undefined){
       const {url,token: webhookToken,secret}=webhook;

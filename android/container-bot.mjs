@@ -181,7 +181,7 @@ function ensureSingleInstance() {
     if (pid === self || ancestors.has(pid)) continue;
     let cmd = '';
     try { cmd = fs.readFileSync('/proc/' + d + '/cmdline', 'utf8'); } catch { continue; }
-    if (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js')) continue;
+    if (cmd.includes('--whale-binding-worker') || (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
     try { process.kill(pid, 'SIGKILL'); victims.push(pid); } catch {}
   }
   if (victims.length) {
@@ -214,7 +214,7 @@ ensureSingleInstance();
       if (pid === process.pid || ancestors.has(pid)) continue;
       let cmd = '';
       try { cmd = fs.readFileSync('/proc/' + d + '/cmdline', 'utf8'); } catch { continue; }
-      if (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js')) continue;
+      if (cmd.includes('--whale-binding-worker') || (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
       // 只清**比自己早启动**的（自己拉起的 agent 更晚，不会被误杀）
       if (starttime(pid) < selfStart) {
         try { process.kill(pid, 'SIGKILL'); log('运行期清扫：killed ' + pid); } catch {}
@@ -573,48 +573,14 @@ async function startBot() {
   }, 3000);
 }
 
-// agent 的 preload 源码（内嵌，保证与本公司版本一致；每次起 agent 前重新写一份）。
-// 只做三件事：①把 OneBot 地址与 token 强制注入 onebot.js 的构造器；②把它的动作超时从写死的
-// 15 秒放大（见下）；③不碰 fetch / 模型凭据。
-//
-// ★ 为什么要改那 15 秒（2026-11-19 实测）：用户要求「运行端 15 秒太短，强制改长」。
-//   运行端 `onebot.js: const TEXT_TIMEOUT_MS = 15000` 是**写死的常量**，不在配置里，
-//   所以只能在这里改源码。不改的后果有据可查：一条 outbox 记着
-//   `unknown` + `The operation was aborted due to timeout` —— 我们的发送响应被限流队列
-//   拖过 15 秒，运行端先放弃 → 记 unknown → 该会话 held → 后续消息全被挡住。
-//   协议端这边的链条是严格递增的：桥接回执窗口(5s) < 核心 timeoutMs(10s) < 本值(默认 120s)。
-//   本值由面板项 `onebot.textTimeoutMs` 控制（container-bot 读配置后放进环境变量）。
-const AGENT_PRELOAD = `import { registerHooks } from 'node:module';
-if (process.env.WHALE_ORIGINAL_AGENT !== '1') throw Error('ORIGINAL_PRELOAD_NOT_ARMED');
-const target = 'file:///input/agent-app/src/onebot/onebot.js';
-const constructor = "  constructor({ wsUrl, httpUrl, accessToken, httpToken, onEvent, heartbeat = 'auto', heartbeatMs = HEARTBEAT_MS }) {";
-const timeoutDecl = 'const TEXT_TIMEOUT_MS = 15000;';
-const DEFAULT_TEXT_TIMEOUT_MS = 120000;
-function textTimeoutMs() {
-  const raw = process.env.WHALE_ONEBOT_TEXT_TIMEOUT_MS;
-  if (raw === undefined || raw === '') return DEFAULT_TEXT_TIMEOUT_MS;
-  const ms = Number(raw);
-  if (!Number.isSafeInteger(ms) || ms < 1000 || ms > 600000) throw Error('ONEBOT_TIMEOUT_INVALID');
-  return ms;
-}
-registerHooks({
-  load(url, context, next) {
-    const loaded = next(url, context);
-    if (url !== target) return loaded;
-    let text = Buffer.from(loaded.source).toString('utf8');
-    if (text.split(constructor).length !== 2) throw Error('ONEBOT_SOURCE_CHANGED');
-    // 上游把这个常量删了/改值时**明确报错**，而不是悄悄跑回 15 秒。
-    if (text.split(timeoutDecl).length !== 2) throw Error('ONEBOT_TIMEOUT_SOURCE_CHANGED');
-    const ms = textTimeoutMs();
-    text = text.replace(constructor, constructor +
-      '\\n    if (process.env.WHALE_ONEBOT_WS_URL) wsUrl = process.env.WHALE_ONEBOT_WS_URL;' +
-      '\\n    if (process.env.WHALE_ONEBOT_HTTP_URL) httpUrl = process.env.WHALE_ONEBOT_HTTP_URL;' +
-      '\\n    accessToken = process.env.WHALE_ONEBOT_TOKEN; httpToken = process.env.WHALE_ONEBOT_TOKEN;');
-    text = text.replace(timeoutDecl, 'const TEXT_TIMEOUT_MS = ' + ms + ';');
-    return { ...loaded, source: text };
-  },
-});
-`;
+// agent 启动**不再需要 preload**（2026-11-20 深度改造折叠，P6）：
+// 原先 agent preload 钩子的三件事——①OneBot 地址/token 环境变量强制注入、②动作超时从写死 15 秒
+// 放大到面板可配（默认 120 秒）、③orchestrator run 超时硬顶 240s→600s——
+// 已全部**直接折叠进 /input/agent-app 的源码**（onebot.js / orchestrator.js），
+// 运行端是深度改造后的自有代码（23 个 overlay 补丁 + 39 个自有模块全部直改入源），
+// 不再依赖 node 导入钩子层。地址/token/超时仍走同一组 WHALE_ONEBOT_* 环境变量，
+// 只是读取方从 preload 换成了源内折叠逻辑（见 input/agent-app/src/onebot/onebot.js 顶部注释）。
+// ★ 若超时锚点/构造器形状再变，报错点在源内（ONEBOT_TIMEOUT_INVALID），不再有 SOURCE_CHANGED 钩子报错。
 
 let agentAttempts = 0;
 /** 同一时刻只允许一次 startAgent 在飞：之前两次并发起 agent 会互相把对方的进程当残留杀掉（互杀循环）。 */
@@ -682,7 +648,6 @@ async function startAgent(child) {
   agentInFlight = true;
   agentAttempts++;
   const appDir = '/input/agent-app';
-  try { fs.writeFileSync('/agent/preload.mjs', AGENT_PRELOAD); } catch (e) { log('write preload failed: ' + e.message); }
   const entry = path.join(appDir, 'src/server.js');
   if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); return; }
 
@@ -717,31 +682,32 @@ async function startAgent(child) {
       if (pid === process.pid || pid === process.ppid) continue;
       let cmd = '';
       try { cmd = fs.readFileSync('/proc/' + d + '/cmdline', 'utf8'); } catch { continue; }
-      if (cmd.includes('agent-app/src/server.js')) { try { process.kill(pid, 'SIGKILL'); victims.push(pid); } catch {} }
+      if (!cmd.includes('--whale-binding-worker') && cmd.includes('agent-app/src/server.js')) { try { process.kill(pid, 'SIGKILL'); victims.push(pid); } catch {} }
     }
     if (victims.length) log('killed residual agents: ' + victims.join(','));
     await new Promise(r => setTimeout(r, 1200));
     fs.rmSync('/agent/data/.server.lock', { force: true });
   } catch (e) { log('agent cleanup failed: ' + e.message); }
 
-  // 2) 起 agent：只注入 OneBot token（preload），模型直接用业务配置里原有的凭据，不经过任何 relay。
+  // 2) 起 agent：地址/token/超时全部走环境变量，由**源内折叠逻辑**读取（2026-11-20 深度改造折叠后
+  //    preload 退役、不再挂导入钩子；模型直接用业务配置里原有的凭据，不经过任何 relay）。
   fs.mkdirSync('/agent/home/tmp', { recursive: true });
   const out = fs.openSync(path.join(RUNTIME, 'agent-stdout.log'), 'a', 0o600);
   const err = fs.openSync(path.join(RUNTIME, 'agent-stderr.log'), 'a', 0o600);
   // 运行端的动作超时（面板项 onebot.textTimeoutMs，默认 120000）：
-  // 不传就让 preload 用自己的默认值；传了就必须是合法毫秒数（非法值 preload 会拒绝启动，宁可报错不静默）。
+  // 传了就必须是合法毫秒数；非法值由源内折叠逻辑拒绝启动（ONEBOT_TIMEOUT_INVALID，宁可报错不静默）。
   const cfgTextTimeout = Number(cfg.onebot?.textTimeoutMs);
   const textTimeoutMs = Number.isSafeInteger(cfgTextTimeout) && cfgTextTimeout >= 1000 && cfgTextTimeout <= 600000
     ? cfgTextTimeout : 120000;
-  const proc = spawn(process.execPath, ['--import', 'file:///agent/preload.mjs', entry], {
+  const proc = spawn(process.execPath, [entry], {
     cwd: appDir,
     stdio: ['ignore', out, err],
     env: { PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
-      QQ_AGENT_DATA_DIR: '/agent/data', WHALE_ORIGINAL_AGENT: '1', WHALE_ONEBOT_TOKEN: onebotToken,
-      // ★ 地址走环境变量、由 preload 强制注入：不依赖 config.json（它可能被业务程序重写）。
+      QQ_AGENT_DATA_DIR: '/agent/data', WHALE_ONEBOT_TOKEN: onebotToken,
+      // ★ 地址走环境变量、由源内折叠逻辑强制注入：不依赖 config.json（它可能被业务程序重写）。
       WHALE_ONEBOT_WS_URL: 'ws://127.0.0.1:' + child.wsPort,
       WHALE_ONEBOT_HTTP_URL: 'http://127.0.0.1:' + child.port,
-      // ★ 15 秒是上游写死的常量，太短会把我们的慢响应判成未知 → held。见 AGENT_PRELOAD 注释。
+      // ★ 上游写死 15 秒会把我们的慢响应判成未知 → held；现由源内折叠逻辑读本变量（默认 120 秒）。
       WHALE_ONEBOT_TEXT_TIMEOUT_MS: String(textTimeoutMs) },
   });
   log('agent textTimeoutMs=' + textTimeoutMs);

@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { WebSocket } from 'ws';
 import { attachActions, checkOptions, sendFrame } from './server.mjs';
-import { BOT_UIN } from '../config/account.mjs';
+const identityHeader = id => id === undefined ? {} : { 'X-Self-ID': String(id) };
 
 // Outbound transports deliberately only accept numeric loopback destinations.
 // Reconnection reconnects the transport; requests/events are never replayed.
@@ -17,7 +17,7 @@ export function createReverseWebSocket(options) {
   return prepareReverseWebSocket(options)();
 }
 
-export function prepareReverseWebSocket({ url, token, dispatch, events, selfId = Number(BOT_UIN),
+export function prepareReverseWebSocket({ url, token, dispatch, events, selfId,
   role = 'Universal', maxAttempts = 8, baseDelayMs = 500, maxDelayMs = 30000, stableConnectionMs = 30000,
   maxBodyBytes = 8 * 1024 * 1024, maxBufferedBytes = 16 * 1024 * 1024,
   maxInflight = 16, heartbeatMs = 15000, status = () => ({ online: false, good: false }),
@@ -59,7 +59,7 @@ function startReverseWebSocket({ target, token, dispatch, events, selfId, role, 
     consecutiveAttempts++;
     report('connecting');
     if (closed) return;
-    const socket = ws = new WebSocket(target, { headers: { Authorization: `Bearer ${token}`, 'X-Self-ID': String(selfId),
+    const socket = ws = new WebSocket(target, { headers: { Authorization: `Bearer ${token}`, ...identityHeader(selfId),
       'X-Client-Role': role, 'User-Agent': 'Whale-OneBot/0.1' }, maxPayload: maxBodyBytes,
       followRedirects: false, handshakeTimeout: 10000, perMessageDeflate: false });
     attachActions(socket, { dispatch, maxBufferedBytes, maxInflight, enabled: role !== 'Event', closeWsOnUnknownOutcome });
@@ -118,7 +118,7 @@ function startReverseWebSocket({ target, token, dispatch, events, selfId, role, 
     get attempts() { return attempts; } };
 }
 
-export function createWebhook({ url, token, secret, events, selfId = Number(BOT_UIN),
+export function createWebhook({ url, token, secret, events, selfId,
   timeoutMs = 5000, maxPending = 128, maxBodyBytes = 8 * 1024 * 1024,
   maxPendingBytes = 16 * 1024 * 1024, maxResponseBytes = 8 * 1024 * 1024,
   prepareQuickOperation = events?.prepareQuickOperation, onDelivery = () => {} } = {}) {
@@ -140,7 +140,7 @@ export function createWebhook({ url, token, secret, events, selfId = Number(BOT_
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let status;
       try {
-        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Self-ID': String(selfId),
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...identityHeader(selfId),
           ...(secret ? { 'X-Signature': 'sha1=' + createHmac('sha1', secret).update(body).digest('hex') } : {}) };
         const response = await fetch(target, { method: 'POST', headers, body, signal: controller.signal, redirect: 'error' });
         status=response.status;

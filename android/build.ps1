@@ -1,7 +1,20 @@
 ﻿param(
   [Parameter(Mandatory = $true)][string]$AndroidSdk,
-  [string]$OutDir = "$PSScriptRoot/out",
-  [switch]$Release
+  # ★ 默认值不能在 param 里写 "$PSScriptRoot/out"：PS 5.1 求值参数默认值时 $PSScriptRoot 还是空的，
+  #   结果 OutDir 变成 "/out"，APK 落到**盘符根目录**（D:\out），看着像构建没产出。改到 body 里算。
+  [string]$OutDir = '',
+  [switch]$Release,
+  # ★ 并排安装（不同包名 + 不同签名）用的可选参数；都不给 = 原来的行为一个字都不变。
+  #   -ApplicationId：换 applicationId（清单 package 属性）。改了它，组件名必须全限定，
+  #     否则 aapt 会把 ".MainActivity" 解析到新包名下的类，而 Java 类仍在 com.whaleonebot。
+  #   -AppLabel：桌面名，方便和现役包肉眼区分。
+  #   -KeyStore/-KeyAlias/-KeyPassEnv：换一把钥匙签名（口令只从环境变量取，不落盘、不打印）。
+  [string]$ApplicationId = '',
+  [string]$AppLabel = '',
+  [string]$KeyStore = '',
+  [string]$KeyAlias = '',
+  [string]$KeyPassEnv = 'WHALE_RELEASE_KS_PASS',
+  [string]$ApkName = ''
 )
 
 # Build WhaleOneBot APK: javac -> d8 -> aapt -> zipalign -> apksigner
@@ -10,6 +23,8 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+
+if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'out' }
 
 $app        = Join-Path $PSScriptRoot 'app'
 $srcDir     = Join-Path $app 'src'
@@ -26,12 +41,15 @@ foreach ($f in @('proot','libtalloc.so.2','libandroid-shmem.so')) {
 
 # The container scripts ship as assets and are force-copied into the rootfs on every
 # start, so changing the login / bot logic only needs an APK reinstall, not a 1.2GB rootfs repack.
-foreach ($script in @('container-login.mjs', 'container-bot.mjs')) {
+foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'binding-host.mjs', 'bili-protocol-host.mjs')) {
   $src = Join-Path $PSScriptRoot $script
   if (-not (Test-Path $src)) { throw "missing: $src" }
   Copy-Item $src (Join-Path $assetsDir $script) -Force
   Write-Host ("[0/6] bundled {0} ({1} B)" -f $script, (Get-Item $src).Length)
 }
+
+Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/client.mjs') (Join-Path $assetsDir 'bili-client.mjs') -Force
+Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/authorized-client.mjs') (Join-Path $assetsDir 'authorized-client.mjs') -Force
 
 $work = Join-Path $PSScriptRoot ('.build-' + [guid]::NewGuid().ToString('N'))
 $classes = Join-Path $work 'classes'
@@ -68,16 +86,36 @@ if (-not (Test-Path (Join-Path $work 'classes.dex'))) {
 }
 
 # ★ release 包不能带 android:debuggable（run-as 调试要靠它，所以只在 release 时剥掉）
+# ★ 并排包（-ApplicationId）另生成一份清单：
+#   ① 组件名 ".X" 是相对 manifest 的 package 解析的，换包名后必须写成全限定名，
+#      否则 aapt 会写成 com.whaleonebot.<新包>.MainActivity —— 装上去点图标就闪退；
+#   ② 清单里没有 provider/authorities，换包名不会撞 authority。
 $manifestToUse = $manifest
+$manifestText = Get-Content -Raw -Encoding UTF8 $manifest
+$manifestPackage = [regex]::Match($manifestText, 'package="([^"]+)"').Groups[1].Value
+if (-not $manifestPackage) { throw "manifest 里找不到 package 属性：$manifest" }
+$manifestChanged = $false
+if ($ApplicationId -and $ApplicationId -ne $manifestPackage) {
+  $manifestText = $manifestText.Replace('android:name=".', ('android:name="' + $manifestPackage + '.'))
+  $manifestText = $manifestText.Replace(('package="' + $manifestPackage + '"'), ('package="' + $ApplicationId + '"'))
+  $manifestChanged = $true
+  Write-Host ("       manifest package: {0} -> {1}（组件名已全限定）" -f $manifestPackage, $ApplicationId)
+}
+if ($AppLabel) {
+  $manifestText = $manifestText -replace 'android:label="[^"]*"', ('android:label="' + $AppLabel + '"')
+  $manifestChanged = $true
+  Write-Host ("       manifest label: {0}" -f $AppLabel)
+}
 if ($Release) {
-  $releaseDir = Join-Path $work 'release-manifest'
-  New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-  $releaseManifest = Join-Path $releaseDir 'AndroidManifest.xml'
-  $raw = Get-Content -Raw -Encoding UTF8 $manifest
-  $raw = $raw -replace '\s*android:debuggable="true"', ''
-  Set-Content -Path $releaseManifest -Value $raw -Encoding UTF8 -NoNewline
-  $manifestToUse = $releaseManifest
+  $manifestText = $manifestText -replace '\s*android:debuggable="true"', ''
+  $manifestChanged = $true
   Write-Host '       release manifest: debuggable stripped'
+}
+if ($manifestChanged) {
+  $variantDir = Join-Path $work 'variant-manifest'
+  New-Item -ItemType Directory -Path $variantDir -Force | Out-Null
+  $manifestToUse = Join-Path $variantDir 'AndroidManifest.xml'
+  Set-Content -Path $manifestToUse -Value $manifestText -Encoding UTF8 -NoNewline
 }
 
 Write-Host '[3/6] aapt package'
@@ -98,25 +136,28 @@ New-Item -ItemType Directory -Path $keyDir -Force | Out-Null
 if ($Release) {
   # ★ 对外发布**只发 release 包**；本机测试继续用 debug 包。
   #   密钥只在本机：keystore 在 android/keys/（已 .gitignore），口令从环境变量取，不落盘、不打印。
-  $ks = Join-Path $keyDir 'whale-release.p12'
+  #   ★ 并排测（不同包名）时用另一把钥匙：-KeyStore/-KeyAlias/-KeyPassEnv，口令同样只走环境变量。
+  $ks = if ($KeyStore) { $KeyStore } else { Join-Path $keyDir 'whale-release.p12' }
+  $alias = if ($KeyAlias) { $KeyAlias } else { 'whale-release' }
   if (-not (Test-Path $ks)) { throw "release keystore 缺失：$ks（见 android/keys/RELEASE-KEYSTORE.txt）" }
-  $ksPass = $env:WHALE_RELEASE_KS_PASS
-  if (-not $ksPass) { throw '缺少 WHALE_RELEASE_KS_PASS（口令见 android/keys/RELEASE-KEYSTORE.txt）' }
-  $apk = Join-Path $OutDir 'whale-onebot-release.apk'
-  Write-Host '[6/6] apksigner (release)'
-  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-key-alias whale-release --ks-pass "pass:$ksPass" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out $apk $aligned
+  $ksPass = [Environment]::GetEnvironmentVariable($KeyPassEnv)
+  if (-not $ksPass) { throw "缺少 $KeyPassEnv（口令见 android/keys/RELEASE-KEYSTORE.txt）" }
+  $apk = if ($ApkName) { Join-Path $OutDir $ApkName } else { Join-Path $OutDir 'whale-onebot-release.apk' }
+  Write-Host ("[6/6] apksigner (release, alias {0})" -f $alias)
+  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-key-alias $alias --ks-pass ('env:' + $KeyPassEnv) --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --out $apk $aligned
   if ($LASTEXITCODE -ne 0) { throw 'apksigner sign 失败' }
   & (Join-Path $buildTools 'apksigner.bat') verify --print-certs $apk | Select-Object -First 3
 } else {
-  $ks = Join-Path $keyDir 'whale-debug.p12'
+  $ks = if ($KeyStore) { $KeyStore } else { Join-Path $keyDir 'whale-debug.p12' }
+  $alias = if ($KeyAlias) { $KeyAlias } else { 'whale' }
   if (-not (Test-Path $ks)) {
     Write-Host '[6/6] generate debug key (one time)'
     & keytool -genkeypair -storetype PKCS12 -keystore $ks -storepass whaleonebot `
       -alias whale -dname 'CN=WhaleOneBot Debug' -keyalg RSA -keysize 2048 -validity 3650
   }
-  $apk = Join-Path $OutDir 'whale-onebot-debug.apk'
+  $apk = if ($ApkName) { Join-Path $OutDir $ApkName } else { Join-Path $OutDir 'whale-onebot-debug.apk' }
   Write-Host '[6/6] apksigner (debug)'
-  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-pass pass:whaleonebot --out $apk $aligned
+  & (Join-Path $buildTools 'apksigner.bat') sign --ks $ks --ks-key-alias $alias --ks-pass pass:whaleonebot --out $apk $aligned
   & (Join-Path $buildTools 'apksigner.bat') verify $apk
 }
 

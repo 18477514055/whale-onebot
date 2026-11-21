@@ -64,6 +64,18 @@ final class PlatformBotsScreen extends Screen {
         List<BotRegistry.Bot> bots = BotRegistry.forPlatform(platformId);
         if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
 
+        if (BotRegistry.P_QQ.equals(platformId)) {
+            java.io.File files=activity.getFilesDir();
+            boolean legacyOnly=!bots.isEmpty() && bots.stream().allMatch(BotRegistry::legacyQQ);
+            java.io.File client=legacyOnly?new java.io.File(files,"rootfs/opt/QQ"):new java.io.File(files,"platform-clients/qq/active/opt/QQ");
+            if (!QqClientFiles.present(client)) {
+                col.addView(Ui.strong(activity,"本机 QQ 客户端",Theme.T_CARD,t.textPrimary),marginTop(Theme.S3));
+                col.addView(Ui.text(activity,"本地协议服务需要 Linux QQ（ARM64），不是手机上的 QQ。下载地址与安装引导在「设置 → 环境配置」里；使用外部协议服务可跳过。",Theme.T_BODY,t.textSecondary),marginTop(Theme.S1));
+                TextView download=Ui.button(activity,t,"去「环境配置」取 QQ 安装包",false);
+                download.setOnClickListener(v->shell.pushEnv());
+                col.addView(download,marginTop(Theme.S1));
+            }
+        }
         if (bots.isEmpty()) {
             LinearLayout.LayoutParams elp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
             elp.topMargin = dp(Theme.S4);
@@ -81,13 +93,7 @@ final class PlatformBotsScreen extends Screen {
             }
         }
 
-        TextView note = Ui.text(activity,
-                "点机器人进「启动 / 配置」",
-                Theme.T_CAP, t.textTertiary);
-        note.setLineSpacing(dp(3), 1f);
-        LinearLayout.LayoutParams nlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        nlp.topMargin = dp(Theme.S3 + 2);
-        col.addView(note, nlp);
+
     }
 
     // ------------------------------------------------------------------ 一个机器人
@@ -113,7 +119,14 @@ final class PlatformBotsScreen extends Screen {
         blp.leftMargin = dp(Theme.S3);
         blp.rightMargin = dp(Theme.S2);
         box.addView(nameLine(b), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        box.addView(Ui.text(activity, "点进去：启动 / 配置", Theme.T_CAP, t.textSecondary), marginTop(Theme.S1 + 2));
+        CoreInventory.Instance core=BotRegistry.coreForBot(b.id);
+        if(core!=null && CoreManagerScreen.managed(core)){
+            boolean ready=false;try{java.io.File app=com.whaleonebot.install.CoreInstaller.active(activity.getFilesDir(),core.id);ready=app!=null && new java.io.File(app,"src/platform-modules/"+platformId+"/.bot-module.json").isFile();}catch(Exception ignored){}
+            box.addView(Ui.text(activity,ready?"平台插件已安装":"平台插件待安装 · 设置 → 机器人",Theme.T_BODY,t.textSecondary));
+        }
+        for (BotRegistry.Binding binding : b.bindings) if (binding.platform.equals(platformId)) {
+            box.addView(Ui.text(activity, binding.label() + "\n" + binding.detail(), Theme.T_BODY, t.textSecondary), marginTop(Theme.S1));
+        }
         row.addView(box, blp);
 
         IconView chev = new IconView(activity, IconView.CHEV_R, t.textTertiary);
@@ -196,14 +209,14 @@ final class PlatformBotsScreen extends Screen {
         box.addView(tile, Ui.llp(dp(52), dp(52)));
 
         TextView guide = Ui.text(activity,
-                "还没有机器人，请先去 设置 → 机器人 → 新建机器人",
+                "本平台还没有机器人，请前往「设置 → 机器人」。",
                 Theme.T_BODY, t.textPrimary);
         guide.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams glp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         glp.topMargin = dp(Theme.S3);
         box.addView(guide, glp);
 
-        TextView go = Ui.button(activity, t, "去新建机器人", true);
+        TextView go = Ui.button(activity, t, "去设置 · 机器人", true);
         go.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

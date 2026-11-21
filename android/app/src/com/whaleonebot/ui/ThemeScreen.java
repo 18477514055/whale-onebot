@@ -125,10 +125,8 @@ final class ThemeScreen extends Screen {
         blp.rightMargin = dp(Theme.S2);
         box.addView(Ui.strong(activity, item.name, Theme.T_CARD, t.textPrimary),
                 Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
-        TextView desc = Ui.text(activity, item.desc, Theme.T_CAP, t.textSecondary);
-        LinearLayout.LayoutParams dlp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
-        dlp.topMargin = dp(4);
-        box.addView(desc, dlp);
+        card.setSelected(selected);
+        card.setContentDescription(item.name);
         row.addView(box, blp);
 
         IconView check = new IconView(activity, IconView.CHECK, selected ? t.accent : 0x00000000);

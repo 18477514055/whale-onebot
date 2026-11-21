@@ -1,0 +1,127 @@
+package com.whaleonebot.ui;
+
+import android.app.*;
+import android.content.*;
+import android.net.Uri;
+import android.view.*;
+import android.widget.*;
+import com.whaleonebot.install.CoreInstaller;
+import com.whaleonebot.backup.CoreBackupSaf;
+import java.util.*;
+import java.io.*;
+import static android.view.ViewGroup.LayoutParams.*;
+
+/** Native inventory, version and SAF maintenance flows. No URL from a descriptor authorizes code installation. */
+final class CoreManagerScreen extends Screen {
+    static final int FILE_REQUEST=0x5728;
+    final String mode,id;LinearLayout col;TextView status;ProgressBar progress;boolean busy;String op,owner,chosen;
+    CoreManagerScreen(AppShell sh,String mode,String id){super(sh);this.mode=mode;this.id=id;}
+    static String title(CoreInventory.Instance c){return c.id+"  /  "+("builtin".equals(c.kind)?"内置":"自定义")+"  "+c.version;}
+    static CoreInventory.Instance find(String id){for(CoreInventory.Instance c:BotRegistry.cores())if(c.id.equals(id))return c;return null;}
+    static String occupant(CoreInventory.Instance c){BotRegistry.Bot b=BotRegistry.get(c.ownerId);return c.ownerId.isEmpty()?"空闲":b==null?c.ownerId:b.name;}
+    static List<String> platforms(CoreInventory.Instance c){BotRegistry.Bot bot=BotRegistry.get(c.ownerId);return bot==null?Collections.emptyList():new ArrayList<>(bot.platforms);}
+    void build(){root.removeAllViews();ScrollView sv=new ScrollView(activity);root.addView(sv);col=Ui.column(activity);int p=dp(Theme.S4);col.setPadding(p,p,p,p);sv.addView(col);
+        col.addView(header("download".equals(mode)?"下载内置核心":"versions".equals(mode)?"版本管理":"backups".equals(mode)?"本地备份":"custom".equals(mode)?"接入自定义核心":"plugins".equals(mode)?"平台插件":"核心维护"));
+        status=note("");progress=new ProgressBar(activity,null,android.R.attr.progressBarStyleHorizontal);progress.setVisibility(View.GONE);col.addView(progress);
+        if("download".equals(mode)){downloadButton=button("选择版本与数量",true,()->versions(true,null,false));shownDownload=null;refresh();}
+        else if("versions".equals(mode)){Switch sw=new Switch(activity);sw.setText("自动下载，下次启动应用更新");sw.setTextColor(t.textPrimary);sw.setChecked(CoreInstaller.auto(activity.getFilesDir()));col.addView(sw);sw.setOnCheckedChangeListener((btn,on)->{try{CoreInstaller.setAuto(activity.getFilesDir(),on);}catch(Exception ex){status.setText("无法更改自动更新");}});note("默认只提醒。选择实例管理其核心与已选平台插件。");for(CoreInventory.Instance c:BotRegistry.cores())if(managed(c))button(title(c),false,()->shell.corePage("instance",c.id));}
+        else if("custom".equals(mode)){button("导入描述文件",true,()->pick("descriptor",null));button("从 HTTPS 链接导入",false,()->CoreImports.link(this));button("开启本机登记",false,()->CoreImports.register(this));}
+        else if("backups".equals(mode)){note("请选择本机存储。备份不含登录态、令牌和 API Key。");button("导出机器人备份",true,()->selectCore(false,c->pick("export",c)));button("恢复到空闲核心",false,()->selectCore(true,c->pick("restore",c)));button("删除本地备份",false,()->pick("delete",null));}
+        else {CoreInventory.Instance c=find(id);if(c==null){note("核心已不存在");return;}note(title(c)+"\n占用者："+occupant(c));if(managed(c)){button("查看运行信息与存储",false,()->work(()->{File files=activity.getFilesDir();long n=storage(new File(files,"core-instances/"+c.id))+storage(new File(files,"rootfs/opt/whale/instance-data/"+c.id));String runtime=c.ownerId.isEmpty()?"未分配":BoundStartScreen.summary(com.whaleonebot.ContainerService.bindingStatus(activity,c.ownerId).optString("state"));return "运行端："+runtime+"\n实例文件："+android.text.format.Formatter.formatFileSize(activity,n)+"（不含公共环境）";}));}if(!managed(c)){note(c.legacy?"原地沿用的现有实例；不在此重置或更新。":"配置由作者提供。");return;}
+            List<String> ps=platforms(c);for(String x:ps){note(BotRegistry.PLATFORM_LABEL(x)+"："+pluginState(c,x));if(!"plugins".equals(mode))button(BotRegistry.PLATFORM_LABEL(x)+" 插件版本",false,()->pluginVersions(c,x,true));}
+            if("plugins".equals(mode)){button("安装 / 重试所需插件",true,()->estimate(c.version,1,c,false));}
+            else {button("管理平台插件",false,()->shell.corePage("plugins",c.id));button("升级或选择其他版本",false,()->versions(false,c,false));button("查看全部版本",false,()->versions(false,c,true));button("回退上一版",false,()->confirm("安排回退？","下次正常启动时切换；请先备份数据。",()->work(()->{CoreInstaller.rollback(activity.getFilesDir(),c.id);return "已安排回退";})));
+                if(!c.ownerId.isEmpty()){button("本地备份",false,()->pick("export",c));TextView danger=button("释放核心",false,()->release(c));danger.setTextColor(0xFFD13939);}}
+        }
+    }
+    private static long storage(File root)throws IOException{if(!root.isDirectory())return 0;long total=0;try(java.util.stream.Stream<java.nio.file.Path> walk=java.nio.file.Files.walk(root.toPath())){Iterator<java.nio.file.Path> paths=walk.iterator();while(paths.hasNext()){java.nio.file.Path path=paths.next();if(java.nio.file.Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))total+=java.nio.file.Files.size(path);}}return total;}
+    static boolean managed(CoreInventory.Instance c){return "builtin".equals(c.kind)&&!c.legacy;}
+    String pluginState(CoreInventory.Instance c,String platform){try{File active=CoreInstaller.active(activity.getFilesDir(),c.id);return active!=null && new File(active,"src/platform-modules/"+platform+"/.bot-module.json").isFile()?"已安装":"待安装";}catch(Exception ex){return "待安装";}}
+    TextView note(String s){TextView v=Ui.text(activity,s,Theme.T_BODY,t.textSecondary);v.setPadding(0,dp(Theme.S2),0,dp(Theme.S1));col.addView(v);return v;}
+    TextView button(String s,boolean primary,Runnable fn){TextView v=Ui.button(activity,t,s,primary);v.setMinimumHeight(dp(Theme.TOUCH));LinearLayout.LayoutParams lp=Ui.llp(MATCH_PARENT,WRAP_CONTENT);lp.topMargin=dp(Theme.S2);col.addView(v,lp);v.setOnClickListener(w->{if(!busy)fn.run();});return v;}
+    void confirm(String title,String msg,Runnable fn){new AlertDialog.Builder(activity).setTitle(title).setMessage(msg).setNegativeButton("取消",null).setPositiveButton("确认",(d,w)->fn.run()).show();}
+    interface Action{String run()throws Exception;}
+    void work(Action a){work(a,false);}
+    void work(Action a, boolean refreshPage){
+        if(busy)return;
+        busy=true;status.setText("处理中…");progress.setIndeterminate(true);progress.setVisibility(View.VISIBLE);
+        new Thread(()->{
+            String m;try{if(id!=null)CoreBindingOps.reconcile(activity.getFilesDir(),find(id));m=a.run();}catch(Exception ex){m="操作未完成。"+safe(ex);}
+            final String msg=m;
+            activity.runOnUiThread(()->{
+                busy=false;
+                // A partial install can commit one platform even when another fails.
+                // Read the active generation again; never infer these rows from the result string.
+                if(refreshPage)build();
+                progress.setVisibility(View.GONE);status.setText(msg);
+            });
+        },"core-maintenance").start();
+    }
+    static String safe(Exception e){String msg=e.getMessage();if("CORE_UPDATE_PENDING".equals(msg))return "已有版本等待切换。请在下次正常启动后再安装插件。";return msg!=null&&msg.matches("[A-Z][A-Z0-9_]{1,64}")?msg:"请检查官方安装源、空间、版本兼容性或文件权限后重试。";}
+    boolean handleBack(){if(busy){host().toast("请等待当前操作完成");return true;}return false;}
+    interface Choice{void run(CoreInventory.Instance c);}
+    void selectCore(boolean free,Choice action){List<CoreInventory.Instance> list=new ArrayList<>();for(CoreInventory.Instance c:BotRegistry.cores())if(managed(c)&&free==c.ownerId.isEmpty())list.add(c);if(list.isEmpty()){status.setText(free?"没有空闲内置核心":"没有可导出的已分配核心");return;}String[] names=new String[list.size()];for(int i=0;i<names.length;i++)names[i]=title(list.get(i))+"  /  "+occupant(list.get(i));new AlertDialog.Builder(activity).setTitle("选择核心 · 点一行即选择").setItems(names,(d,i)->action.run(list.get(i))).setNegativeButton("取消",null).show();}
+    void versions(boolean create,CoreInventory.Instance c,boolean all){work(()->{List<String> vs=CoreInstaller.open(activity).versions(!all);if(vs.isEmpty())return "没有可用版本";activity.runOnUiThread(()->new AlertDialog.Builder(activity).setTitle((all?"全部版本":"兼容版本")+" · 点一行即选择").setItems(vs.toArray(new String[0]),(d,i)->{String version=vs.get(i);if(create){String[] counts={"1 份","2 份","3 份","4 份","5 份"};new AlertDialog.Builder(activity).setTitle("创建数量 · 点一行即创建").setItems(counts,(a,j)->estimate(version,j+1,null,false)).setNegativeButton("取消",null).show();}else estimate(version,1,c,true);}).setNegativeButton("取消",null).show());return "已读取版本清单";});}
+    void pluginVersions(CoreInventory.Instance c,String platform,boolean compatible){work(()->{CoreInstaller ci=CoreInstaller.open(activity);Map<String,String> versions=ci.pluginVersions(platform,compatible);if(versions.isEmpty())return "没有可用插件版本";List<String> keys=new ArrayList<>(versions.keySet());String[] labels=new String[keys.size()];for(int i=0;i<labels.length;i++)labels[i]=versions.get(keys.get(i));activity.runOnUiThread(()->{AlertDialog.Builder d=new AlertDialog.Builder(activity).setTitle(BotRegistry.PLATFORM_LABEL(platform)+(compatible?" · 兼容版本":" · 全部版本")+" · 点一行即选择").setItems(labels,(a,i)->confirm("切换插件版本？",labels[i]+" · 下次正常启动生效",()->work(()->{ci.stagePlugin(c.id,platform,keys.get(i),(item,n,total)->activity.runOnUiThread(()->status.setText(item+"："+n+" / "+total+" 字节")));return "已安排插件更新";}))).setNegativeButton("取消",null);if(compatible)d.setNeutralButton("查看全部版本",(a,k)->pluginVersions(c,platform,false));d.show();});return "已读取插件清单";});}
+    // The download belongs to the app process, not to a particular page or Activity.
+    static final class Download {
+        final String label; final long bytes,total; final boolean running;
+        Download(String label,long bytes,long total,boolean running){this.label=label;this.bytes=bytes;this.total=total;this.running=running;}
+    }
+    private static volatile Download download;
+    private Download shownDownload;
+    private TextView downloadButton;
+    static synchronized void createCores(CoreInstaller ci,String version,int count){
+        if(download!=null && download.running)return;
+        download=new Download("准备下载",0,0,true);
+        new Thread(()->{
+            int created=0;
+            try{
+                while(created<count){
+                    String target="core-"+UUID.randomUUID();
+                    ci.install(target,version,Collections.emptyList(),false,new CoreInstaller.Progress(){
+                        public void phase(String label){download=new Download(label,0,0,true);}
+                        public void update(String item,long n,long total){String label="environment".equals(item)?"运行环境":"core".equals(item)?"机器人核心":item;
+                        download=new Download(label,n,total,true);}
+                    });
+                    BotRegistry.registerBuiltin(target,version);created++;
+                }
+                download=new Download("已创建 "+created+" 份核心",0,0,false);
+            }catch(Exception ex){download=new Download("已创建 "+created+" / "+count+" 份。"+safe(ex),0,0,false);}
+        },"core-download").start();
+    }
+    void refresh(){
+        Download d=download;
+        if(downloadButton==null || d==null || shownDownload==d || busy)return;
+        shownDownload=d;downloadButton.setVisibility(d.running?View.GONE:View.VISIBLE);
+        progress.setVisibility(d.running?View.VISIBLE:View.GONE);
+        progress.setIndeterminate(d.total<=0);
+        if(d.total>0)progress.setProgress((int)Math.min(100,100.0*d.bytes/d.total));
+        status.setText(d.label+(d.total>0?"："+d.bytes+" / "+d.total+" 字节":""));
+    }
+    void estimate(String version,int count,CoreInventory.Instance c,boolean stage){work(()->{List<String> ps=c==null?Collections.emptyList():platforms(c);CoreInstaller ci=CoreInstaller.open(activity);long size=ci.downloadBytes(version,ps);activity.runOnUiThread(()->confirm(c==null?"下载并创建 "+count+" 份核心？":stage?"安排版本切换？":"安装平台插件？","版本："+version+"\n本次下载："+android.text.format.Formatter.formatFileSize(activity,size)+(stage?"\n仅在下次正常启动时切换。":""),()->{if(c==null){createCores(ci,version,count);refresh();return;}work(()->{StringBuilder result=new StringBuilder();for(int i=0;i<count;i++){String target=c==null?"core-"+UUID.randomUUID():c.id;Map<String,String> failures=ci.install(target,version,ps,stage,(item,n,total)->activity.runOnUiThread(()->{progress.setIndeterminate(total<=0);if(total>0)progress.setProgress((int)Math.min(100,100.0*n/total));status.setText(item+"："+n+" / "+total+" 字节");}));if(c==null)BotRegistry.registerBuiltin(target,version);result.append(target).append(failures.isEmpty()?(stage?"：已安排切换":"：安装完成"):"：待安装 "+failures.keySet()).append("\n");}return result.toString();},"plugins".equals(mode));}));return "已计算下载量";});}
+    void release(CoreInventory.Instance c){BotRegistry.Bot bot=BotRegistry.get(c.ownerId);StringBuilder accounts=new StringBuilder();if(bot!=null)for(BotRegistry.Binding binding:bot.bindings)accounts.append("\n").append(binding.label());String impact="机器人："+occupant(c)+accounts+"\n仅能释放已停止的实例。将清除本实例数据、插件与绑定；协议端账号不退出。";new AlertDialog.Builder(activity).setTitle("释放核心 "+c.id).setMessage(impact).setNegativeButton("取消",null).setNeutralButton("先备份",(d,i)->confirm("备份成功后释放？",impact,()->pick("backupRelease",c))).setPositiveButton("不备份",(d,i)->confirm("永久清除并释放？",impact,()->work(()->{CoreBackupSaf.release(activity,c.id,c.ownerId);return "核心已释放";},true))).show();}
+    Intent backupOpenIntent(Intent open){
+        open.putExtra(Intent.EXTRA_LOCAL_ONLY,true);
+        // Keep */* so an OEM MIME guess cannot hide a valid .whalebackup file.
+        // Resolve per request; do not change the user's default file manager.
+        int flags=android.content.pm.PackageManager.MATCH_SYSTEM_ONLY|android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+        for(String pkg:new String[]{"com.google.android.documentsui","com.android.documentsui"}){
+            Intent candidate=new Intent(open).setPackage(pkg);
+            android.content.pm.ResolveInfo r=activity.getPackageManager().resolveActivity(candidate,flags);
+            if(r!=null && r.activityInfo!=null && pkg.equals(r.activityInfo.packageName) && r.activityInfo.exported)return candidate;
+        }
+        return Intent.createChooser(open,"选择本机备份文件");
+    }
+    void pick(String operation,CoreInventory.Instance c){
+        op=operation;chosen=c==null?"":c.id;owner=c==null?"":c.ownerId;
+        boolean create=op.equals("export")||op.equals("backupRelease");
+        Intent i=new Intent(create?Intent.ACTION_CREATE_DOCUMENT:Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(create?"application/octet-stream":"*/*");
+        if(create){i.putExtra(Intent.EXTRA_TITLE,chosen+"-"+System.currentTimeMillis()+".whalebackup");i.putExtra(Intent.EXTRA_LOCAL_ONLY,true);}
+        try{
+            if(op.equals("restore")||op.equals("delete"))i=backupOpenIntent(i);
+            activity.startActivityForResult(i,FILE_REQUEST);
+        }catch(ActivityNotFoundException|SecurityException ex){op=null;status.setText("系统文件选择器不可用");}
+    }
+    void picked(Uri uri){String type=op,c=chosen,b=owner;op=chosen=owner=null;if(uri==null||type==null){status.setText("已取消，未更改");return;}if(!"content".equals(uri.getScheme())){status.setText("请选择系统文档");return;}if(type.equals("descriptor")){CoreImports.document(this,uri);return;}Runnable action=()->work(()->{if(type.equals("delete"))CoreBackupSaf.deleteBackup(activity,uri);else if(type.equals("restore"))CoreBackupSaf.restore(activity,c,uri);else if(type.equals("backupRelease"))CoreBackupSaf.exportAndRelease(activity,c,b,uri);else CoreBackupSaf.export(activity,c,b,uri);return type.equals("delete")?"已删除备份":type.equals("restore")?"恢复完成，请重新授权":type.equals("backupRelease")?"已备份并释放":"备份完成";},"backupRelease".equals(type));if(type.equals("delete"))confirm("永久删除选中的备份？","此操作不能撤销。",action);else if(type.equals("restore"))confirm("恢复到 "+c+"？","仅支持兼容的空闲内置核心；恢复后需重新授权。",action);else action.run();}
+}

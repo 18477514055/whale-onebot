@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { BOT_UIN } from './config/account.mjs';
 import { OneBotCore } from './core.mjs';
 import { createTransport } from './transport/index.mjs';
 import { prepareReverseWebSocket } from './transport/outbound.mjs';
@@ -35,10 +36,11 @@ export async function main({env=process.env,log=console.log}={}) {
     await Promise.all([server?.close(), ...reverse.map(connection => connection.close())]);
   });
   try {
+    const selfId=Number(BOT_UIN);
     const reverseDispatch = agentPlusCompatibility ? formatAgentPlusActions(core.dispatch) : core.dispatch;
     const startReverse = endpoints.map(endpoint => prepareReverseWebSocket({ ...endpoint, dispatch: reverseDispatch,
-      events: core, status: core.status, closeWsOnUnknownOutcome: agentPlusCompatibility }));
-    server = await createTransport({dispatch:core.dispatch,events:core,status:core.status,token,port,
+      events: core, status: core.status, selfId, closeWsOnUnknownOutcome: agentPlusCompatibility }));
+    server = await createTransport({dispatch:core.dispatch,events:core,status:core.status,selfId,token,port,
       wsPath:env.WHALE_ONEBOT_WS_PATH,wsPort:env.WHALE_ONEBOT_WS_PORT===undefined?undefined:Number(env.WHALE_ONEBOT_WS_PORT),
       agentPlusCompatibility});
     for (const start of startReverse) reverse.push(start());

@@ -27,6 +27,15 @@ async function connect(t, url) {
   t.after(() => ws.terminate()); await once(ws, 'open'); return { ws, ...box };
 }
 
+test('forward lifecycle uses only the identity of its own composing service', async t => {
+  for (const route of [{}, {platform:'qq', selfId:173}, {platform:'bilibili', selfId:173}, {platform:'third-party', selfId:912}]) {
+    const s=await setup(t,route), c=await connect(t,s.ws), frame=await c.next();
+    assert.equal(frame.meta_event_type,'lifecycle');
+    assert.equal(Object.hasOwn(frame,'self_id'),Object.hasOwn(route,'selfId'));
+    assert.equal(frame.self_id,route.selfId);assert.equal(frame.platform,route.platform);
+  }
+});
+
 test('dedicated WebSocket listener keeps HTTP dispatch on the HTTP port', async t => {
   const s = await setup(t, { wsPort: 0 });
   assert.notEqual(s.address.port, s.wsAddress.port);
@@ -143,6 +152,7 @@ test('Reverse WebSocket headers, invocation and bounded reconnection without eve
   const events = new EventEmitter(), received = [], states = [];
   server.on('connection', (ws, req) => {
     assert.equal(req.headers.authorization, `Bearer ${token}`); assert.equal(req.headers['x-client-role'], 'Universal');
+    assert.equal(Object.hasOwn(req.headers,'x-self-id'),false);
     ws.on('message', data => received.push(JSON.parse(data)));
     ws.send(JSON.stringify({ action: 'get_status', echo: 'reverse' }));
   });

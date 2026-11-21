@@ -9,28 +9,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * {@code bots.json} 的读写 —— 机器人注册表的持久层。
- *
- * <p><b>为什么手写 JSON 而不引库</b>：本工程没有 Gradle、没有依赖管理，连 org.json 之外的
- * 东西都拿不到；而 schema 只有一层，手写一个几百行的读写器反而最好控制
- * （键序稳定、数字字面量原样、中文不转义成 \\uXXXX）。
- *
- * <p><b>原子写</b>：先写 {@code bots.json.tmp}、{@code fd.sync()}，再 rename 覆盖
- * —— 中途断电 / 进程被杀时，要么是旧文件、要么是新文件，不会出现半截 JSON。
- *
- * <p><b>读失败不崩</b>：任何异常（文件缺失、IO、JSON 语法错、字段类型不对）
- * 都返回 {@code null}，由 {@link BotRegistry#init(File)} 决定回退策略，
- * 本类<b>从不</b>向外抛异常、也从不打印凭据类内容。
- *
- * <p>本类同样<b>不依赖 Android</b>（没有 import android.*），可以在桌面 JVM 上直接测。
- */
+/** Pure-Java registry codec. Bots and instances commit in a single atomic snapshot.
+ * Invalid, ambiguous or newer snapshots are never repaired or overwritten implicitly. */
 final class BotStore {
 
     static final String FILE_NAME = "bots.json";
 
-    /** 文件格式版本。字段只增不改；读到未来的版本也能尽力读。 */
-    static final int SCHEMA_VERSION = 1;
+    static final int SCHEMA_VERSION = 3;
 
     /** 单个文件最多读 1MB：机器人列表不该长成这样，超了就当损坏。 */
     private static final int MAX_BYTES = 1024 * 1024;
@@ -40,54 +25,39 @@ final class BotStore {
 
     // ================================================================ 读
 
-    /**
-     * 读文件。
-     *
-     * @return 机器人列表（可能是空列表 = 文件有效但用户把机器人删光了）；
-     *         {@code null} = 文件不存在 / 读不出 / JSON 坏了（调用方回退默认机器人）
-     */
-    static List<BotRegistry.Bot> load(File file) {
-        if (file == null || !file.isFile()) return null;
-
-        String text;
-        try {
-            text = readText(file);
-        } catch (Throwable t) {
-            return null;
+    static void load(File file,List<BotRegistry.Bot> bots,Map<String,CoreInventory.Instance> cores) throws Exception {
+        Object rawRoot=new Json(readText(file)).parse();CoreInventory.require(rawRoot instanceof Map);
+        Map<?,?> root=(Map<?,?>)rawRoot;
+        CoreInventory.require(!root.containsKey("schemaVersion") || root.get("schemaVersion") instanceof Long);
+        long version=num(root.get("schemaVersion"),1L);
+        CoreInventory.require(version>=1 && version<=SCHEMA_VERSION && root.get("bots") instanceof List);
+        java.util.Set<String> ids=new java.util.HashSet<>();
+        for(Object item:(List<?>)root.get("bots")) {
+            BotRegistry.Bot bot=toBot(item,version<3);CoreInventory.require(bot!=null && ids.add(bot.id));bots.add(bot);
         }
-
-        Object root;
-        try {
-            root = new Json(text).parse();
-        } catch (Throwable t) {
-            return null;
+        if(version<3){
+            CoreInventory.require(!root.containsKey("coreInstances"));
+            for(BotRegistry.Bot bot:bots){CoreInventory.Instance c=CoreInventory.migrated(bot);cores.put(c.id,c);}
+            return;
         }
-        if (!(root instanceof Map)) return null;
-
-        Object raw = ((Map<?, ?>) root).get("bots");
-        if (!(raw instanceof List)) return null;
-
-        List<?> arr = (List<?>) raw;
-        List<BotRegistry.Bot> out = new ArrayList<BotRegistry.Bot>();
-        for (int i = 0; i < arr.size(); i++) {
-            BotRegistry.Bot b = toBot(arr.get(i));
-            if (b != null) out.add(b); // 单条目坏了就跳过这一条，不牵连整个文件
+        CoreInventory.require(root.get("coreInstances") instanceof List);
+        for(Object item:(List<?>)root.get("coreInstances")){
+            CoreInventory.require(item instanceof Map);CoreInventory.Instance c=CoreInventory.fromRecord((Map<?,?>)item,bots);
+            CoreInventory.require(cores.put(c.id,c.owned(""))==null);
         }
-        // 空的 bots 数组 = 用户真的把机器人删光了（合法的空态，要保留）；
-        // 但「数组非空、却一条都读不出来」= 文件内容坏了，按解析失败处理（回退默认机器人）。
-        if (out.isEmpty() && !arr.isEmpty()) return null;
-        return out;
+        for(BotRegistry.Bot bot:bots){CoreInventory.Instance c=cores.get(bot.coreInstanceId);
+            CoreInventory.require(c!=null && c.ownerId.isEmpty() && c.kind.equals(bot.runtimeKind));cores.put(c.id,c.owned(bot.id));}
     }
 
     /** 一条 JSON 对象 → Bot。缺 id 的条目视为无效（返回 null）。 */
-    private static BotRegistry.Bot toBot(Object o) {
+    private static BotRegistry.Bot toBot(Object o, boolean migrate) {
         if (!(o instanceof Map)) return null;
         Map<?, ?> m = (Map<?, ?>) o;
 
         String id = str(m.get("id"));
-        if (id == null || id.trim().length() == 0) return null;
+        if (id == null || !id.matches("[a-z][a-z0-9-]{0,63}")) return null;
 
-        BotRegistry.Bot b = new BotRegistry.Bot();
+        BotRegistry.Bot b = new BotRegistry.Bot(migrate ? "legacy-"+id.trim() : CoreInventory.str(m,"coreInstanceId"));
         b.id = id.trim();
         String name = str(m.get("name"));
         b.name = (name == null || name.trim().length() == 0) ? b.id : name.trim();
@@ -95,6 +65,29 @@ final class BotStore {
         b.persona = persona == null ? "" : persona;
         b.platforms = platforms(m.get("platforms"));
 
+        Object rawBindings = m.get("bindings");
+        if (rawBindings instanceof List) {
+            b.platforms.clear();
+            for (Object raw : (List<?>) rawBindings) {
+                if (!(raw instanceof Map)) continue;
+                Map<?,?> v = (Map<?,?>) raw;
+                String key = str(v.get("id")), platform = str(v.get("platform"));
+                if (key == null || platform == null) continue;
+                b.bindings.add(new BotRegistry.Binding(key, platform, text(v,"accountId"),
+                    "isolated".equals(v.get("memoryMode")) ? "isolated" : "shared", text(v,"httpUrl"), text(v,"wsUrl"),text(v,"peerId")));
+                if (!b.platforms.contains(platform)) b.platforms.add(platform);
+            }
+        } else BotRegistry.syncPlatforms(b);
+
+        // Missing in older snapshots: preserve their already configured platform policy.
+        b.activePlatforms.addAll(m.containsKey("activePlatforms") ? platforms(m.get("activePlatforms")) : b.platforms);
+        b.activePlatforms.retainAll(b.platforms);
+        if (m.get("runtimeUi") instanceof List) for(Object item:(List<?>)m.get("runtimeUi")) {
+            if (!(item instanceof Map) || b.runtimeUi.size()>=16) continue;
+            Map<?,?> link=(Map<?,?>)item;
+            RuntimeUiLink parsed=RuntimeUiLink.parse(text(link,"platform"),text(link,"label"),text(link,"url"));
+            if(parsed!=null)b.runtimeUi.add(parsed);
+        }
         String kind = str(m.get("runtimeKind"));
         b.runtimeKind = BotRegistry.KIND_CUSTOM.equals(kind)
                 ? BotRegistry.KIND_CUSTOM : BotRegistry.KIND_BUILTIN;
@@ -121,6 +114,10 @@ final class BotStore {
         return out;
     }
 
+    private static String text(Map<?,?> m, String key) {
+        return m.get(key) instanceof String ? (String)m.get(key) : "";
+    }
+
     private static String str(Object o) {
         return o instanceof String ? (String) o : null;
     }
@@ -142,6 +139,10 @@ final class BotStore {
             }
         }
         return def;
+    }
+
+    static Map<?,?> readMetadata(File file) {
+        try { if(!file.isFile() || file.length()>65536) return null; Object value=new Json(readText(file)).parse();return value instanceof Map?(Map<?,?>)value:null; }catch(Exception ex){return null;}
     }
 
     private static String readText(File file) throws Exception {
@@ -169,19 +170,14 @@ final class BotStore {
 
     // ================================================================ 写
 
-    /**
-     * 原子写文件。返回 false 表示没写成（调用方只用它判断，不据此报错给用户）。
-     *
-     * <p>顺序：建目录 → 序列化 → 写 .tmp → sync → rename；rename 失败再兜底
-     * （先删目标再 rename，最后直接覆盖写），保证「要么旧、要么新」。
-     */
-    static boolean save(File file, List<BotRegistry.Bot> bots) {
+    /** Commit or fail: never delete or truncate the prior file on rename failure. */
+    static boolean save(File file, List<BotRegistry.Bot> bots, java.util.Collection<CoreInventory.Instance> cores) {
         if (file == null) return false;
 
         File dir = file.getAbsoluteFile().getParentFile();
         if (dir != null && !dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) return false;
 
-        String json = toJson(bots);
+        String json = toJson(bots,cores);
         byte[] bytes;
         try {
             bytes = json.getBytes("UTF-8");
@@ -189,52 +185,23 @@ final class BotStore {
             return false;
         }
 
-        File tmp = new File(file.getAbsolutePath() + ".tmp");
+        if(bytes.length>MAX_BYTES)return false;
+        File tmp=null;
         try {
-            FileOutputStream out = new FileOutputStream(tmp);
-            try {
-                out.write(bytes);
-                out.flush();
-                try {
-                    out.getFD().sync(); // 先落盘再 rename，断电也不会留下半截文件
-                } catch (Throwable ignored) {
-                    // 某些文件系统不支持 sync，忽略即可（内容已经写进去了）
-                }
-            } finally {
-                try {
-                    out.close();
-                } catch (Throwable ignored) {
-                }
-            }
-
-            if (tmp.renameTo(file)) return true;
-
-            // rename 到已存在的文件在部分平台上会失败：删掉目标再试一次
-            if (file.isFile() && file.delete() && tmp.renameTo(file)) return true;
-
-            // 最后的兜底：直接覆盖写（不再是原子的，但至少把数据写进去）
-            FileOutputStream out2 = new FileOutputStream(file);
-            try {
-                out2.write(bytes);
-                out2.flush();
-            } finally {
-                try {
-                    out2.close();
-                } catch (Throwable ignored) {
-                }
-            }
-            tmp.delete();
+            tmp=File.createTempFile("bots-", ".tmp",dir);
+            try(FileOutputStream out=new FileOutputStream(tmp)){out.write(bytes);out.getFD().sync();}
+            java.nio.file.Files.move(tmp.toPath(),file.toPath(),java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             return true;
-        } catch (Throwable t) {
-            tmp.delete();
-            return false;
-        }
+        } catch(Exception ex){return false;} finally{if(tmp!=null && tmp.exists())tmp.delete();}
     }
 
-    private static String toJson(List<BotRegistry.Bot> bots) {
+    private static String toJson(List<BotRegistry.Bot> bots,java.util.Collection<CoreInventory.Instance> cores) {
         StringBuilder sb = new StringBuilder(512);
         sb.append("{\n");
         sb.append("  \"schemaVersion\": ").append(SCHEMA_VERSION).append(",\n");
+        sb.append("  \"coreInstances\": [");boolean first=true;
+        for(CoreInventory.Instance c:cores){if(!first)sb.append(',');first=false;CoreInventory.write(sb,c);}sb.append("],\n");
         sb.append("  \"bots\": [");
 
         int written = 0;
@@ -255,6 +222,7 @@ final class BotStore {
     private static void writeBot(StringBuilder sb, BotRegistry.Bot b) {
         sb.append("    {\n");
         sb.append("      \"id\": ").append(quote(b.id)).append(",\n");
+        sb.append("      \"coreInstanceId\": ").append(quote(b.coreInstanceId)).append(",\n");
         sb.append("      \"name\": ").append(quote(b.name == null ? "" : b.name)).append(",\n");
         sb.append("      \"persona\": ").append(quote(b.persona == null ? "" : b.persona)).append(",\n");
         sb.append("      \"platforms\": [");
@@ -266,6 +234,22 @@ final class BotStore {
             }
         }
         sb.append("],\n");
+        sb.append("      \"activePlatforms\": [");boolean firstPlatform=true;
+        for(String p:b.platforms)if(b.activePlatforms.contains(p)){if(!firstPlatform)sb.append(',');sb.append(quote(p));firstPlatform=false;}
+        sb.append("],\n");
+        sb.append("      \"bindings\": [");
+        for (int i=0; i<b.bindings.size(); i++) {
+            BotRegistry.Binding v = b.bindings.get(i);
+            if (i != 0) sb.append(",");
+            sb.append("{\"id\":").append(quote(v.id)).append(",\"platform\":").append(quote(v.platform))
+              .append(",\"enabled\":").append(b.activePlatforms.contains(v.platform))
+              .append(",\"accountId\":").append(quote(v.accountId)).append(",\"memoryMode\":").append(quote(v.memoryMode))
+              .append(",\"peerId\":").append(quote(v.peerId)).append(",\"httpUrl\":").append(quote(v.httpUrl)).append(",\"wsUrl\":").append(quote(v.wsUrl)).append("}");
+        }
+        sb.append("],\n");
+        sb.append("      \"runtimeUi\": [");
+        for(int i=0;i<b.runtimeUi.size();i++) { RuntimeUiLink l=b.runtimeUi.get(i);if(i>0)sb.append(",");sb.append("{\"platform\":").append(quote(l.platform)).append(",\"label\":").append(quote(l.label)).append(",\"url\":").append(quote(l.url)).append("}"); }
+        sb.append("],\n");
         sb.append("      \"runtimeKind\": ").append(quote(b.runtimeKind == null
                 ? BotRegistry.KIND_BUILTIN : b.runtimeKind)).append(",\n");
         sb.append("      \"runtimeRef\": ").append(quote(b.runtimeRef == null ? "" : b.runtimeRef)).append(",\n");
@@ -276,7 +260,7 @@ final class BotStore {
     }
 
     /** JSON 字符串字面量：转义引号 / 反斜杠 / 控制字符；中文原样输出（JSON 合法且人类可读）。 */
-    private static String quote(String s) {
+    static String quote(String s) {
         StringBuilder sb = new StringBuilder(s == null ? 2 : s.length() + 2);
         sb.append('"');
         for (int i = 0; i < (s == null ? 0 : s.length()); i++) {
@@ -322,7 +306,7 @@ final class BotStore {
      * 只解析 JSON 的那点语法（对象 / 数组 / 字符串 / 数字 / true / false / null）。
      * 任何语法问题都抛 RuntimeException，由 {@link #load(File)} 统一吞掉。
      */
-    private static final class Json {
+    static final class Json {
 
         /** 嵌套深度上限：防止畸形文件用几千层括号把栈撑爆。 */
         private static final int MAX_DEPTH = 64;
@@ -383,6 +367,7 @@ final class BotStore {
                 ws();
                 if (peek() != ':') throw new IllegalArgumentException("缺少冒号 @" + i);
                 i++;
+                CoreInventory.require(!m.containsKey(k));
                 m.put(k, value());
                 ws();
                 char c = peek();
@@ -426,6 +411,7 @@ final class BotStore {
                 char c = s.charAt(i++);
                 if (c == '"') return sb.toString();
                 if (c != '\\') {
+                    CoreInventory.require(c >= 32);
                     sb.append(c);
                     continue;
                 }
@@ -480,6 +466,7 @@ final class BotStore {
             }
             if (i == start) throw new IllegalArgumentException("无法解析的值 @" + start);
             String t = s.substring(start, i);
+            CoreInventory.require(t.matches("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"));
             if (t.indexOf('.') >= 0 || t.indexOf('e') >= 0 || t.indexOf('E') >= 0) {
                 return Double.valueOf(t);
             }

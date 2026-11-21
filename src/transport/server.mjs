@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { BOT_UIN } from '../config/account.mjs';
+// Only the composing platform knows the account. Generic callers can omit identity.
 
 const own = (v, k) => Object.prototype.hasOwnProperty.call(v, k);
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -80,7 +80,7 @@ export function formatAgentPlusActions(dispatch) {
 }
 
 export async function createTransport({ dispatch, events, status = () => ({ online: false, good: false }), token,
-  host = '127.0.0.1', port = 0, selfId = Number(BOT_UIN), heartbeatMs = 15000,
+  host = '127.0.0.1', port = 0, selfId, platform, heartbeatMs = 15000,
   maxBodyBytes = 8 * 1024 * 1024, maxBufferedBytes = 16 * 1024 * 1024, maxInflight = 16,
   maxConnections = 128, closeWsOnUnknownOutcome = false, agentPlusCompatibility = false, wsPath = '/', wsPort } = {}) {
   checkOptions({ dispatch, events, token, host });
@@ -146,7 +146,7 @@ export async function createTransport({ dispatch, events, status = () => ({ onli
     listener.maxConnections = maxConnections;
     listener.on('clientError', (_error, socket) => socket.destroy());
   }
-  const meta = type => ({ time: Math.floor(Date.now() / 1000), self_id: selfId, post_type: 'meta_event',
+  const meta = type => ({ time: Math.floor(Date.now() / 1000), self_id: selfId, ...(platform && { platform }), post_type: 'meta_event',
     meta_event_type: type, ...(type === 'lifecycle' ? { sub_type: 'connect' } : { status: status(), interval: heartbeatMs }) });
   if (wsServer !== server) server.on('upgrade', (_req, socket) => {
     socket.on('error', () => {});

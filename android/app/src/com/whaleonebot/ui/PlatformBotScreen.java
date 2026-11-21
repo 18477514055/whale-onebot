@@ -70,46 +70,55 @@ final class PlatformBotScreen extends Screen {
 
         LinearLayout.LayoutParams slp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         slp.topMargin = dp(Theme.S3);
-        col.addView(sectionLabel("这台机器人"), slp);
+        CoreInventory.Instance core=BotRegistry.coreForBot(bot.id);
+        if(core!=null && CoreManagerScreen.managed(core)){
+            android.widget.Switch toggle=new android.widget.Switch(activity);toggle.setText(label);toggle.setTextColor(t.textPrimary);toggle.setMinHeight(dp(Theme.TOUCH));
+            toggle.setChecked(BotRegistry.platformEnabled(bot.id,platformId));col.addView(toggle,slp);
+            toggle.setOnClickListener(v->{boolean on=toggle.isChecked();
+                if(on){boolean account=false;String vacant=null;for(BotRegistry.Binding binding:bot.bindings)if(platformId.equals(binding.platform)){if(!binding.accountId.isEmpty())account=true;else vacant=binding.id;}
+                    if(!account){toggle.setChecked(false);if(BotRegistry.P_BILIBILI.equals(platformId)&&vacant!=null)shell.pushBiliAccounts(bot.id,"slot:"+vacant);else host().toast("请先完成该平台账号登录");return;}}
+                if(!BotRegistry.setPlatformEnabled(bot.id,platformId,on)){toggle.setChecked(!on);host().toast("无法保存平台开关");return;}
+                toggle.setEnabled(false);new Thread(()->{try{if(on)com.whaleonebot.ContainerService.startInstalledPlatform(activity,bot.id,platformId);else com.whaleonebot.ContainerService.stopInstalledPlatform(activity,bot.id,platformId);}catch(Exception e){activity.runOnUiThread(()->host().toast(on?"已允许此平台，启动未完成":"已关闭此平台，停止状态待核验"));}finally{activity.runOnUiThread(()->{toggle.setChecked(BotRegistry.platformEnabled(bot.id,platformId));toggle.setEnabled(true);});}},"platform-switch").start();
+            });
+        }
 
         LinearLayout.LayoutParams l1 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l1.topMargin = dp(Theme.S1 + 2);
         col.addView(entryCard(IconView.PLAY, "启动",
-                "启动 / 停止机器人，看运行状态与日志", new View.OnClickListener() {
+                BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        shell.pushBotStart(bot.id);
+                        if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"start");
+                        else shell.pushBotStart(bot.id);
                     }
                 }), l1);
 
         LinearLayout.LayoutParams l2 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2.topMargin = dp(Theme.S2);
         col.addView(entryCard(IconView.TUNE, "配置",
-                name + " 在 " + label + " 上的全部设置", new View.OnClickListener() {
+                BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        shell.pushBotConfig(bot.id);
+                        if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"config");
+                        else if (BotRegistry.legacyQQ(bot)) shell.pushBotConfig(bot.id);
+                        else shell.pushBot(bot.id);
                     }
                 }), l2);
 
         // 用户 2026-11-18 追加：与「启动 / 配置」同层的第三项 —— 看板（只读观测，不写任何配置）。
         LinearLayout.LayoutParams l3 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l3.topMargin = dp(Theme.S2);
-        col.addView(entryCard(IconView.DOT, "看板",
+        if (BotRegistry.P_BILIBILI.equals(platformId) || BotRegistry.P_QQ.equals(platformId)) col.addView(entryCard(IconView.DOT, "看板",
                 "实时状态、会话、调用、记忆", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        shell.pushDashboardHub();
+                        if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"dashboard");
+                        else if(BotRegistry.legacyQQ(bot)) shell.pushDashboardHub();
+                        else shell.pushManagedQqDashboard(bot.id);
                     }
                 }), l3);
 
-        TextView note = Ui.text(activity,
-                "配置改完保存即生效。",
-                Theme.T_CAP, t.textTertiary);
-        note.setLineSpacing(dp(3), 1f);
-        LinearLayout.LayoutParams nlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        nlp.topMargin = dp(Theme.S3 + 2);
-        col.addView(note, nlp);
+
     }
 
     // ------------------------------------------------------------------ 两个入口

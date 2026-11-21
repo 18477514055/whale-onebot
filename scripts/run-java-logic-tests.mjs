@@ -19,7 +19,7 @@ const TEST_DIR = path.join(ROOT, 'test/java');
 const OUT = path.join(ROOT, '.tmp/java-logic-test');
 
 // 被测的纯逻辑类（都刻意不 import Android）
-const LOGIC = ['BotConfigJson.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java'];
+const LOGIC = ['Theme.java', 'BotConfigJson.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java'];
 
 const logicSrcs = LOGIC.map((n) => path.join(UI, n));
 for (const f of logicSrcs) {
@@ -33,6 +33,8 @@ if (!fs.existsSync(TEST_DIR)) {
   process.exit(2);
 }
 const testSrcs = fs.readdirSync(TEST_DIR).filter((f) => f.endsWith('Test.java')).map((f) => path.join(TEST_DIR, f));
+const registryTests=['BindingRegistryTest','CoreInventoryTest','ThemeContrastTest','QqOfficialReleaseTest','QqDebArchiveTest'];
+for(const name of registryTests)testSrcs.push(path.join(ROOT,'android/tests',name+'.java'));
 if (testSrcs.length === 0) {
   console.error('✗ test/java 下没有 *Test.java');
   process.exit(2);
@@ -68,7 +70,7 @@ for (const f of testSrcs) {
   const cls = path.basename(f, '.java');
   console.log('\n=== ' + cls + ' ===');
   try {
-    execFileSync('java', ['-cp', classes, cls], { stdio: 'inherit', cwd: ROOT });
+    execFileSync('java', ['-cp', classes, registryTests.includes(cls) ? 'com.whaleonebot.ui.'+cls : cls], { stdio: 'inherit', cwd: ROOT });
   } catch {
     failed++;
   }

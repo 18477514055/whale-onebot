@@ -207,9 +207,26 @@ const groupFolderFields = [
   ['creator_name', 'creatorName', 'name'],
   ['modifier_name', 'modifyName', 'name'],
 ];
-function checkResult(raw, sideEffect = false, key = 'result') {
+function checkResult(raw, sideEffect = false, key = 'result', step = '') {
   if (!raw || typeof raw[key] !== 'number') throw new BridgeError('UNCONFIRMED', 'Native result has no confirmation', { retcode: 1502, outcome: sideEffect ? 'unknown' : 'not_started' });
-  if (raw[key] !== 0) throw new BridgeError('NATIVE_REJECTED', 'Native operation was rejected', { retcode: 1500, outcome: 'rejected' });
+  if (raw[key] !== 0) {
+    // ★ 诊断（2026-11-20 转发读取排障）：真机上 get_forward_msg 恒 1500 却查不出
+    //   是哪一步、原生给了什么码 —— 原生拒绝时把错误载荷带出来写进 bot.log（只走拒绝分支，不影响热路径）。
+    try {
+      const detail = { };
+      for (const k of ['errMsg', 'errmsg', 'errMsg2', 'err_msg', 'subCode', 'subcode', 'errCode', 'code']) {
+        if (raw[k] !== undefined) detail[k] = String(raw[k]).slice(0, 200);
+      }
+      if (Array.isArray(raw.msgList)) {
+        detail.msgListLen = String(raw.msgList.length);
+        const first = raw.msgList[0];
+        detail.firstKeys = first && typeof first === 'object' ? Object.keys(first).slice(0, 16).join('/') : String(first).slice(0, 60);
+      }
+      console.log('[native-rejected] step=' + (step || 'unknown') + ' result=' + raw[key]
+        + ' detail=' + JSON.stringify(detail) + ' keys=' + Object.keys(raw).slice(0, 24).join(','));
+    } catch { /* 诊断失败绝不影响报错本体 */ }
+    throw new BridgeError('NATIVE_REJECTED', 'Native operation was rejected', { retcode: 1500, outcome: 'rejected' });
+  }
   return raw;
 }
 function groupMention(element, selfUid) {
@@ -3782,7 +3799,7 @@ export class NativeBridge extends EventEmitter {
     const outerResult = await this.wait(null, () => { ensureCurrent(); return this.msg.getMsgsByMsgId({ ...context.peer }, [context.msgId]); }, options);
     ensureCurrent();
     boundForwardResponse(outerResult);
-    checkResult(outerResult);
+    checkResult(outerResult, false, 'result', 'getForward.outer.getMsgsByMsgId');
     if (!Array.isArray(outerResult.msgList) || outerResult.msgList.length !== 1) throw new BridgeError('FORWARD_NOT_FOUND', 'Outer forward message was not found uniquely', { retcode: 1404 });
     const outer = outerResult.msgList[0];
     if (!outer || outer.msgId !== context.msgId || outer.chatType !== context.peer.chatType || outer.peerUid !== context.peer.peerUid || this.#conversationUser(outer.senderUin) !== context.senderUin ||
@@ -3793,7 +3810,7 @@ export class NativeBridge extends EventEmitter {
     const raw = await this.wait(null, () => { ensureCurrent(); return this.msg.getMultiMsg({ ...context.peer }, context.msgId, context.resId); }, options);
     ensureCurrent();
     boundForwardResponse(raw);
-    checkResult(raw);
+    checkResult(raw, false, 'result', 'getForward.inner.getMultiMsg');
     if (!Array.isArray(raw.msgList) || raw.msgList.length > 200) throw forwardInvalid();
     let segments = 0;
     const message = raw.msgList.map(node => {
