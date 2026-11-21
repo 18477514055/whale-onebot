@@ -53,7 +53,6 @@ final class BotListScreen extends Screen {
         clp.topMargin = dp(Theme.S1);
         col.addView(crumb, clp);
 
-        control(col,"下载内置核心",true,()->shell.corePage("download",null));
         java.util.List<CoreInventory.Instance> cores=BotRegistry.cores();int free=0;for(CoreInventory.Instance c:cores)if(c.ownerId.isEmpty())free++;
         col.addView(sectionLabel("本机核心 · "+cores.size()+" 份  /  空闲 "+free),labelLp(Theme.S3));
         for(CoreInventory.Instance c:cores){TextView row=Ui.text(activity,CoreManagerScreen.title(c)+"\n"+CoreManagerScreen.occupant(c),Theme.T_BODY,t.textPrimary);row.setPadding(dp(Theme.S3),dp(Theme.S2),dp(Theme.S3),dp(Theme.S2));row.setMinimumHeight(dp(Theme.TOUCH));row.setFocusable(true);row.setOnClickListener(v->shell.corePage("instance",c.id));col.addView(row);}
@@ -79,7 +78,7 @@ final class BotListScreen extends Screen {
         // Creation actions precede the bot list, alongside the inventory.
 
         TextView note = Ui.text(activity,
-                "一个机器人可以接多个平台。平台专属的设置（白名单、登录…）回首页点那个平台再配。",
+                "平台登录与白名单请回首页进入对应平台配置。",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams tlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
@@ -226,7 +225,7 @@ final class BotListScreen extends Screen {
         box.addView(title, tlp);
 
         TextView sub = Ui.text(activity,
-                "新建一个：填名字与人设、选运行端、勾要接入的平台，它就会出现在这里。",
+                "点击上方「新建机器人」开始。",
                 Theme.T_CAP, t.textSecondary);
         sub.setGravity(Gravity.CENTER);
         sub.setLineSpacing(dp(3), 1f);

@@ -345,9 +345,7 @@ final class ModelsScreen extends Screen {
         });
 
         TextView note = Ui.text(activity,
-                "视频不走模型"
-                        + ""
-                        + "",
+                "视频不走模型",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         holder.addView(note, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
@@ -438,9 +436,7 @@ final class ModelsScreen extends Screen {
         holder.addView(blank, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
 
         TextView note = Ui.text(activity,
-                "OpenCode 的会话头运行端会自动带上，不用配。"
-                        + ""
-                        + "",
+                "OpenCode 会话头由运行端自动附加。",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         holder.addView(note, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
@@ -1119,9 +1115,7 @@ final class ModelsScreen extends Screen {
         Map<String, Object> m = BotConfigJson.asObject(cur);
         String body = (m == null || m.isEmpty()) ? "（未设置）" : BotConfigJson.write(cur);
         W.infoDialog(activity, t, "表外渠道档位映射（只读）",
-                body + ""
-                        + "它把语义档位翻译成请求字段，例如 {\"low\":{\"reasoning_effort\":\"low\"}}；"
-                        + "内置预置渠道仍走内置形状，不受它影响。");
+                body + "\n\n将思考档位映射为请求字段；内置预置渠道不受此项影响。");
     }
 
     // ---------------------------------------------------------------- 行工具

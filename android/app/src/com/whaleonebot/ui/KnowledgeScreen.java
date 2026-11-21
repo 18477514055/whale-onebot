@@ -76,18 +76,11 @@ final class KnowledgeScreen extends Screen {
      * {@code docs/knowledge-base-user-guide.md}，这里刻意不长篇大论。
      */
     private static final String KB_GUIDE =
-            "① 把 .md / .txt（UTF-8）放进容器里的\n"
+            "① 将 .md / .txt（UTF-8）放到容器目录：\n"
             + "   /agent/data/knowledge-inbox/库名/\n"
-            + "   这是下面目录输入框要填的路径。\n"
-            + "② 回到本页点「新建资料库」：\n"
-            + "   名称随便起，目录填上面那条，\n"
-            + "   后缀保持 .md,.txt。\n"
-            + "③ 保存后清单里会出现这个库，写\n"
-            + "   「未索引」= 语料还没进索引库，查不到。\n"
-            + "④ 建索引现在还没有入口（面板无按钮、\n"
-            + "   容器里无脚本），新库先只能这样。\n"
-            + "⑤ 新增/改动语料、换向量模型都要重建索引。\n"
-            + "完整说明见 docs 里的用户指南。";
+            + "② 点「新建资料库」，填名称、上述目录与后缀（默认 .md,.txt）。\n"
+            + "③ 显示「未索引」表示尚未建索引，暂不可检索。\n"
+            + "④ 增改语料或更换向量模型后需重建索引。";
 
     private static final String CUSTOM = "\u0000custom";
 

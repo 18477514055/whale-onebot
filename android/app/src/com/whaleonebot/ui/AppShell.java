@@ -84,6 +84,8 @@ public class AppShell {
     static final int P_THEME = 2;
     /** 环境配置：容器与 QQ 安装包。新用户拿到 APK 后第一站。 */
     static final int P_ENV = 60;
+    /** 版本管理：App、内置核心与平台插件的唯一版本入口。 */
+    static final int P_VERSION = 61;
     static final int P_QQ = 3;
     /** 平台运行端配置面板：14 组 / 141 项，读写 /agent/data/config.json。 */
     static final int P_BOTCONFIG = 4;
@@ -341,6 +343,10 @@ public class AppShell {
         push(P_ENV, null);
     }
 
+    void pushVersion() {
+        push(P_VERSION, null);
+    }
+
     void pushModels() {
         push(P_MODELS, null);
     }
@@ -526,7 +532,7 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
-        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
             BotRegistry.Bot owner=BotRegistry.get(currentBotId());
             CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
             if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
@@ -551,6 +557,9 @@ public class AppShell {
                     break;
                 case P_ENV:
                     s = new EnvConfigScreen(this);
+                    break;
+                case P_VERSION:
+                    s = new VersionScreen(this);
                     break;
                 case P_THEME:
                     s = new ThemeScreen(this);
@@ -649,7 +658,7 @@ public class AppShell {
                     break;
             }
             s.build();
-            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT) screenCache.put(e, s);
+            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。

@@ -124,8 +124,15 @@ final class PlatformBotsScreen extends Screen {
             boolean ready=false;try{java.io.File app=com.whaleonebot.install.CoreInstaller.active(activity.getFilesDir(),core.id);ready=app!=null && new java.io.File(app,"src/platform-modules/"+platformId+"/.bot-module.json").isFile();}catch(Exception ignored){}
             box.addView(Ui.text(activity,ready?"平台插件已安装":"平台插件待安装 · 设置 → 机器人",Theme.T_BODY,t.textSecondary));
         }
-        for (BotRegistry.Binding binding : b.bindings) if (binding.platform.equals(platformId)) {
-            box.addView(Ui.text(activity, binding.label() + "\n" + binding.detail(), Theme.T_BODY, t.textSecondary), marginTop(Theme.S1));
+        // 只显示本平台（多平台混排会让人以为进了错页）
+        for (BotRegistry.Binding binding : b.bindings) {
+            if (platformId.equals(binding.platform)) {
+                String bindingTitle = BotRegistry.P_QQ.equals(platformId) && binding.localQQ()
+                        ? binding.label()
+                        : BotRegistry.PLATFORM_LABEL(platformId) + "  "
+                        + (binding.accountId == null || binding.accountId.isEmpty() ? "待登录" : binding.accountId);
+                box.addView(Ui.text(activity, bindingTitle + "\n" + binding.detail(), Theme.T_BODY, t.textSecondary), marginTop(Theme.S1));
+            }
         }
         row.addView(box, blp);
 
@@ -204,7 +211,8 @@ final class PlatformBotsScreen extends Screen {
 
         FrameLayout tile = new FrameLayout(activity);
         tile.setBackground(Drawables.round(Ui.alpha(t.accent, 0.16f), 0, 0, dp(Theme.R_TILE)));
-        tile.addView(new IconView(activity, IconView.CHAT, t.accent),
+        // 只显示本平台（多平台混排会让人以为进了错页）
+        tile.addView(platformIcon(),
                 new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
         box.addView(tile, Ui.llp(dp(52), dp(52)));
 

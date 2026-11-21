@@ -198,7 +198,7 @@ public final class BotConfigScreen extends Screen {
             return;
         }
         if (txt == null || txt.trim().length() == 0) {
-            loadError = "宿主没有返回内容 —— 读不到 /agent/data/config.json（容器没起，或运行端还没落盘）。";
+            loadError = "读不到 /agent/data/config.json（容器未启动或运行端尚未生成配置）。";
             return;
         }
         try {
@@ -357,7 +357,7 @@ public final class BotConfigScreen extends Screen {
         box.addView(row, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         String summary = loaded
-                ? ("已载入 " + topLevelCount() + " 个顶层键；改动只在点「保存」时写回。")
+                ? ("已载入 " + topLevelCount() + " 项顶层配置。")
                 : "未载入配置。";
         TextView info = Ui.text(activity, summary, Theme.T_CAP, t.textSecondary);
         info.setLineSpacing(dp(3), 1f);
@@ -1486,8 +1486,7 @@ public final class BotConfigScreen extends Screen {
         box.addView(retry, marginTop(Ui.llp(WRAP_CONTENT, WRAP_CONTENT), dp(Theme.S3)));
 
         TextView tip = Ui.text(activity,
-                "面板只读 /agent/data/config.json：容器没启动、运行端还没落盘、"
-                        + "或者宿主没实现 loadConfigJson()，都会走到这一页。",
+                "请先启动容器并等待运行端生成 config.json 后重试。",
                 Theme.T_CAP, t.textTertiary);
         tip.setLineSpacing(dp(3), 1f);
         box.addView(tip, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));

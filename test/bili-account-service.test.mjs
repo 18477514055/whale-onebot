@@ -28,7 +28,14 @@ test('HTTP account-only service: no DM baseline; read discovery, real dispatch a
 });
 test('HTTP account write does not unlock DM, resolve caller URLs, or retry an unknown write',async t=>{
   const {call,requests,client}=await serve(t,{allowAccountWrites:true});
-  const names=(await call('get_supported_actions')).data;assert(names.includes('bili_video_coin'));assert(!names.includes('bili_send_comment'));assert(!names.includes('send_private_msg'));
+  const names=(await call('get_supported_actions')).data;assert(names.includes('bili_video_coin'));
+  // ★ 契约变更（2026-11-22）：`bili_send_comment` 现在**没有浏览器也会出现** —— 手机内置环境包
+  //   没有 chromium，浏览器版在手机上永不注册，实测「待审通过」发不出去（1404）。改为纯 Node 回退
+  //   （src/platforms/bilibili/actions/reply.mjs）。写权限仍由 allowAccountWrites 把门。
+  assert(names.includes('bili_send_comment'));
+  const catalog=(await call('bili_action_catalog')).data;
+  assert.equal(catalog.find(row=>row.name==='bili_send_comment')?.write, true);
+  assert(!names.includes('send_private_msg'));
   assert.equal((await call('send_private_msg',{user_id:456,message:'hi'})).retcode,1403);
   let attempts=0;client.request=async()=>{attempts++;throw Object.assign(new Error('PRIVATE_DIAGNOSTIC'),{outcome:'unknown'});};
   const r=await call('bili_video_coin',{aid:'1',multiply:1});assert.equal(r.retcode,1504);assert(!JSON.stringify(r).includes('PRIVATE_DIAGNOSTIC'));assert.equal(attempts,1);assert.equal(requests.length,0);

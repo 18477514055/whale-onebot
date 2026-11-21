@@ -12,13 +12,19 @@ export async function startBiliService({selfId, peerId, cookie, deviceId, client
   let accountFactory;
   if(accountActions){
     const {createAccountActions} = await import('./account-actions.mjs');
+    const {recommendActions} = await import('./actions/community.mjs');
     if(browserOptions) {
       const {createBiliBrowser} = await import('./actions/browser.mjs');
       browser ??= createBiliBrowser({...browserOptions,selfId,cookie});
     }
     accountFactory=hooks=>{
       if(browser) hooks.onClose(()=>browser.close());
-      return createAccountActions({client,browser,selfId,peerId,deviceId,allowWrites:allowAccountWrites,...hooks});
+      const base=createAccountActions({client,browser,selfId,peerId,deviceId,allowWrites:allowAccountWrites,...hooks});
+      return {
+        ...base,
+        names:()=>[...base.names(),...Object.keys(recommendActions)],
+        get:name=>base.get(name) ?? recommendActions[name],
+      };
     };
   }
   const bridge = new BiliBridge({selfId,peerId,client,allowSend,pollMs,accountFactory});

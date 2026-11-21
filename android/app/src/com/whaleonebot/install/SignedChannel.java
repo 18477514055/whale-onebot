@@ -38,12 +38,26 @@ final class SignedChannel {
   }
 
   private static byte[] fetch(ReleaseCache.Transport transport) throws IOException {
-    URL url = ReleaseCache.origin(CHANNEL);
+    // 镜像只作传输层，返回字节仍须通过 verify() 的 RSA-3072 签名校验。
+    List<URL> candidates = ReleaseCache.candidateUrls(CHANNEL);
+    IOException last = null;
+    for (int idx = 0; idx < candidates.size(); idx++) {
+      try {
+        return fetchOne(candidates.get(idx), transport);
+      } catch (IOException ex) {
+        last = ex;
+      }
+    }
+    throw last != null ? last : new IOException("Signed channel unavailable");
+  }
+
+  private static byte[] fetchOne(URL startUrl, ReleaseCache.Transport transport) throws IOException {
+    URL url = startUrl;
     for (int i = 0; i < 6; i++) {
       HttpURLConnection c = transport.open(url);
       try {
         c.setInstanceFollowRedirects(false);
-        c.setConnectTimeout(10000);
+        c.setConnectTimeout(6000);
         c.setReadTimeout(15000);
         c.setUseCaches(false);
         int status = c.getResponseCode();

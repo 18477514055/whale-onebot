@@ -10,9 +10,13 @@ import java.nio.charset.StandardCharsets;
 /** Owns a fixed child entry point. Only private anonymous process pipes carry login material. */
 final class BiliProtocolControl {
     private static final Map<String,Run> runs = new HashMap<>();
+    /** 只为「停掉之后抹掉端点文件」留一份 application context（不涉及任何凭据）。 */
+    private static Context lastCtx;
     private static final class Run {
         final boolean interactive; boolean enrollment,newSlot;
         String state="starting", self, peer, token, challenge;
+        // 这次 Run 属于哪个机器人/槽位：写动作开关要按「这个槽位的行为配置」决定。
+        String botId, bindingId;
         int port, received; Process proc; long at, expiresAt, lastReceived;
         Run(boolean interactive) { this.interactive=interactive; }
     }
@@ -34,12 +38,13 @@ final class BiliProtocolControl {
         if(r.enrollment && current(k,r) && ("starting".equals(r.state)||"awaiting_confirmation".equals(r.state)))halt(r);
     }
     private static void begin(Context ctx,String bot,String binding,String peer,boolean interactive) {
+        lastCtx = ctx.getApplicationContext();
         String k=key(bot,binding); Run old=runs.get(k);
         if (old!=null && ("starting".equals(old.state) || old.proc!=null && old.proc.isAlive())) {
             if(!interactive || old.interactive && Arrays.asList("starting","awaiting_confirmation").contains(old.state)) return;
             halt(old);
         }
-        Run r=new Run(interactive); runs.put(k,r); Context c=ctx.getApplicationContext();
+        Run r=new Run(interactive); r.botId=bot; r.bindingId=binding; runs.put(k,r); Context c=ctx.getApplicationContext();
         new Thread(()->launch(c,bot,binding,peer,r),"bili-protocol").start();
     }
     private static JSONObject selection(Context c,String bot,String binding,String peer) throws Exception {
@@ -61,9 +66,29 @@ final class BiliProtocolControl {
             }
         } finally { Arrays.fill(data,(byte)0); }
     }
+    /** 设备上的协议端是否带「纯 Node 发评论」实现（= 新协议端）。老协议没有这个文件，绝不能传写开关。 */
+    private static boolean supportsWriteActions(Context c){
+        try{
+            File files=c.getFilesDir();
+            return new File(files,"rootfs/opt/whale/bili-protocol/src/platforms/bilibili/actions/reply.mjs").isFile();
+        }catch(Exception e){return false;}
+    }
+    /** 用户在 B 站行为里开了「评论」才允许公开写；读不到就当不允许。 */
+    private static boolean userAllowsWrites(Run r){
+        try{
+            if(lastCtx==null||r==null||r.botId==null||r.bindingId==null)return false;
+            return com.whaleonebot.ui.BiliSettings.getBool(lastCtx,r.botId,r.bindingId,"write.enabled",false);
+        }catch(Exception e){return false;}
+    }
+
     private static void writeInput(Process p,Run r,String saved,BiliSystemResolver resolver) throws Exception {
         JSONObject input=r.enrollment?new JSONObject().put("enroll",true).put("interactive",true):new JSONObject().put("selfId",r.self).put("peerId",r.peer.isEmpty()?JSONObject.NULL:r.peer)
             .put("token",r.token).put("interactive",r.interactive);
+        // ★ 写动作（发评论这类）**按能力探测**再决定传不传，不靠版本号猜：
+        //   旧协议端不认这个键（实测会让协议端起不来、页面显示「授权或启动失败」），
+        //   新协议端（带 actions/reply.mjs 的纯 Node 发评论实现）才接受它。
+        //   判据 = 设备上真的存在那个回退实现 + 用户真的打开了「评论」。两者缺一就不传。
+        if(!r.enrollment && lastCtx!=null && supportsWriteActions(lastCtx) && userAllowsWrites(r)) input.put("allowAccountWrites", true);
         if(resolver!=null)input.put("androidResolver",resolver.name);
         if(saved!=null)input.put("savedCookie",saved);
         byte[] wire=input.toString().getBytes(StandardCharsets.UTF_8);
@@ -136,6 +161,9 @@ final class BiliProtocolControl {
                             default: throw new IOException();
                             }
                             r.state=state;r.at=android.os.SystemClock.elapsedRealtime();
+                            // 端口与令牌只有这里知道 ⇒ 已验证就把它们交给容器里的行为 worker。
+                            // 不做这件事，行为层永远连不上协议端（它自己猜不出随机端口和令牌）。
+                            if("verified".equals(state)&&r.port>=1024)com.whaleonebot.ui.BiliRuntime.publishProtocol(c,bot,r.self,r.port,r.token);
                         }
                         // The child's own identity check AND a verified state with the same expected UID.
                         if(pending!=null && "verified".equals(r.state)) {
@@ -159,8 +187,10 @@ final class BiliProtocolControl {
     }
     static boolean owned(JSONObject row){return "bilibili".equals(row.optString("platform"))&&row.optString("accountId").matches("[1-9][0-9]{0,15}")&&row.optString("httpUrl").isEmpty()&&row.optString("wsUrl").isEmpty();}
     private static void halt(Run r){if(r!=null){r.state="stopped";r.token=null;r.challenge=null;if(r.proc!=null)r.proc.destroy();}}
-    static synchronized void stop(String bot,String binding){halt(runs.get(key(bot,binding)));}
-    static synchronized void stopBotAccounts(String bot){String prefix=key(bot,"scope");prefix=prefix.substring(0,prefix.indexOf(':')+1);for(Map.Entry<String,Run> e:runs.entrySet())if(e.getKey().startsWith(prefix))halt(e.getValue());}
+    /** 停掉的 Run 的端口/令牌已经没用了：把端点文件抹掉，免得行为 worker 一直往死端口上撞。 */
+    private static void forgetEndpoint(String bot){try{if(lastCtx!=null)com.whaleonebot.ui.BiliRuntime.clearProtocol(lastCtx,bot);}catch(Exception ignored){}}
+    static synchronized void stop(String bot,String binding){halt(runs.get(key(bot,binding)));forgetEndpoint(bot);}
+    static synchronized void stopBotAccounts(String bot){String prefix=key(bot,"scope");prefix=prefix.substring(0,prefix.indexOf(':')+1);for(Map.Entry<String,Run> e:runs.entrySet())if(e.getKey().startsWith(prefix))halt(e.getValue());forgetEndpoint(bot);}
     static synchronized void stopAll(){for(Run r:runs.values())halt(r);}
     static synchronized boolean hasSaved(Context c,String bot,String binding){try{return BiliSessionStore.of(c).present(bot,binding);}catch(Exception ignored){return false;}}
     static synchronized boolean forget(Context c,String bot,String binding){try{stop(bot,binding);BiliSessionStore.of(c).forget(bot,binding);return true;}catch(Exception ignored){return false;}}

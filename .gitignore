@@ -61,6 +61,8 @@ experiments/phone-arm64-firstload/*.bin
 
 # 构建时从 android/*.mjs 复制进来的资产副本（源头在 android/ 下，不要提交两份）
 android/app/assets/
+# 例外：发行索引的信任根，必须跟着代码走，否则复现不出「这个 APK 会去下哪个版本」
+!android/app/assets/core-release-pin.json
 
 # 开发记录（实测记录/审计/交接/变更日志等）只留在本机，不进仓库
 /_notes/

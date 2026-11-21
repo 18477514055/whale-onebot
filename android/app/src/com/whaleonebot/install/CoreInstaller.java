@@ -9,7 +9,13 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Blocking APIs except checkAuto. Never starts/stops a process or opens an account/session. */
+/**
+ * Blocking APIs except checkAuto. Never starts/stops a process or opens an account/session.
+ *
+ * <p>传输与信任边界：官方 GitHub {@code releases/download/} 地址仍为唯一名义地址；因用户默认无梯子，
+ * 实际传输允许通过 {@link ReleaseCache} 按固定顺序回退到镜像前缀。镜像只作传输层，信任仍由 APK
+ * 内置 pin + SHA-256（及可选 RSA 签名通道）决定，这条不可放宽。
+ */
 public final class CoreInstaller {
   public interface Progress {
     void update(String item, long bytes, long total);

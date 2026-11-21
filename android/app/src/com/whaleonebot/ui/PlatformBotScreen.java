@@ -84,8 +84,12 @@ final class PlatformBotScreen extends Screen {
 
         LinearLayout.LayoutParams l1 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l1.topMargin = dp(Theme.S1 + 2);
+        // ★ 文案必须跟着「当前进入的平台」走，而不是 legacyQQ(bot)：
+        //   一个老 QQ 机器人后来加了 B 站账号，从 B 站进来仍然显示「旧版 QQ 容器」，
+        //   用户会以为进错了页。路由本来就是对的（下面 pushBiliAccounts），错的是文案。
+        final boolean biliEntry = BotRegistry.P_BILIBILI.equals(platformId);
         col.addView(entryCard(IconView.PLAY, "启动",
-                BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接", new View.OnClickListener() {
+                biliEntry ? "B 站账号登录与连接" : BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"start");
@@ -96,7 +100,7 @@ final class PlatformBotScreen extends Screen {
         LinearLayout.LayoutParams l2 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2.topMargin = dp(Theme.S2);
         col.addView(entryCard(IconView.TUNE, "配置",
-                BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围", new View.OnClickListener() {
+                biliEntry ? "账号、私信对端、记忆范围与行为参数" : BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"config");
@@ -109,7 +113,7 @@ final class PlatformBotScreen extends Screen {
         LinearLayout.LayoutParams l3 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l3.topMargin = dp(Theme.S2);
         if (BotRegistry.P_BILIBILI.equals(platformId) || BotRegistry.P_QQ.equals(platformId)) col.addView(entryCard(IconView.DOT, "看板",
-                "实时状态、会话、调用、记忆", new View.OnClickListener() {
+                BotRegistry.P_BILIBILI.equals(platformId) ? "浏览、评论、配额与动作流水" : "实时状态、会话、调用、记忆", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"dashboard");

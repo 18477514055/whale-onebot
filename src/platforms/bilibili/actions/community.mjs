@@ -61,3 +61,50 @@ export const communityActions = Object.freeze({
   bili_follow_group_delete:set('tagid',API+'/x/relation/tag/del',single('tagid')),
   bili_follow_group_assign:set('mid tagid',API+'/x/relation/tags/addUsers',p=>({fids:id(p.mid,'mid'),tagids:id(p.tagid,'tagid')})),
 });
+
+/**
+ * 归一化 B 站推荐流单条视频字段。
+ * @param {any} item
+ * @param {string} fallbackPartition
+ */
+function normalizeRecommendItem(item, fallbackPartition) {
+  return {
+    bvid: String(item.bvid),
+    title: String(item.title ?? ''),
+    authorId: item.owner?.mid != null ? String(item.owner.mid) : String(item.mid ?? ''),
+    author: String(item.owner?.name ?? item.author ?? ''),
+    durationSec: Number(item.duration ?? item.durationSec ?? 0) || 0,
+    desc: String(item.desc ?? item.rcmd_reason?.content ?? ''),
+    partition: String(item.tname ?? fallbackPartition),
+  };
+}
+
+/**
+ * 推荐流扩展动作（独立导出，避免破坏 communityActions 的精确键集契约）。
+ */
+export const recommendActions = Object.freeze({
+  bili_recommend: spec(false, 'partition count', async (ctx, p) => {
+    const count = num(p.count ?? 10, 'count', 1, 30);
+    const rawPartition = p.partition === undefined ? '' : text(p.partition, 'partition', 32, true).trim();
+    const partition = rawPartition && rawPartition !== 'all' ? rawPartition : '';
+    const data = await ctx.request({
+      url: API + '/x/web-interface/wbi/index/top/feed/rcmd',
+      wbi: true,
+      query: { ps: count, fresh_type: 4, version: 1 },
+    });
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.item)
+        ? data.item
+        : Array.isArray(data?.list)
+          ? data.list
+          : Array.isArray(data?.videos)
+            ? data.videos
+            : [];
+    const videos = list
+      .filter(item => item && typeof item.bvid === 'string' && item.bvid.length > 0)
+      .slice(0, count)
+      .map(item => normalizeRecommendItem(item, partition));
+    return { videos };
+  }),
+});

@@ -553,10 +553,16 @@ async function startBot() {
   if (WITH_AGENT) {
     try { await startAgent(child); } catch (e) { log('agent start failed: ' + (e?.stack || e)); save('agent-failed', { agent: String(e?.message ?? e) }); }
   }
+  // B 站行为 worker 与主 agent 是两条独立的进程：
+  // 主 agent 的动作通道指向 QQ 协议端，拿它发 B 站动作只会打到 QQ 上（见 D287 与 scheduler.mjs 头注释）。
+  // 这里只负责「把它拉起来并看住」，端点/配置由 App 写到 /agent/data 里，worker 自己读。
+  startBiliWorker();
 
   // 心跳：阶段由**进程实际状态**算，不由"尝试次数"推断
   // （之前 agent 明明活着，bot.json 却写 agent-exhausted —— 这种字段比没有更坏）。
   setInterval(() => {
+    // 用户在开机之后才点「连接机器人」很常见：端点文件是后来才出现的，所以心跳里补一次拉起。
+    if (!finished) { try { startBiliWorker(); } catch (e) { log('bili worker check failed: ' + e.message); } }
     const d = state.diag ?? {};
     let phase = state.phase;
     if (authenticated) {
@@ -642,8 +648,41 @@ function consoleReadyProbe(port, startedAt) {
   };
   setTimeout(() => { void tick(); }, 2000).unref?.();
 }
-async function startAgent(child) {
-  if (agentInFlight) { log('agent start already in flight, skip'); return; }
+// ── B 站行为 worker ───────────────────────────────────────────────────────────
+// 只在「这个实例里有 B 站账号、且 App 已经写了端点文件」时才起——
+// 没 B 站账号的纯 QQ 实例不会有 bili-protocol.json，这里什么都不做。
+let biliWorkerProc = null;
+let biliWorkerTries = 0;
+function startBiliWorker() {
+  if (biliWorkerProc || biliWorkerTries >= 5) return;
+  const entry = '/input/agent-app/src/features/bili-behavior/worker.mjs';
+  const dataDir = '/agent/data';
+  if (!fs.existsSync(entry)) return;                      // 老核心没有这个模块：不当错误
+  let endpoint = false;
+  try { endpoint = fs.existsSync(path.join(dataDir, 'bili-protocol.json')); } catch { endpoint = false; }
+  if (!endpoint) return;                                  // 还没连上过 B 站协议端：安静等 App 写
+  biliWorkerTries++;
+  const out = fs.openSync(path.join(RUNTIME, 'bili-worker.log'), 'a', 0o600);
+  biliWorkerProc = spawn(process.execPath, [entry, dataDir], {
+    cwd: '/input/agent-app',
+    stdio: ['ignore', out, out],
+    env: { PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
+      // ★ 必须给：行为层的评论生成器复用运行端的 `src/llm/llm.js`，
+      //   而它的配置文件路径来自 `DATA_DIR = process.env.QQ_AGENT_DATA_DIR || ROOT/data`。
+      //   不给这一条就会去读 `input/agent-app/data`（空目录）⇒ 模型调用必然失败。
+      QQ_AGENT_DATA_DIR: dataDir },
+  });
+  log('BILI_WORKER_STARTED pid=' + biliWorkerProc.pid);
+  biliWorkerProc.on('exit', (code, sig) => {
+    log('BILI_WORKER_EXIT code=' + code + ' signal=' + sig);
+    biliWorkerProc = null;
+    // 自己退了就再给一次机会（端点变了 / 协议端重连都可能让它退出）
+    if (!finished) setTimeout(() => { try { startBiliWorker(); } catch (e) { log('bili worker retry failed: ' + e.message); } }, 15000).unref?.();
+  });
+  biliWorkerProc.on('error', (e) => log('BILI_WORKER_ERROR ' + e.message));
+}
+
+async function startAgent(child) {  if (agentInFlight) { log('agent start already in flight, skip'); return; }
   if (agentAttempts >= 6) { log('agent attempts exhausted'); return; }
   agentInFlight = true;
   agentAttempts++;

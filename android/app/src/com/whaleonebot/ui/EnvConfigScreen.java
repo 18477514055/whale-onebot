@@ -67,7 +67,7 @@ final class EnvConfigScreen extends Screen {
 
         col.addView(header("环境配置"));
         col.addView(Ui.text(activity,
-                "这里放两件装机必需的东西：容器（机器人跑在里面）和 QQ 安装包。",
+                "新机先下载容器与 QQ 安装包。",
                 Theme.T_BODY, t.textSecondary));
 
         // ---------------- 容器 ----------------
@@ -75,7 +75,7 @@ final class EnvConfigScreen extends Screen {
         LinearLayout c1 = card(col);
         c1.addView(Ui.strong(activity, "下载内置核心", Theme.T_CARD, t.textPrimary));
         c1.addView(Ui.text(activity,
-                "容器就是机器人运行环境。同一版本只下载一次，之后新建机器人直接复用。",
+                "同一版本只下一次，新建机器人直接复用。",
                 Theme.T_CAP, t.textSecondary));
         TextView open = Ui.button(activity, t, "打开核心下载", true);
         open.setOnClickListener(v -> shell.corePage("download", null));
@@ -89,7 +89,7 @@ final class EnvConfigScreen extends Screen {
 
         c2.addView(Ui.strong(activity, "第 1 步：在电脑上下载指定版本", Theme.T_CARD, t.textPrimary));
         c2.addView(Ui.text(activity,
-                "把下面这条链接复制到电脑浏览器打开，下载 Linux QQ 的 arm64 deb 包（版本 "
+                "复制到电脑浏览器下载 Linux QQ arm64 deb（"
                         + QQ_ALLOWED[0][0] + "，" + mb(QQ_ALLOWED[0][1]) + "）。",
                 Theme.T_CAP, t.textSecondary));
 
@@ -115,12 +115,12 @@ final class EnvConfigScreen extends Screen {
 
         c2.addView(Ui.strong(activity, "第 2 步：放进手机「下载」目录", Theme.T_CARD, t.textPrimary));
         c2.addView(Ui.text(activity,
-                "用数据线、微信/QQ 传文件、网盘都可以，放到 Download 目录（子目录也行）。",
+                "放入手机 Download 目录（子目录也可）。",
                 Theme.T_CAP, t.textSecondary));
 
         c2.addView(Ui.strong(activity, "第 3 步：回来安装", Theme.T_CARD, t.textPrimary));
         qqState = Ui.text(activity, "尚未扫描", Theme.T_BODY, t.textPrimary);
-        qqDetail = Ui.text(activity, "点下面的按钮扫描手机的下载目录。", Theme.T_CAP, t.textSecondary);
+        qqDetail = Ui.text(activity, "点击下方按钮扫描下载目录。", Theme.T_CAP, t.textSecondary);
         c2.addView(qqState, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         c2.addView(qqDetail, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
@@ -139,7 +139,7 @@ final class EnvConfigScreen extends Screen {
         Ui.enabled(installButton, false);
 
         col.addView(Ui.text(activity,
-                "校验通过才会安装：文件长度、SHA-256、包内 control 与主程序架构都会核对；不符合就明确告诉你原因，不会装一个坏包。",
+                "仅安装通过大小、SHA-256 与架构校验的白名单包。",
                 Theme.T_CAP, t.textTertiary), topMargin(dp(Theme.S3)));
     }
 
@@ -149,7 +149,7 @@ final class EnvConfigScreen extends Screen {
         if (scanning) return;
         scanning = true;
         qqState.setText("正在扫描下载目录…");
-        qqDetail.setText("大文件读摘要需要几秒，别退出这个页面。");
+        qqDetail.setText("正在校验摘要，请勿离开。");
         new Thread(() -> {
             String result;
             File hit = null;

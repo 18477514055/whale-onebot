@@ -1,32 +1,35 @@
 package com.whaleonebot.ui;
 
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 /**
- * 设置页：<b>平台无关的通用项</b>都在这里。
- *
- * <p>分界线：换成任何平台都还成立的东西放这里 —— 「机器人」（新建 / 管理，多对多）与「主题」。
- * 只对某个平台/某个机器人成立的配置（运行端配置：白名单、人格、回复、主动发言…）
- * 不进这里，而是走「主页 → 平台 → 机器人 → 运行端配置」。
- *
- * <p>本页不再有任何 QQ 专属入口，也不再在这里用文字解释「运行端配置去哪了」——
- * 机器人这一层本身就是那个答案（点进去就是列表与新建）。
+ * 设置页：平台无关的通用项（机器人、备份、版本管理、环境配置、主题、自动重启）。
  */
 final class SettingsScreen extends Screen {
 
     /** 主题卡的副标题：换主题后由 {@link #refresh()} 就地更新。 */
     private TextView themeValue;
 
-    /** 「被杀之后自动重启」那一条的副标题（显示当前开关状态）。 */
+    /** 「自动重启」副标题（显示当前开关状态）。 */
     private TextView watchdogValue;
+
+    /** 「自动重启」右侧开关。 */
+    private Switch watchdogSwitch;
 
     SettingsScreen(AppShell shell) {
         super(shell);
@@ -48,9 +51,9 @@ final class SettingsScreen extends Screen {
         View gap = new View(activity);
         col.addView(gap, Ui.llp(MATCH_PARENT, dp(Theme.S4)));
 
-        // ---------- 机器人：新建 / 管理（一个机器人可接多个平台） ----------
+        // ---------- 机器人 ----------
         col.addView(entryCard(IconView.CHAT, "机器人",
-                        Ui.text(activity, "新建 / 管理机器人，一个机器人可接多个平台",
+                        Ui.text(activity, "新建 / 管理机器人，多平台共用",
                                 Theme.T_CAP, t.textSecondary),
                         new View.OnClickListener() {
                             @Override
@@ -60,15 +63,44 @@ final class SettingsScreen extends Screen {
                         }),
                 Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        for(String[] entry:new String[][]{{"备份","导出、恢复或删除本地备份","backups"},{"版本管理","核心、平台插件与更新策略","versions"}}){
-            LinearLayout.LayoutParams space=Ui.llp(MATCH_PARENT,WRAP_CONTENT);space.topMargin=dp(Theme.S2);
-            col.addView(entryCard(IconView.TUNE,entry[0],Ui.text(activity,entry[1],Theme.T_CAP,t.textSecondary),v->shell.corePage(entry[2],null)),space);
-        }
+        // ---------- 备份 ----------
+        col.addView(entryCard(IconView.TUNE, "备份",
+                        Ui.text(activity, "导出、恢复或删除本地备份",
+                                Theme.T_CAP, t.textSecondary),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                shell.corePage("backups", null);
+                            }
+                        }),
+                cardMargin());
+
+        // ---------- 版本管理（唯一版本入口） ----------
+        col.addView(entryCard(IconView.TUNE, "版本管理",
+                        Ui.text(activity, "App、内置核心与平台插件",
+                                Theme.T_CAP, t.textSecondary),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                shell.pushVersion();
+                            }
+                        }),
+                cardMargin());
+
+        // ---------- 环境配置 ----------
+        col.addView(entryCard(IconView.TUNE, "环境配置",
+                        Ui.text(activity, "容器下载与 QQ 安装包（新机先来这里）",
+                                Theme.T_CAP, t.textSecondary),
+                        new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                shell.pushEnv();
+                            }
+                        }),
+                cardMargin());
+
         // ---------- 主题 ----------
         themeValue = Ui.text(activity, t.name, Theme.T_CAP, t.textSecondary);
-        LinearLayout.LayoutParams cardLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        cardLp.topMargin = dp(Theme.S2);
-        col.addView(entryCard(IconView.TUNE, "环境配置", Ui.text(activity,"容器下载与 QQ 安装包（新机先来这里）",Theme.T_CAP,t.textSecondary), v->shell.pushEnv()));
         col.addView(entryCard(IconView.TUNE, "主题", themeValue,
                         new View.OnClickListener() {
                             @Override
@@ -76,41 +108,67 @@ final class SettingsScreen extends Screen {
                                 shell.push(AppShell.P_THEME);
                             }
                         }),
-                cardLp);
+                cardMargin());
 
-        // ---------- 被杀之后自动重启（用户可关掉） ----------
-        // 补偿层的开关放在用户手上：默认开，因为实测"进了电池白名单也会被厂商杀"；
-        // 关掉就一个闹钟都不排（见 Watchdog）。
-        watchdogValue = Ui.text(activity, watchdogText(), Theme.T_CAP, t.textSecondary);
-        LinearLayout.LayoutParams wLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        wLp.topMargin = dp(Theme.S2);
-        col.addView(entryCard(IconView.TUNE, "被杀之后自动重启", watchdogValue,
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View v) {
-                                boolean next = !com.whaleonebot.Watchdog.isEnabled(activity);
-                                com.whaleonebot.Watchdog.setEnabled(activity, next);
-                                if (next && !com.whaleonebot.ContainerService.isRunning()) {
-                                    com.whaleonebot.ContainerService.start(activity);
-                                }
-                                watchdogValue.setText(watchdogText());
-                                host().toast(next ? "已开启：被系统杀掉后会自动拉起" : "已关闭：杀掉后不会自动拉起");
-                            }
-                        }),
-                wLp);
+        // ---------- 自动重启（右侧开关，仅开关可点） ----------
+        boolean enabled = com.whaleonebot.Watchdog.isEnabled(activity);
+        watchdogValue = Ui.text(activity, watchdogText(enabled), Theme.T_CAP, t.textSecondary);
+        watchdogSwitch = new Switch(activity);
+        watchdogSwitch.setChecked(enabled);
+        watchdogSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                com.whaleonebot.Watchdog.setEnabled(activity, isChecked);
+                if (isChecked && !com.whaleonebot.ContainerService.isRunning()) {
+                    com.whaleonebot.ContainerService.start(activity);
+                }
+                watchdogValue.setText(watchdogText(isChecked));
+                if (isChecked) {
+                    showAutostartDialog();
+                }
+            }
+        });
+        col.addView(switchCard(IconView.TUNE, "自动重启", watchdogValue, watchdogSwitch),
+                cardMargin());
     }
 
-    /** 开关副标题：直接写当前状态，用户不用点进去猜。 */
-    private String watchdogText() {
-        return com.whaleonebot.Watchdog.isEnabled(activity)
-                ? "已开启 · 被系统杀掉后会自动拉起（约 3 分钟内）"
-                : "已关闭 · 被杀后不会自动拉起";
+    /** 开关副标题：开启/关闭分别提示行为。 */
+    private static String watchdogText(boolean enabled) {
+        return enabled
+                ? "被杀后自动拉起（约 3 分钟内）"
+                : "关掉后被杀不会自动拉起";
+    }
+
+    /** 开启自动重启时弹出系统自启动引导对话框。 */
+    private void showAutostartDialog() {
+        new AlertDialog.Builder(activity)
+                .setTitle("建议同时允许自启动")
+                .setMessage("否则被系统清理后不会再拉起。请在应用详情里允许自启动。")
+                .setPositiveButton("去设置", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        try {
+                            Intent intent = new Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:" + activity.getPackageName()));
+                            activity.startActivity(intent);
+                        } catch (Throwable ignored) {
+                            host().toast("无法打开应用详情");
+                        }
+                    }
+                })
+                .setNegativeButton("知道了", null)
+                .show();
+    }
+
+    private LinearLayout.LayoutParams cardMargin() {
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = dp(Theme.S2);
+        return lp;
     }
 
     /**
      * 一张入口卡：图标块 + 标题 + 副标题（{@code sub} 由调用方创建，便于之后就地更新文字）+ 箭头。
-     *
-     * @param sub 副标题 View；本方法只负责挂进卡片
      */
     private FrameLayout entryCard(int icon, String title, TextView sub, View.OnClickListener click) {
         FrameLayout card = Ui.card(activity, t);
@@ -144,6 +202,41 @@ final class SettingsScreen extends Screen {
         card.setFocusable(true);
         Ui.press(card, 0.985f);
         card.setOnClickListener(click);
+        return card;
+    }
+
+    /**
+     * 一张开关卡：图标块 + 标题 + 副标题 + 右侧 Switch。仅开关可点，卡片本身不响应点击。
+     */
+    private FrameLayout switchCard(int icon, String title, TextView sub, Switch sw) {
+        FrameLayout card = Ui.card(activity, t);
+
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        card.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        FrameLayout tile = new FrameLayout(activity);
+        tile.setBackground(Drawables.round(Ui.alpha(t.accent, 0.16f), 0, 0, dp(Theme.R_TILE)));
+        tile.addView(new IconView(activity, icon, t.accent),
+                new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+        row.addView(tile, Ui.llp(dp(46), dp(46)));
+
+        LinearLayout box = Ui.column(activity);
+        LinearLayout.LayoutParams blp = Ui.llp(0, WRAP_CONTENT);
+        blp.weight = 1f;
+        blp.leftMargin = dp(Theme.S3);
+        blp.rightMargin = dp(Theme.S2);
+        box.addView(Ui.strong(activity, title, Theme.T_CARD, t.textPrimary),
+                Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams slp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        slp.topMargin = dp(4);
+        box.addView(sub, slp);
+        row.addView(box, blp);
+
+        row.addView(sw, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+
+        card.setClickable(false);
+        card.setFocusable(false);
         return card;
     }
 
