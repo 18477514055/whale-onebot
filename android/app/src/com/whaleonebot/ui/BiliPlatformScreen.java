@@ -17,6 +17,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.text.DateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -400,9 +401,17 @@ final class BiliPlatformScreen extends Screen {
 
         // 巡看
         LinearLayout browseBox = addSectionCard(col, "巡看");
+        final EditText adminUid = textInput(browseBox, "管理员 UID（可留空）", BiliSettings.getString(cfg, "admin.uid", ""));
         final CheckBox browseEnabled = check(browseBox, "启用巡看", BiliSettings.getBool(cfg, "browse.enabled", true));
         final EditText browseSources = textInput(browseBox, "来源（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.sources")));
-        final EditText browsePartitions = textInput(browseBox, "分区（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.partitions")));
+        // 自由巡看 = 不限定分区（综合推荐流）。不自由时才按选中的分区取流，分区名从线上分区表里挑。
+        final CheckBox browseFree = check(browseBox, "自由巡看（不限分区）", BiliSettings.getBool(cfg, "browse.freeBrowse", true));
+        final List<String> chosenZones = new ArrayList<String>(BiliSettings.getStringList(cfg, "browse.partitions"));
+        final TextView[] zoneBtn = new TextView[1];
+        zoneBtn[0] = button(browseBox, zoneLabel(chosenZones), false, () -> pickZones(chosenZones, zoneBtn[0]));
+        final TextView browseZones = zoneBtn[0];
+        browseZones.setEnabled(!browseFree.isChecked());
+        browseFree.setOnCheckedChangeListener((view, checked) -> browseZones.setEnabled(!checked));
         final EditText browseKeywords = textInput(browseBox, "关键词（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.keywords")));
         final EditText browseMaxPerRun = numInput(browseBox, "单次上限（1-10）", BiliSettings.getInt(cfg, "browse.maxPerRun", 3));
         final EditText browseMaxPerDay = numInput(browseBox, "每日上限（1-200）", BiliSettings.getInt(cfg, "browse.maxPerDay", 20));
@@ -427,7 +436,7 @@ final class BiliPlatformScreen extends Screen {
         final EditText writeLikePerDay = numInput(writeBox, "每日点赞上限（0-300）", BiliSettings.getInt(cfg, "write.likePerDay", 50));
         final EditText writeCoinPerDay = numInput(writeBox, "每日投币上限（0-100）", BiliSettings.getInt(cfg, "write.coinPerDay", 10));
         final EditText writeFollowPerDay = numInput(writeBox, "每日关注上限（0-20）", BiliSettings.getInt(cfg, "write.followPerDay", 5));
-        final CheckBox writeReplyOnly = check(writeBox, "仅回复评论", BiliSettings.getBool(cfg, "write.replyOnly", true));
+        final CheckBox writeReplyOnly = check(writeBox, "回复评论", BiliSettings.getBool(cfg, "write.replyOnly", true));
         final EditText writeMinChars = numInput(writeBox, "最少字数", BiliSettings.getInt(cfg, "write.minChars", 15));
         final EditText writeMaxChars = numInput(writeBox, "最多字数", BiliSettings.getInt(cfg, "write.maxChars", 80));
         final CheckBox writeReview = check(writeBox, "发送前审核", BiliSettings.getBool(cfg, "write.reviewBeforeSend", false));
@@ -516,7 +525,9 @@ final class BiliPlatformScreen extends Screen {
             try {
                 next.put("browse.enabled", browseEnabled.isChecked());
                 next.put("browse.sources", BiliSettings.toJsonArray(BiliSettings.splitCsv(browseSources.getText().toString())));
-                next.put("browse.partitions", BiliSettings.toJsonArray(BiliSettings.splitCsv(browsePartitions.getText().toString())));
+                next.put("admin.uid", adminUid.getText().toString().trim());
+                next.put("browse.freeBrowse", browseFree.isChecked());
+                next.put("browse.partitions", BiliSettings.toJsonArray(browseFree.isChecked() ? new ArrayList<String>() : chosenZones));
                 next.put("browse.keywords", BiliSettings.toJsonArray(BiliSettings.splitCsv(browseKeywords.getText().toString())));
                 next.put("browse.maxPerRun", vMaxPerRun.intValue());
                 next.put("browse.maxPerDay", vMaxPerDay.intValue());
@@ -565,6 +576,61 @@ final class BiliPlatformScreen extends Screen {
             BiliSettings.put(activity, bot.id, bindingId, next);
             host().toast("行为设置已保存");
         });
+    }
+
+    /** 「选择分区」按钮上的文字：告诉用户现在到底按什么范围巡看。 */
+    private String zoneLabel(List<String> chosen) {
+        if (chosen == null || chosen.isEmpty()) return "分区：未选（自由巡看时不用选）";
+        return "分区：已选 " + chosen.size() + " 个";
+    }
+
+    /** 分区多选：名字来自线上分区表，用户不用猜某个分区叫什么。 */
+    private void pickZones(final List<String> chosen, final TextView label) {
+        final List<BiliRegions.Zone> cached = BiliRegions.cached(activity);
+        if (!cached.isEmpty()) {
+            showZoneDialog(cached, chosen, label);
+            return;
+        }
+        host().toast("正在取分区表…");
+        BiliRegions.load(activity, (zones, error) -> {
+            if (zones == null || zones.isEmpty()) {
+                host().toast("取分区表失败：" + (error == null ? "未知原因" : error));
+                return;
+            }
+            showZoneDialog(zones, chosen, label);
+        });
+    }
+
+    private void showZoneDialog(List<BiliRegions.Zone> zones, final List<String> chosen, final TextView label) {
+        final List<BiliRegions.Zone> flat = new ArrayList<BiliRegions.Zone>();
+        final List<String> names = new ArrayList<String>();
+        for (BiliRegions.Zone z : zones) {
+            flat.add(z);
+            names.add(z.name);
+            if (z.subs != null) {
+                for (BiliRegions.Zone s : z.subs) {
+                    flat.add(s);
+                    names.add("　└ " + s.name);
+                }
+            }
+        }
+        final boolean[] checked = new boolean[flat.size()];
+        for (int i = 0; i < flat.size(); i++) {
+            checked[i] = chosen.contains(String.valueOf(flat.get(i).tid));
+        }
+        new AlertDialog.Builder(activity)
+                .setTitle("按分区巡看")
+                .setMultiChoiceItems(names.toArray(new CharSequence[0]), checked,
+                        (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("确定", (dialog, which) -> {
+                    chosen.clear();
+                    for (int i = 0; i < flat.size(); i++) {
+                        if (checked[i]) chosen.add(String.valueOf(flat.get(i).tid));
+                    }
+                    if (label != null) label.setText(zoneLabel(chosen));
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private LinearLayout addSectionCard(LinearLayout col, String title) {

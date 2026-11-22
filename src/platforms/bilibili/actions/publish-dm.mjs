@@ -40,6 +40,44 @@ function history(ctx,size,end) {
   return ctx.request({url:HISTORY,query:{talker_id:peers(ctx).peer,session_type:1,size,mobi_app:'web',...(end && {end_seqno:end})}});
 }
 export const dmActions = {
+  // 收件箱：**不过滤对端**，把最近会话都列出来。
+  // 为什么需要它：`bili_dm_sessions` 只会汇报「配置里那个私信对端」的会话，
+  // 对端没配置时永远看不到任何私信（真机实测表现为 1400/空）。收件箱让运行端
+  // 至少能知道「谁给这个账号发了消息、几条未读」。
+  bili_dm_inbox:action('size end_ts',false,async(ctx,p)=>{
+    const size=int(p.size ?? 20,1,50,'size'), end=p.end_ts === undefined ? null:id(p.end_ts,'end_ts');
+    const data=await ctx.request({url:SESSION+'get_sessions',query:{session_type:1,size,mobi_app:'web',...(end && {end_ts:end})}});
+    const rows=list(data,'session_list');
+    return {
+      session_list:rows.map(r=>({
+        talker_id:String(r.talker_id ?? ''),
+        session_ts:Number(r.session_ts) || 0,
+        unread_count:Number(r.unread_count) || 0,
+        ack_seqno:r.ack_seqno != null ? String(r.ack_seqno) : '',
+      })),
+      next_end_ts:cursor(data,rows,'session_ts',end),
+    };
+  }),
+  // 任意会话的正文（不需要先配「私信对端」）：收件箱 + 这条 = 能真读到谁说了什么。
+  bili_dm_peer_history:action('talker_id size end_seqno',false,async(ctx,p)=>{
+    const talker=id(p.talker_id,'talker_id'), size=int(p.size ?? 20,1,50,'size');
+    const end=p.end_seqno === undefined ? null:id(p.end_seqno,'end_seqno');
+    const self=id(ctx.selfId,'self');
+    const data=await ctx.request({url:HISTORY,query:{talker_id:talker,session_type:1,size,mobi_app:'web',...(end && {end_seqno:end})}});
+    const rows=list(data,'messages');
+    return {
+      messages:rows.filter(m=>visible(m,self,talker)).map(m=>({
+        sender_uid:String(m.sender_uid),
+        receiver_id:String(m.receiver_id),
+        msg_key:id(m.msg_key,'message key'),
+        msg_seqno:id(m.msg_seqno,'message sequence'),
+        msg_type:m.msg_type,
+        timestamp:m.timestamp,
+        content:m.content,
+      })),
+      next_end_seqno:cursor(data,rows,'msg_seqno',end),
+    };
+  }),
   bili_dm_sessions:action('size end_ts',false,async(ctx,p)=>{
     const {peer}=peers(ctx), size=int(p.size ?? 20,1,50,'size'), end=p.end_ts === undefined ? null:id(p.end_ts,'end_ts');
     const data=await ctx.request({url:SESSION+'get_sessions',query:{session_type:1,size,mobi_app:'web',...(end && {end_ts:end})}});

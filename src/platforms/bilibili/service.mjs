@@ -13,6 +13,14 @@ export async function startBiliService({selfId, peerId, cookie, deviceId, client
   if(accountActions){
     const {createAccountActions} = await import('./account-actions.mjs');
     const {recommendActions} = await import('./actions/community.mjs');
+    // 私信：以前 publish-dm.mjs 只是躺在包里、没进动作表 ⇒ 手机上 bili_dm_sessions/history
+    // 一律 1404，运行端根本没法收私信。这里把它挂上（读动作永远可用；发/撤回仍受 allowWrites 管）。
+    const {dmActions} = await import('./actions/publish-dm.mjs');
+    // 读动作永远给（收私信靠它）；写动作（ack / 撤回 / 发图）只在放开写权限时出现 ——
+    // 与「只读模式下 catalog 里不该有 write 动作」的既有契约一致。
+    const dmVisible = allowAccountWrites
+      ? dmActions
+      : Object.fromEntries(Object.entries(dmActions).filter(([, spec]) => !spec.write));
     if(browserOptions) {
       const {createBiliBrowser} = await import('./actions/browser.mjs');
       browser ??= createBiliBrowser({...browserOptions,selfId,cookie});
@@ -22,8 +30,8 @@ export async function startBiliService({selfId, peerId, cookie, deviceId, client
       const base=createAccountActions({client,browser,selfId,peerId,deviceId,allowWrites:allowAccountWrites,...hooks});
       return {
         ...base,
-        names:()=>[...base.names(),...Object.keys(recommendActions)],
-        get:name=>base.get(name) ?? recommendActions[name],
+        names:()=>[...base.names(),...Object.keys(recommendActions),...Object.keys(dmVisible)],
+        get:name=>base.get(name) ?? recommendActions[name] ?? dmVisible[name],
       };
     };
   }

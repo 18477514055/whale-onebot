@@ -26,9 +26,13 @@ public final class BiliSettings {
     public static JSONObject defaults() {
         JSONObject o = new JSONObject();
         try {
+            // B 站侧的全局管理员 UID（和 QQ 那边一个意思）：填了就认这个人，空着就等于没设。
+            o.put("admin.uid", "");
             o.put("browse.enabled", true);
             o.put("browse.sources", toJsonArray(Arrays.asList("recommend", "follow")));
-            o.put("browse.partitions", toJsonArray(Arrays.asList("knowledge", "tech")));
+            // 自由巡看是默认：不限分区走综合推荐流。要从分区取流才把 freeBrowse 关掉、再去 picker 里选。
+            o.put("browse.freeBrowse", true);
+            o.put("browse.partitions", new JSONArray());
             o.put("browse.keywords", new JSONArray());
             o.put("browse.maxPerRun", 3);
             o.put("browse.maxPerDay", 20);

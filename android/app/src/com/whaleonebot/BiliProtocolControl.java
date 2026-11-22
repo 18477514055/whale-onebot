@@ -89,6 +89,15 @@ final class BiliProtocolControl {
         //   新协议端（带 actions/reply.mjs 的纯 Node 发评论实现）才接受它。
         //   判据 = 设备上真的存在那个回退实现 + 用户真的打开了「评论」。两者缺一就不传。
         if(!r.enrollment && lastCtx!=null && supportsWriteActions(lastCtx) && userAllowsWrites(r)) input.put("allowAccountWrites", true);
+        // 私信对端没配、但填了「管理员 UID」时，就用管理员当私信对端 —— 否则协议端读/回私信
+        // 都要求这个 peer（实测：不配 peer 时 bili_dm_sessions 直接 1400）。
+        if(!r.enrollment && r.peer.isEmpty() && lastCtx!=null && r.botId!=null && r.bindingId!=null){
+            try{
+                String admin=com.whaleonebot.ui.BiliSettings.getString(
+                    com.whaleonebot.ui.BiliSettings.get(lastCtx,r.botId,r.bindingId),"admin.uid","").trim();
+                if(admin.matches("[1-9][0-9]{3,19}")) input.put("peerId",admin);
+            }catch(Exception ignored){}
+        }
         if(resolver!=null)input.put("androidResolver",resolver.name);
         if(saved!=null)input.put("savedCookie",saved);
         byte[] wire=input.toString().getBytes(StandardCharsets.UTF_8);

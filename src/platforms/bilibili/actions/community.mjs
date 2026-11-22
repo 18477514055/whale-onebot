@@ -81,17 +81,32 @@ function normalizeRecommendItem(item, fallbackPartition) {
 
 /**
  * 推荐流扩展动作（独立导出，避免破坏 communityActions 的精确键集契约）。
+ * <p>两种取流方式：不给 rid = 综合推荐流（自由巡看）；给 rid = 该分区（含子分区）的推荐流。
+ * 之前这里只把 partition 当展示标签、请求永远走综合流，等于「分区」形同虚设。</p>
  */
 export const recommendActions = Object.freeze({
-  bili_recommend: spec(false, 'partition count', async (ctx, p) => {
+  bili_recommend: spec(false, 'partition rid count', async (ctx, p) => {
     const count = num(p.count ?? 10, 'count', 1, 30);
     const rawPartition = p.partition === undefined ? '' : text(p.partition, 'partition', 32, true).trim();
     const partition = rawPartition && rawPartition !== 'all' ? rawPartition : '';
-    const data = await ctx.request({
-      url: API + '/x/web-interface/wbi/index/top/feed/rcmd',
-      wbi: true,
-      query: { ps: count, fresh_type: 4, version: 1 },
-    });
+    const rawRid = p.rid === undefined || p.rid === null ? '' : String(p.rid).trim();
+    const rid = rawRid === '' || rawRid === 'all' ? 0 : id(rawRid, 'rid');
+    const feed = (url, query) => ctx.request({ url, wbi: true, query });
+    let data;
+    let fallback = '';
+    if (rid) {
+      try {
+        data = await feed(API + '/x/web-interface/region/feed/rcmd', { rid, ps: count, fresh_type: 3, version: 1 });
+      } catch (error) {
+        // 分区流在当前账号/接口上不可用（真机实测 1500）⇒ 回退综合流，并把这个事实带回去，
+        // 让运行端能在流水里留下「分区没取到，这一轮走了综合流」而不是静默什么都不看。
+        // 删除条件：B 站分区流恢复可用且真机复验 ok 之后。
+        fallback = 'region-unavailable';
+        data = await feed(API + '/x/web-interface/wbi/index/top/feed/rcmd', { ps: count, fresh_type: 4, version: 1 });
+      }
+    } else {
+      data = await feed(API + '/x/web-interface/wbi/index/top/feed/rcmd', { ps: count, fresh_type: 4, version: 1 });
+    }
     const list = Array.isArray(data)
       ? data
       : Array.isArray(data?.item)
@@ -105,6 +120,6 @@ export const recommendActions = Object.freeze({
       .filter(item => item && typeof item.bvid === 'string' && item.bvid.length > 0)
       .slice(0, count)
       .map(item => normalizeRecommendItem(item, partition));
-    return { videos };
+    return fallback ? { videos, fallback } : { videos };
   }),
 });

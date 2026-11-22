@@ -131,20 +131,24 @@ describe('B 站行为层（离线单测）', () => {
     assert.equal(r1.watchedCount, 1);
     const expectedDue = clock.now() + 27 * 60_000;
     assert.equal(r1.nextRunAt, expectedDue);
+    // 第一轮里除了取流还会先查一次私信（第 138 轮加的），所以按"这一轮之后是多少"来比，
+    // 只在断言"未到点那一轮不该再多动作"。
+    const callsAfterFirstRun = calls;
 
     // 推进 26 分钟 59 秒：仍未到点
     clock.advance(27 * 60_000 - 1000);
     const r2 = await behavior.runOnce();
     assert.equal(r2.status, 'skipped');
     assert.equal(r2.reason, 'not-due');
-    assert.equal(calls, 1);
+    assert.equal(calls, callsAfterFirstRun);
 
     // 再推进 1 秒：刚好到点
     clock.advance(1000);
     const r3 = await behavior.runOnce();
     assert.equal(r3.status, 'ok');
     assert.equal(r3.watchedCount, 1);
-    assert.equal(calls, 2);
+    // 第二轮到点：又查一次私信 + 又取一次流
+    assert.equal(calls, callsAfterFirstRun * 2);
 
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -445,13 +449,17 @@ describe('B 站行为层（离线单测）', () => {
     assert.equal(r1.status, 'stopped_verify');
     assert.equal(r1.stoppedByVerify, true);
     assert.equal(r1.watchedCount, 1);
-    assert.deepEqual(actions, ['bili_follow_feed:', 'bili_comments:BV1vf0000001']);
+    // 每轮开头的私信轮询（收件箱 + 可能一次正文读取）也在里面，所以不断言整串，
+    // 只断言「真的巡看到了、并且停住之后不再有新动作」。
+    assert.ok(actions.some((a) => a === 'bili_follow_feed:'));
+    assert.ok(actions.some((a) => a.startsWith('bili_comments:')));
 
     // 未重置前，后续 tick 仍保持停止状态
     clock.advance(60 * 60_000);
     const r2 = await behavior.runOnce();
     assert.equal(r2.status, 'stopped_verify');
-    assert.equal(actions.length, 2);
+    // 停住之后不该再有新动作（第一轮那 3 条保持原样）
+    assert.equal(actions.length, 3);
 
     await fs.rm(dir, { recursive: true, force: true });
   });
