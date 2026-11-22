@@ -25,10 +25,15 @@ function device(ctx) {
   if (typeof ctx.deviceId !== 'string' || !/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(ctx.deviceId)) invalid('configured device');
   return ctx.deviceId;
 }
-async function send(ctx,type,content) {
-  const {self,peer}=peers(ctx), dev=device(ctx);
+async function send(ctx,type,content,receiver=null) {
+  const {self,peer}=peers(ctx), dev=device(ctx), to=receiver ?? peer;
+  return sendTo(ctx,to,type,content,{self,dev});
+}
+/** 发给任意 talker（不要求先配「私信对端」）。 */
+async function sendTo(ctx,receiver,type,content,known=null) {
+  const self=known?.self ?? id(ctx.selfId,'self'), dev=known?.dev ?? device(ctx), to=id(receiver,'receiver');
   const data=await ctx.request({url:IM+'web_im/v1/web_im/send_msg',method:'POST',wbi:true,
-    query:{w_sender_uid:self,w_receiver_id:peer,w_dev_id:dev}, form:{'msg[sender_uid]':self,'msg[receiver_id]':peer,'msg[receiver_type]':1,'msg[msg_type]':type,
+    query:{w_sender_uid:self,w_receiver_id:to,w_dev_id:dev}, form:{'msg[sender_uid]':self,'msg[receiver_id]':to,'msg[receiver_type]':1,'msg[msg_type]':type,
       'msg[msg_status]':0,'msg[content]':content,'msg[dev_id]':dev,'msg[timestamp]':Math.floor(Date.now()/1000),mobi_app:'web'}});
   try {
     const key=id(data?.msg_key,'receipt');
@@ -77,6 +82,14 @@ export const dmActions = {
       })),
       next_end_seqno:cursor(data,rows,'msg_seqno',end),
     };
+  }),
+  // 给任意 talker 发文本（写动作）：让运行端能**按会话回私信**，不必先配私信对端。
+  bili_dm_send_text:action('talker_id content',true,async(ctx,p)=>{
+    const talker=id(p.talker_id,'talker_id');
+    const content=String(p.content ?? '').trim();
+    if(!content) invalid('content');
+    if(content.length>900) invalid('content');
+    return sendTo(ctx,talker,1,JSON.stringify({content}));
   }),
   bili_dm_sessions:action('size end_ts',false,async(ctx,p)=>{
     const {peer}=peers(ctx), size=int(p.size ?? 20,1,50,'size'), end=p.end_ts === undefined ? null:id(p.end_ts,'end_ts');

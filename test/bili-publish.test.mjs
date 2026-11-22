@@ -56,7 +56,7 @@ test('peer actions unavailable in account-only mode and invalid device cannot se
   const {ctx,run,calls}=harness();ctx.peerId=null;
   // ★ 2026-11-22：`bili_dm_inbox` / `bili_dm_peer_history` 是**故意不绑 peer** 的读动作
   //   （没配私信对端时也要能看到收件箱与正文），其余 dm 动作仍然必须绑 peer。
-  const peerBound = Object.keys(A).filter(n=>n.startsWith('bili_dm_') && !['bili_dm_inbox','bili_dm_peer_history'].includes(n));
+  const peerBound = Object.keys(A).filter(n=>n.startsWith('bili_dm_') && !['bili_dm_inbox','bili_dm_peer_history','bili_dm_send_text'].includes(n));
   for(const n of peerBound){assert.equal(A[n].peer,true);await assert.rejects(A[n].run(ctx,{}),TypeError);}
   ctx.peerId=peer;ctx.deviceId='bad';await assert.rejects(run('dm_send_image',{url,width:1,height:1}),TypeError);assert.equal(calls.length,0);
 });
