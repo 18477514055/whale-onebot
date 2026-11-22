@@ -26,13 +26,20 @@ public final class MirrorFetch {
     private static final String API_ORIGIN = "https://api.github.com";
     private static final String GITHUB_ORIGIN = "https://github.com/";
 
-    /** 固定顺序的镜像前缀（空串代表官方直连）。 */
+    /**
+     * 固定顺序的镜像前缀（空串代表官方直连）。
+     * ★ 2026-11-22 实测（不挂梯子、逐个下载同一个资产并比对 sha256）：
+     *   可用 = ghproxy.net / ghfast.top / ghfile.geekertao.top；
+     *   失效 = gh-proxy.com（返回 "Access to proxy rules is forbidden on this hostname"）、
+     *          github.moeyy.xyz、gh.llkk.cc、hub.gitmirror.com、mirror.ghproxy.com（不可达）。
+     *   镜像会烂，所以这里是**实测出来的清单**，不是猜的；换源失败只是慢一点，校验仍以摘要为准。
+     */
     private static final String[] PREFIXES = {
             "",
-            "https://gh-proxy.com/",
             "https://ghproxy.net/",
-            "https://hub.gitmirror.com/",
-            "https://mirror.ghproxy.com/",
+            "https://ghfast.top/",
+            "https://ghfile.geekertao.top/",
+            "https://gh-proxy.com/",
     };
 
     private static final int CONNECT_TIMEOUT_MS = 6000;

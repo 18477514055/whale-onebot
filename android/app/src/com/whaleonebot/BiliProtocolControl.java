@@ -172,7 +172,15 @@ final class BiliProtocolControl {
                             r.state=state;r.at=android.os.SystemClock.elapsedRealtime();
                             // 端口与令牌只有这里知道 ⇒ 已验证就把它们交给容器里的行为 worker。
                             // 不做这件事，行为层永远连不上协议端（它自己猜不出随机端口和令牌）。
-                            if("verified".equals(state)&&r.port>=1024)com.whaleonebot.ui.BiliRuntime.publishProtocol(c,bot,r.self,r.port,r.token);
+                            if("verified".equals(state)&&r.port>=1024){
+                                com.whaleonebot.ui.BiliRuntime.publishProtocol(c,bot,r.self,r.port,r.token);
+                                // 顺手把行为配置也重发一遍。原因：配置原先只在「保存配置 / 进 B 站配置页 / 开平台开关」时写盘，
+                                // 于是像 browse.tzOffsetMinutes（手机时区偏移）这种**不在 App 里改、但必须新鲜**的字段会一直停在旧值 ——
+                                // 用户不打开那个页面，作息时段就会按旧时区/别的时区解释（跨时区、夏令时都会错）。
+                                // ★ 只在「刚变成 verified」时写（notify），否则每条 verified 消息都刷 updatedAt，
+                                //   行为层会把它当配置变更、每 20 秒重建一次（白抖）。
+                                if(notify){try{com.whaleonebot.ui.BiliRuntime.publish(c,bot,binding);}catch(Exception ignored){}}
+                            }
                         }
                         // The child's own identity check AND a verified state with the same expected UID.
                         if(pending!=null && "verified".equals(r.state)) {
@@ -203,7 +211,12 @@ final class BiliProtocolControl {
     static synchronized void stopAll(){for(Run r:runs.values())halt(r);}
     static synchronized boolean hasSaved(Context c,String bot,String binding){try{return BiliSessionStore.of(c).present(bot,binding);}catch(Exception ignored){return false;}}
     static synchronized boolean forget(Context c,String bot,String binding){try{stop(bot,binding);BiliSessionStore.of(c).forget(bot,binding);return true;}catch(Exception ignored){return false;}}
-    private static boolean live(Run r){return r!=null&&"verified".equals(r.state)&&r.proc!=null&&r.proc.isAlive()&&android.os.SystemClock.elapsedRealtime()-r.at<15000&&r.token!=null;}
+    // ★ 2026-11-22：这里以前还要求 `elapsedRealtime()-r.at < 15000`。r.at 只在**状态变化**时刷新，
+    //   协议端稳定连上之后不会再发状态行 ⇒ 15 秒后 live() 假、lease() 返回 null、UI 显示「未连接」、
+    //   上层还会把协议端当掉重新拉起（真机表现为端口每 1–2 分钟换一次）。
+    //   存活判据只留「进程在 + 状态 verified + 有令牌」；「多久没消息」单独用 lastReceived 报，不冒充断开。
+    private static boolean live(Run r){return r!=null&&"verified".equals(r.state)&&r.proc!=null&&r.proc.isAlive()&&r.token!=null;}
+    static synchronized long sinceLastMessage(String bot,String binding){Run r=runs.get(key(bot,binding));return r==null?0L:r.lastReceived;}
     static synchronized String lease(String bot,JSONObject row,JSONObject projected)throws Exception{Run r=runs.get(key(bot,row.getString("id")));if(!live(r)||!r.self.equals(row.optString("accountId"))||!r.peer.equals(row.optString("peerId")))return null;projected.put("httpUrl","http://127.0.0.1:"+r.port).put("wsUrl","ws://127.0.0.1:"+r.port);return r.token;}
     static synchronized String authorizationLink(String bot,String binding){Run r=runs.get(key(bot,binding));return r!=null&&"awaiting_confirmation".equals(r.state)&&r.proc!=null&&r.proc.isAlive()&&System.currentTimeMillis()<r.expiresAt&&r.challenge!=null?r.challenge:"";}
     static synchronized JSONObject status(String bot,String binding){JSONObject out=new JSONObject();try{Run r=runs.get(key(bot,binding));boolean ok=live(r);String state=r==null?"stopped":r.state;if("awaiting_confirmation".equals(state)){if(System.currentTimeMillis()>=r.expiresAt)state="expired";else if(r.proc==null||!r.proc.isAlive())state="failed";}if(!ok&&"verified".equals(state))state="disconnected";out.put("state",state);if(r!=null)out.put("received",r.received).put("lastReceived",r.lastReceived);if(ok)out.put("selfId",r.self).put("httpUrl","http://127.0.0.1:"+r.port).put("wsUrl","ws://127.0.0.1:"+r.port);}catch(Exception ignored){}return out;}

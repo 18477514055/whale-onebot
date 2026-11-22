@@ -109,7 +109,11 @@ describe('B 站行为层运行端宿主（离线单测）', () => {
       bili_reply_list: { bvid: 'BV1xx411c7mD', rootRpid: '12345', count: 3 },
     };
     for (const [action, value] of Object.entries(params)) await bridge(action, value);
-    await assert.rejects(() => bridge('bili_not_a_thing', {}), /unknown action/);
+    // ★ 契约（第 140 轮定下的，这条测试原先按旧契约写）：`bili_*` 名字一律**直通协议端**，
+    //   由协议端自己校验（拼错的动作会回 1404，失败照样可见）；只有不像 `bili_*` 的才本地抛错。
+    await bridge('bili_not_a_thing', {});
+    assert.ok(calls.some((c) => c.action === 'bili_not_a_thing'), 'bili_* 要直通给协议端');
+    await assert.rejects(() => bridge('not_an_action', {}), /unknown action/);
     assert.ok(calls.some((c) => c.action === 'bili_recommend'));
     assert.ok(calls.some((c) => c.action === 'bili_video_info'), 'bili_comments 要先取 aid');
   });

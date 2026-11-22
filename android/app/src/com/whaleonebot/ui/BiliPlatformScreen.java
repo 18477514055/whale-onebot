@@ -418,7 +418,7 @@ final class BiliPlatformScreen extends Screen {
         final EditText browseMaxMin = numInput(browseBox, "单视频最长分钟（1-30）", BiliSettings.getInt(cfg, "browse.maxMinutesPerVideo", 3));
         final EditText browseGapMin = numInput(browseBox, "间隔分钟（10-360）", BiliSettings.getInt(cfg, "browse.gapMinutes", 45));
         final EditText browseJitter = numInput(browseBox, "抖动比例 %（0-90）", BiliSettings.getInt(cfg, "browse.jitterPercent", 40));
-        final EditText browseWindows = textInput(browseBox, "活跃时段（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.windows")));
+        final EditText browseWindows = textInput(browseBox, "活跃时段（手机时间，逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.windows")));
         final EditText browseSkip = numInput(browseBox, "跳过概率 %（0-100）", BiliSettings.getInt(cfg, "browse.skipPercent", 70));
 
         // 评论读取

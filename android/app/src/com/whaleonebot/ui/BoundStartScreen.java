@@ -49,7 +49,7 @@ final class BoundStartScreen extends Screen {
                 JSONObject row=rows.optJSONObject(i);
                 if(row!=null && BindingPresentation.connected(v,state,row.optString("id"),row.optString("platform"),row.optString("accountId"),row.optString("state"))) verified=true;
             }
-            if(sb.length()>0)sb.append("\n\n");sb.append(v.label());if(!dashboard)sb.append("\n").append(v.detail());sb.append("\n").append(verified?"已验证连接":v.accountId.isEmpty()?"待登录":"未验证连接");
+            if(sb.length()>0)sb.append("\n\n");sb.append(v.label());if(!dashboard)sb.append("\n").append(v.detail());sb.append("\n").append(verified?"已验证连接":v.accountId.isEmpty()?"待登录":("unknown".equals(state)?"状态未知（运行端在跑，尚未核验账号）":"未验证连接"));
         }
         if(dashboard&&sb.length()==0)sb.append("尚未添加 QQ 账号");
         String s=sb.toString();if(!s.equals(previous)){status.setText(s);previous=s;}
@@ -58,7 +58,7 @@ final class BoundStartScreen extends Screen {
         switch(state){
             case "waiting":return "等待账号配置、插件或授权"; case "partial":return "部分绑定已启动（账号连接见下方）";
             case "running":return "运行中（账号连接见下方）"; case "starting":return "启动中"; case "stopped":return "已停止";
-            case "external":return "由自定义运行端管理"; case "failed":return "启动失败，请检查配置"; case "stale":return "状态已过期";
+            case "external":return "由自定义运行端管理"; case "failed":return "启动失败，请检查配置"; case "stale":return "状态已过期（运行端未在跑）";
             case "credentials_required":return "缺少本次令牌，请编辑绑定"; case "config_required":return "请先完善账号绑定与运行端配置";
             case "runtime_missing":return "缺少支持多绑定的内置运行端"; case "container_required":return "本地容器尚未就绪"; default:return "暂无可核验状态";
         }

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   cleanDraft,
   createCommentGenerator,
+  createDmReply,
   createSummarizer,
 } from '../input/agent-app/src/features/bili-behavior/comment-generator.mjs';
 
@@ -74,7 +75,31 @@ describe('B 站评论生成器（离线单测，模型用桩）', () => {
     void system;
   });
 
-  it('6. 归纳器：返回摘要字符串；空结果抛错（engine 据此保留原文）', async () => {
+  // ★ 这条是补一个真踩过的坑（2026-11-22 16:4x）：`createDmReply` 曾读 `res.content`，
+  //   而 chatCompletion 的真实返回是 `{ message: { content } }` ⇒ 每条私信都被当成「模型只给了思考」，
+  //   dmReplies 恒 0。**桩必须用真实返回形状**，否则测的就是桩不是实现。
+  it('6. 私信回复：按 model 的真实返回形状取正文（message.content），空正文返 null', async () => {
+    let seen = null;
+    const gen = createDmReply({
+      ...quiet, minChars: 2, maxChars: 60,
+      chat: async (args) => { seen = args; return { message: { content: ' 在的，你说 ' }, finishReason: 'stop' }; },
+    });
+    const draft = await gen({ talker: '1680813704', text: '现在在吗', isAdmin: true });
+    assert.deepEqual(draft, { text: '在的，你说' });
+    assert.equal(seen.purpose, 'chat');
+    assert.ok(seen.maxTokens >= 800, 'private 回复与评论同源，maxTokens 小了正文会被思考吃空');
+    const user = seen.messages.find((m) => m.role === 'user').content;
+    assert.match(user, /现在在吗/);
+    assert.match(user, /管理员/, 'admin.uid 命中要按管理员对待');
+
+    const blank = createDmReply({ ...quiet, chat: async () => ({ message: { content: '' }, finishReason: 'stop' }) });
+    assert.equal(await blank({ talker: '1', text: 'hi' }), null);
+
+    const boom = createDmReply({ ...quiet, chat: async () => { throw new Error('502'); } });
+    assert.equal(await boom({ talker: '1', text: 'hi' }), null, '模型挂了不发，但不许炸整轮');
+  });
+
+  it('7. 归纳器：返回摘要字符串；空结果抛错（engine 据此保留原文）', async () => {
     const ok = createSummarizer({ ...quiet, chat: async () => ({ message: { content: '整体是夸画面；争议在时长太短。' } }) });
     assert.equal(await ok([{ author: 'a', text: 't' }], { bvid: 'BV1' }), '整体是夸画面；争议在时长太短。');
 

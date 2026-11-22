@@ -98,13 +98,22 @@ final class BindingControl {
             if(!id(bot))throw new IOException();JSONObject b=find(bots(c.getFilesDir()),bot); Run run=runs.get(bot);
             state="custom".equals(b.optString("runtimeKind"))?"external":run==null?"stopped":run.state;
             JSONArray rows=b.optJSONArray("bindings"), live=null;
+            // ★ 2026-11-22：以前这里只要拿不到「30 秒内刷新的 binding-status.json」就把整台机器判成
+            //   "stale"，于是每个绑定都显示「未连接」—— 而 legacy 运行端**根本不写那个证明文件**
+            //   （真机实测：rootfs/opt/whale/bindings 下没有 binding-status.json），所以启动页永远
+            //   显示未连接。现在区分两件事：进程活着 = running；账号是否核验过 = 证明文件说了算，
+            //   没有证明就是 unknown（状态未知），不冒充"未连接"。
+            boolean proofFresh=false;
             if("running".equals(state)){
-                state="stale";
                 try {JSONObject proof=read(new File(c.getFilesDir(),"rootfs/opt/whale/bindings/"+bot+"/binding-status.json"));long at=proof.getLong("updatedAt"),age=System.currentTimeMillis()-at;
-                    if(run.proc!=null&&run.proc.isAlive()&&rows!=null&&rows.toString().equals(run.selection)&&bot.equals(proof.getString("botId"))&&run.runId.equals(proof.optString("runId"))&&at>=run.since&&age>=0&&age<30000){live=proof.getJSONArray("bindings");state="running";}
+                    if(run.proc!=null&&run.proc.isAlive()&&rows!=null&&rows.toString().equals(run.selection)&&bot.equals(proof.getString("botId"))&&run.runId.equals(proof.optString("runId"))&&at>=run.since&&age>=0&&age<30000){live=proof.getJSONArray("bindings");proofFresh=true;}
                 }catch(Exception ignored){}
+                // 没有可用的证明文件时：进程在就仍是 running（账号状态未知），进程没了才是 stale。
+                if(!proofFresh) state=(run!=null&&run.proc!=null&&run.proc.isAlive())?"running":"stale";
             }
             for(int i=0;rows!=null&&i<rows.length();i++){JSONObject r=rows.getJSONObject(i);String k=r.optString("id"),s="external".equals(state)?"external":"stopped";
+                // 运行端在跑但没有账号核验证明 ⇒ 状态未知（不是"未连接"）。
+                if("running".equals(state)&&live==null)s="unknown";
                 if(live!=null){s="disconnected";try {JSONObject v=find(live,k);String raw=v.optString("state"); if(r.optString("accountId").equals(v.optString("selfId"))&&r.optString("platform").equals(v.optString("platform"))&&Arrays.asList("starting","disconnected","verified","failed","disabled","stopped").contains(raw))s=raw;}catch(Exception ignored){}}
                 result.put(new JSONObject().put("id",k).put("platform",r.optString("platform")).put("accountId",r.optString("accountId")).put("state",s));}
         }catch(Exception e){state="failed";}

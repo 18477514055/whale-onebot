@@ -20,21 +20,24 @@ final class ReleaseCache {
 
   /**
    * 镜像前缀白名单（原因：用户没有梯子，直连 GitHub 资产经常超时）。
-   * 顺序固定：官方直连之后依次尝试 gh-proxy.com → ghproxy.net → hub.gitmirror.com → mirror.ghproxy.com。
+   * ★ 2026-11-22 实测（不挂梯子、同一个资产逐个下载比对 sha256）：
+   *   ghproxy.net / ghfast.top / ghfile.geekertao.top 可用；
+   *   gh-proxy.com 已返回 "Access to proxy rules is forbidden on this hostname"，
+   *   hub.gitmirror.com 与 mirror.ghproxy.com 不可达 —— 前两个已从清单移除，保留 gh-proxy.com 作最后尝试。
    * 镜像只作传输层，不放宽任何 SHA-256 / 长度 / pin 校验。
    */
   static final String[] MIRROR_PREFIXES = {
-    "https://gh-proxy.com/",
     "https://ghproxy.net/",
-    "https://hub.gitmirror.com/",
-    "https://mirror.ghproxy.com/",
+    "https://ghfast.top/",
+    "https://ghfile.geekertao.top/",
+    "https://gh-proxy.com/",
   };
 
   private static final String[] MIRROR_HOSTS = {
-    "gh-proxy.com",
     "ghproxy.net",
-    "hub.gitmirror.com",
-    "mirror.ghproxy.com",
+    "ghfast.top",
+    "ghfile.geekertao.top",
+    "gh-proxy.com",
   };
 
   private final File cache;

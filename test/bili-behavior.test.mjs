@@ -53,6 +53,23 @@ function makeComments(bvid, count) {
 }
 
 describe('B 站行为层（离线单测）', () => {
+  // ★ 真机踩过的坑（2026-11-22 16:4x）：容器跑 UTC，而作息窗是用户在自己手机上填的钟点。
+  //   不给偏移就按本机时间算 ⇒ 东八区用户填「09:00-12:00」，实际生效是当地 17:00-20:00。
+  it('1b. 作息窗按用户时区换算（容器 UTC + 手机偏移）', () => {
+    const utc = Date.UTC(2026, 10, 22, 8, 40, 0, 0);
+    const windows = ['09:00-12:00', '14:00-23:00'];
+    // 东八区 +480 ⇒ 当地 16:40，落在 14:00-23:00
+    assert.equal(isInWindows(utc, windows, 480), true);
+    // 西五区 -300 ⇒ 当地 03:40，两条窗都不在
+    assert.equal(isInWindows(utc, windows, -300), false);
+    // 跨午夜窗在东八区：UTC 17:30 ⇒ 当地 01:30，属于 22:00-02:00
+    assert.equal(isInWindows(Date.UTC(2026, 10, 22, 17, 30), ['22:00-02:00'], 480), true);
+    // 负偏移取模不许出负数：UTC 02:00 − 300 = 前一天 21:00
+    assert.equal(isInWindows(Date.UTC(2026, 10, 22, 2, 0), ['20:00-23:00'], -300), true);
+    // 空窗仍全天允许
+    assert.equal(isInWindows(utc, [], 480), true);
+  });
+
   it('1. 作息窗判断：窗内 / 窗外 / 跨午夜 / 多条窗', async () => {
     const t = (h, m) => new Date(2026, 10, 22, h, m, 0, 0).getTime();
 
@@ -105,6 +122,7 @@ describe('B 站行为层（离线单测）', () => {
     const dir = await makeTempDir();
     const clock = makeClock(new Date(2026, 10, 22, 10, 0, 0, 0));
     let calls = 0;
+    let dmCalls = 0;
     // 固定 random = 0 => 下次间隔 = 45 * (1 - 0.4) = 27 分钟
     const behavior = createBehavior({
       config: {
@@ -117,7 +135,12 @@ describe('B 站行为层（离线单测）', () => {
         'read.enabled': false,
         'write.enabled': false,
       },
-      call: async () => {
+      call: async (action) => {
+        // 私信与取流走同一个 call：分开计数，否则「未到点也该查私信」这条变更会被读数掩盖。
+        if (String(action).startsWith('bili_dm_')) {
+          dmCalls += 1;
+          return { session_list: [] };
+        }
         calls += 1;
         return { videos: makeVideos([`BV1due00000${calls}`]) };
       },
@@ -131,24 +154,27 @@ describe('B 站行为层（离线单测）', () => {
     assert.equal(r1.watchedCount, 1);
     const expectedDue = clock.now() + 27 * 60_000;
     assert.equal(r1.nextRunAt, expectedDue);
-    // 第一轮里除了取流还会先查一次私信（第 138 轮加的），所以按"这一轮之后是多少"来比，
-    // 只在断言"未到点那一轮不该再多动作"。
     const callsAfterFirstRun = calls;
+    const dmAfterFirstRun = dmCalls;
 
     // 推进 26 分钟 59 秒：仍未到点
     clock.advance(27 * 60_000 - 1000);
     const r2 = await behavior.runOnce();
     assert.equal(r2.status, 'skipped');
     assert.equal(r2.reason, 'not-due');
+    // 没到点 ⇒ 不该再取流
     assert.equal(calls, callsAfterFirstRun);
+    // ★ 但私信照样要看：巡看有 45 分钟节奏，私信的节奏是 dm.pollSeconds（默认 15 秒）。
+    //   拿巡看节奏管私信 = 别人发一句要等 45 分钟，所以这里必须多一次私信轮询。
+    assert.equal(dmCalls, dmAfterFirstRun + 1);
 
     // 再推进 1 秒：刚好到点
     clock.advance(1000);
     const r3 = await behavior.runOnce();
     assert.equal(r3.status, 'ok');
     assert.equal(r3.watchedCount, 1);
-    // 第二轮到点：又查一次私信 + 又取一次流
-    assert.equal(calls, callsAfterFirstRun * 2);
+    // 到点：又取一次流
+    assert.equal(calls, callsAfterFirstRun + 1);
 
     await fs.rm(dir, { recursive: true, force: true });
   });

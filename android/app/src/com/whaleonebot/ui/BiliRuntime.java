@@ -92,6 +92,12 @@ public final class BiliRuntime {
             out.put("enabled", BotRegistry.platformEnabled(botId, "bilibili"));
             out.put("botId", botId == null ? "" : botId);
             out.put("bindingId", bindingId == null ? "" : bindingId);
+            // 作息窗（browse.windows）是用户在自己手机上填的钟点，而容器跑的是 UTC。
+            // 不把手机时区偏移一起下发，「活跃时段 09:00-12:00」在东八区会整体偏 8 小时
+            // （真机实测 2026-11-22：设了时段却整天不动作，因为容器里算出来是 01:00-04:00）。
+            // getOffset 已经把夏令时算进去了，随系统设置变。
+            out.put("browse.tzOffsetMinutes",
+                    java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000);
             out.put("updatedAt", System.currentTimeMillis());
         } catch (Exception ignored) {
         }
