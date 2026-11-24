@@ -234,6 +234,12 @@ final class HomeScreen extends Screen {
         TextView ok = Ui.button(activity, t, "知道了", false);
         ok.setOnClickListener(v -> {
             Onboarding.markSeen(activity);
+            // ★ 不能直接 build()：build() 会再往 root 里 addView 一列，旧列没被移除 ⇒
+            //   两层界面叠着画，文字互相压印（2026-11-25 主力机截图就是这现象）。
+            //   重建前先清空：root 的全部子 View、平台计数表、卡片引用。
+            root.removeAllViews();
+            cards.clear();
+            platformCounts.clear();
             build();
         });
         LinearLayout.LayoutParams goLp = Ui.llp(0, dp(Theme.TOUCH));

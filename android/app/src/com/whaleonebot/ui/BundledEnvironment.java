@@ -25,9 +25,41 @@ public final class BundledEnvironment {
         // 同时把内置的 core.zip 预埋进 core-release-cache，避免新建核心时重复联网下载
         seedAssetToCache(ctx, files, "bundled/core.zip");
 
-        File existing = QqClientInstaller.resolveRootfs(files);
-        android.util.Log.i("WhaleEnv", "ensure: 进入，现有 rootfs=" + (existing == null ? "无" : existing.getAbsolutePath()));
-        if (existing != null) return true;
+        // ★ 2026-11-25 主力机事故：这里原先用 QqClientInstaller.resolveRootfs(files) 判断「已就绪」，
+        //   而那个方法会扫 files/core-environments/*/rootfs。于是「装过核心」的机器会出现
+        //   「ensure 说环境就绪（返回 true）、ContainerService 却按 files/rootfs 起容器」⇒
+        //   proot 报 `/bin/bash not found (root = files/rootfs)`、LOGIN exit rc=1，
+        //   用户看到的就是「点启动容器什么都不发生」。判据必须与容器实际使用的路径一致：只认 files/rootfs。
+        File legacy = new File(files, "rootfs");
+        boolean legacyReady = QqClientInstaller.usable(legacy);
+        android.util.Log.i("WhaleEnv", "ensure: 容器用的 rootfs=" + legacy.getAbsolutePath() + " 可用=" + legacyReady);
+        if (legacyReady) return true;
+
+        // 目录存在但不可用（空骨架 / 上次铺到一半被打断）：ManagedEnvironment.prepare 见到已存在的
+        // files/rootfs 会直接抛 "Existing environment preserved" 而拒绝覆盖 ⇒ 先挪到旁边留证再铺。
+        File qqKeep = new File(files, "tmp/qq-client-keep");
+        if (legacy.exists()) {
+            // ★ 2026-11-25 用户问「为什么每次更新都要重新下载 QQ」：
+            //   QQ 客户端是装在**环境目录里面**的（<rootfs>/opt/QQ），环境一旦整棵换掉它就跟没。
+            //   同一分区内的 rename 是瞬时的、不复制那 1.2 GB，所以在挪走旧 rootfs 之前
+            //   先把 opt/QQ 提到 tmp/qq-client-keep，铺完新环境再放回去 —— 环境换、客户端留。
+            File oldQQ = new File(legacy, "opt/QQ");
+            if (new File(oldQQ, "resources/app/wrapper.node").isFile()) {
+                if (qqKeep.exists()) qqKeep.delete();
+                if (oldQQ.renameTo(qqKeep)) {
+                    android.util.Log.i("WhaleEnv", "ensure: 旧环境里的 QQ 客户端已暂存（铺完再放回，不用重装）");
+                } else {
+                    android.util.Log.w("WhaleEnv", "ensure: 旧 QQ 客户端暂存失败，铺完需要重新装 QQ");
+                }
+            }
+            File aside = new File(files, "rootfs.broken-" + System.currentTimeMillis());
+            if (legacy.renameTo(aside)) {
+                android.util.Log.w("WhaleEnv", "ensure: 现有 rootfs 不可用，已挪到 " + aside.getName() + " 再重新铺");
+            } else {
+                android.util.Log.w("WhaleEnv", "ensure: 现有 rootfs 不可用且挪不动，放弃自动铺设");
+                return false;
+            }
+        }
 
         File tmp = new File(files, "tmp");
         if (!tmp.isDirectory() && !tmp.mkdirs()) return false;
@@ -57,7 +89,18 @@ public final class BundledEnvironment {
             com.whaleonebot.ManagedEnvironment.prepare(files, out, sha);
             android.util.Log.i("WhaleEnv", "内置环境包已铺成 rootfs，sha256=" + sha);
             seedFileToCache(files, out, sha);
-            return QqClientInstaller.resolveRootfs(files) != null;
+            // 新环境就位：把暂存的 QQ 客户端放回容器根（同分区 rename，瞬时，不复制 1.2 GB）
+            if (qqKeep.isDirectory()) {
+                File opt = new File(legacy, "opt");
+                if (!opt.isDirectory() && !opt.mkdirs()) {
+                    android.util.Log.w("WhaleEnv", "ensure: 建不出新环境的 /opt，QQ 客户端需要重新装");
+                } else if (qqKeep.renameTo(new File(opt, "QQ"))) {
+                    android.util.Log.i("WhaleEnv", "ensure: QQ 客户端已放回新环境（这次不用重新下载/重装）");
+                } else {
+                    android.util.Log.w("WhaleEnv", "ensure: QQ 客户端放回失败，需要重新装 QQ");
+                }
+            }
+            return QqClientInstaller.usable(legacy);
         } catch (Throwable e) {
             android.util.Log.w("WhaleEnv", "内置环境包铺开失败（可改用手动下载环境包）", e);
             return false;

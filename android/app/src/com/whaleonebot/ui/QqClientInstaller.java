@@ -226,7 +226,7 @@ final class QqClientInstaller {
      * 于是「内置环境包已铺成 rootfs」日志打了、环境配置页也写「容器：已就绪」，但装 QQ 仍然报
      * 「找不到可用的运行环境（rootfs）」—— 判据互相不认。这里两种布局都认。
      */
-    private static boolean usable(File root) {
+    static boolean usable(File root) {
         if (root == null || !root.isDirectory()) return false;
         if (RootfsLayout.isReady(root)) return true;
         // ★ 实测（2026-11-24，环境包 892 条目）：whale-environment **没有** etc/debian_version，
