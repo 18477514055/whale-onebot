@@ -36,6 +36,24 @@ final class QqDebArchive {
             accepted=true;return temp;
         }finally{if(!accepted)java.nio.file.Files.deleteIfExists(temp.toPath());}
     }
+    /**
+     * 2026-11-23（用户口径：不设版本白名单）：只校验「这确实是一个结构完整的 Debian 包」，
+     * **不再比对某个固定版本的 SHA-256**。兼容性由使用者自己判断并反馈 —— 我们本来就保证不了
+     * 哪个版本一定能登录。结构校验（ar 头 + 三个成员 + 成员大小上限）仍然保留，免得把任意文件当包收下。
+     */
+    static File stageUnverified(File privateDir,InputStream in,long size)throws IOException{
+        if(privateDir==null||!privateDir.isDirectory()||size<=0||size>(521L<<20))throw invalid();
+        File temp=File.createTempFile("qq-client-",".part",privateDir);boolean accepted=false;
+        try{
+            long count=0;byte[] buffer=new byte[65536];
+            try(FileOutputStream out=new FileOutputStream(temp)){
+                int n;while((n=in.read(buffer))!=-1){if(n==0||n>size-count)throw invalid();out.write(buffer,0,n);count+=n;}
+            }
+            if(count!=size)throw invalid();
+            try(InputStream checked=new BufferedInputStream(new FileInputStream(temp))){inspect(checked,(name,body)->{});}
+            accepted=true;return temp;
+        }finally{if(!accepted)java.nio.file.Files.deleteIfExists(temp.toPath());}
+    }
     static void inspect(InputStream in,Reader reader)throws IOException{
         if(!ascii(take(in,8)).equals("!<arch>\n"))throw invalid();
         byte[] drain=new byte[16384];

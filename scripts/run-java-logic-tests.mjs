@@ -19,7 +19,7 @@ const TEST_DIR = path.join(ROOT, 'test/java');
 const OUT = path.join(ROOT, '.tmp/java-logic-test');
 
 // 被测的纯逻辑类（都刻意不 import Android）
-const LOGIC = ['Theme.java', 'BotConfigJson.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java'];
+const LOGIC = ['Theme.java', 'BotConfigJson.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java','QqClientFiles.java','SetupState.java'];
 
 const logicSrcs = LOGIC.map((n) => path.join(UI, n));
 for (const f of logicSrcs) {

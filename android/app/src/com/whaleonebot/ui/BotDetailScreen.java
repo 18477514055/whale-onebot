@@ -57,8 +57,8 @@ final class BotDetailScreen extends Screen {
                 long bytes=ci.addPlatformBytes(core.id,version,platform);
                 activity.runOnUiThread(()->{action.setText("保存并安装 "+label+" · "+android.text.format.Formatter.formatFileSize(activity,bytes));action.setEnabled(true);
                     action.setOnClickListener(w->{if(!BotRegistry.addPlatform(bot.id,core.id,platform)){host().toast("平台配置已变化，请返回重试");return;}
-                        action.setEnabled(false);action.setText("正在安装 "+label);new Thread(()->{boolean ok=false;try{ok=ci.installAttachedPlatform(core.id,bot.id,version,platform,null);}catch(Exception ignored){}final boolean installed=ok;
-                            activity.runOnUiThread(()->{host().toast(installed?"已安装 "+label:"平台已保存，请在平台插件中重试安装");build();});},"install-attached-platform").start();});});
+                        action.setEnabled(false);action.setText("正在安装 "+label);new Thread(()->{boolean ok=false;String err="";try{ok=ci.installAttachedPlatform(core.id,bot.id,version,platform,null);}catch(Exception ex){android.util.Log.w("WhaleEnv","安装平台插件失败: "+platform,ex);err=CoreManagerScreen.safe(ex);}final boolean installed=ok;final String reason=err;
+                            activity.runOnUiThread(()->{host().toast(installed?"已安装 "+label:("平台已保存，插件待重试："+(reason.isEmpty()?"请在平台插件中重试":reason)));build();});},"install-attached-platform").start();});});
             }catch(Exception e){activity.runOnUiThread(()->{action.setText("添加 "+label);action.setEnabled(true);host().toast(CoreManagerScreen.safe(e));});}},"quote-platform").start();});
     }
     private void edit(BotRegistry.Binding v) { shell.externalAccount(bot.id,v==null?null:v.id); }

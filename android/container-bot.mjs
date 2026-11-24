@@ -17,6 +17,22 @@ const PROJECT = '/qq-onebot';
 const RUNTIME = path.join(PROJECT, 'runtime');
 const LOADER = '/opt/whale/native/loader.node';
 const WRAPPER = '/opt/QQ/resources/app/wrapper.node';
+
+// ★ 2026-11-23（用户口径：不再限定客户端版本）：版本号从**装好的客户端**里读，
+//   不再写死 3.2.35-54395。写死会让装 3.2.32 的人用 3.2.35 的身份登录（第一个使用者反馈的问题）。
+//   读不到才退回原值 —— 原值就是以前写死的那一句，所以老环境行为不变。
+function detectClientVersion() {
+  try {
+    const raw = JSON.parse(fs.readFileSync('/opt/QQ/resources/app/package.json', 'utf8'));
+    const v = String(raw?.version || '').trim();
+    if (/^\d+\.\d+\.\d+-\d+$/.test(v)) return v;
+  } catch { /* 客户端还没装 / 结构不同：走下面的兜底 */ }
+  return '3.2.35-54395';
+}
+const CLIENT_VER = detectClientVersion();
+const CLIENT_APP_VER = CLIENT_VER.split('-')[0];
+const CLIENT_BUILD = CLIENT_VER.split('-')[1] || '';
+const CLIENT_QUA = 'V1_LNX_NQ_' + CLIENT_APP_VER + '_' + CLIENT_BUILD + '_GW_B';
 // 账号标识不在本文件里写死：①环境变量 → ②容器的 src/config/account.mjs（唯一来源）→ ③上次登录留下的 identity.json。
 // ★ 三级回退是必要的：容器里的 src 可能还没同步到最新（少 config/account.mjs），那时不能因为拿不到号就退化成扫码。
 const BOT_UIN = await (async () => {
@@ -288,8 +304,8 @@ for (const n of ['onLog', 'onGetSrvCalTime', 'onShowErrUITips', 'onInstallFinish
   'onUpdateGeneralFlag', 'onGetOfflineMsg', 'fixPicImgType', 'getAppSetting']) callbacks[n] = () => {};
 engine.initWithDeskTopConfig({
   base_path_prefix: '', platform_type: 5, app_type: 4,
-  app_version: '3.2.35-54395', os_version: os.version(), use_xlog: true,
-  qua: 'V1_LNX_NQ_3.2.35_54395_GW_B',
+  app_version: CLIENT_VER, os_version: os.version(), use_xlog: true,
+  qua: CLIENT_QUA,
   global_path_config: { desktopGlobalPath: GLOBAL },
   thumb_config: { maxSide: 324, minSide: 48, longLimit: 6, density: 2 },
 }, callbacks);
@@ -302,7 +318,7 @@ log('startup/session ok');
 const login = w.NodeIKernelLoginService.get();
 login.initConfig({
   machineId: '', appid: '537403759', platVer: 'Linux ' + os.release(),
-  commonPath: GLOBAL, clientVer: '3.2.35-54395', hostName: os.hostname(),
+  commonPath: GLOBAL, clientVer: CLIENT_VER, hostName: os.hostname(),
 });
 log('login service init ok');
 
@@ -413,10 +429,10 @@ function initializeSession() {
   const nativeConfig = {
     selfUin: BOT_UIN, selfUid: state.uid,
     desktopPathConfig: { account_path: GLOBAL },
-    clientVer: '3.2.35-54395', a2: '', d2: '', d2Key: '', machineId: '', platform: 5,
+    clientVer: CLIENT_VER, a2: '', d2: '', d2Key: '', machineId: '', platform: 5,
     platVer: 'Linux ' + os.release(), appid: '537403759',
     defaultFileDownloadPath: path.join(RUNTIME, 'downloads'),
-    deviceInfo: { guid, buildVer: '3.2.35-54395', localId: 2052, devName: os.hostname(),
+    deviceInfo: { guid, buildVer: CLIENT_VER, localId: 2052, devName: os.hostname(),
       devType: 'Linux', vendorName: '', osVer: os.version() || os.type(), vendorOsName: 'Linux',
       setMute: false, vendorType: 0 },
     deviceConfig: '{"appearance":{"isSplitViewMode":true},"msg":{}}',

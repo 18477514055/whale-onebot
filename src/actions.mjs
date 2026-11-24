@@ -29,6 +29,10 @@ add('set_group_kick set_group_ban set_group_admin set_group_card set_group_speci
 add('set_group_kick_members', {group_id:'id'}, true);
 add('set_group_name', {group_id:'id', group_name:'string'}, true);
 add('set_group_remark', {group_id:'id'}, true);
+// 置顶＝群会话置顶（内核 group.setTop(groupCode, isTop)）。默认 enable:true。
+add('set_group_top', {group_id:'id'}, true);
+// 私聊（好友）会话置顶：两个内核候选都试，返回实际生效的那条。
+add('set_friend_top', {user_id:'id'}, true);
 add('set_friend_remark', {user_id:'id'}, true);
 add('set_group_whole_ban set_group_leave', {group_id:'id'}, true);
 add('set_group_anonymous', {group_id:'id'}, true);
@@ -47,6 +51,9 @@ add('upload_private_file send_private_file', {user_id:'id', file:'string', name:
 add('mark_msg_as_read mark_group_msg_as_read mark_private_msg_as_read', {}, true);
 add('set_msg_emoji_like', {message_id:'messageId'}, true);
 add('get_message_images get_message_audio', {message_id:'messageId'});
+// 视频落地（2026-11-23）：QQ 的视频地址带 rkey 会过期，运行端要抽帧就得有本地文件。
+// 返回的是协议端在本机落盘的绝对路径（两端同一个容器文件系统）。
+add('get_message_videos', {message_id:'messageId'});
 add('get_msg_emoji_likes', {message_id:'messageId'});
 add('fetch_emoji_like', {message_id:'messageId'});
 add('get_emoji_likes');
@@ -75,6 +82,11 @@ add('forward_friend_single_msg', {user_id:'id', message_id:'messageId'}, true);
 add('forward_group_single_msg', {group_id:'id', message_id:'messageId'}, true);
 // 内部诊断：只返回内核方法名列表，无副作用、无账号数据；用于决定哪些动作在本机 QQ build 可实现。
 add('debug_native_surface');
+// 内部诊断（2026-11-23）：历史读取到底卡在哪一步。绕开 wait() 的归一化错误，
+// 直接 await 内核 Promise 并报耗时/错误名/返回外形。只读、无副作用。
+add('debug_history_probe', {group_id:'id'});
+// 内部诊断（2026-11-23）：合并转发读不出来时，逐个试内核方法看该用哪条。只读、无副作用。
+add('debug_forward_probe', {group_id:'id', message_id:'messageId'});
 // 我们自己的扩展（2026-11-18）：机器人「见过」的会话清单（真的收到过消息的群/私聊）。
 // 手机面板用它做白名单勾选 —— 本机 get_group_list 只能回 1502（原生回调永不触发）。
 add('get_known_chats');
@@ -84,6 +96,9 @@ add('get_chat_names');
 // P0/P1 第二批（2026-11-18）：本机 QQ build 上真实存在的内核方法（见 debug_native_surface 实测）
 add('get_group_notice', {group_id:'id'});
 add('del_group_notice', {group_id:'id', notice_id:'string'}, true);
+// 群公告写（2026-11-23 补齐）：内核 publishGroupBulletin 需要 qun.qq.com 的 pskey，
+// 现在能从 tipOff.getPskey 取到（真机 debug_native_surface 实证）。image 只收本地绝对路径。
+add('send_group_notice', {group_id:'id', content:'string'}, true);
 add('get_group_system_msg', {count:'number'});
 add('get_doubt_friends_add_request', {count:'number'});
 add('friend_poke', {user_id:'id'}, true);
@@ -167,13 +182,31 @@ export function validateParams(action, input) {
     params.times = Number(times);
   }
   if (action === 'set_qq_profile') {
+    // 资料写入补全（2026-11-23）：内核 modifyDesktopMiniProfile 本来就收生日，
+    // 以前只放行 nickname/personal_note/sex —— 生日只能读、不能写。
+    // 三个生日字段必须**一起**给：只给年或只给月，原生会把缺的那几项写成 0，
+    // 读回来就表现为「我把它改坏了」。
     const { nickname, personal_note, sex } = params;
-    if (!Object.keys(params).length || Object.keys(params).some(key => !['nickname', 'personal_note', 'sex'].includes(key)) ||
+    const birthdayKeys = ['birthday_year', 'birthday_month', 'birthday_day'];
+    const birthday = birthdayKeys.filter(key => Object.hasOwn(params, key));
+    if (!Object.keys(params).length ||
+        Object.keys(params).some(key => !['nickname', 'personal_note', 'sex', ...birthdayKeys].includes(key)) ||
         (Object.hasOwn(params, 'nickname') && (typeof nickname !== 'string' || !nickname.trim() || nickname.length > 128)) ||
         (Object.hasOwn(params, 'personal_note') && (typeof personal_note !== 'string' || personal_note.length > 256)) ||
         (Object.hasOwn(params, 'sex') && ![0, 1, 2, '0', '1', '2'].includes(sex)))
       throw new TypeError('Expected one or more supported self profile fields');
+    if (birthday.length && birthday.length !== 3)
+      throw new TypeError('birthday_year, birthday_month and birthday_day must be given together');
     if (sex !== undefined) params.sex = Number(sex);
+    for (const [index, key] of birthdayKeys.entries()) {
+      if (!Object.hasOwn(params, key)) continue;
+      const limit = [9999, 12, 31][index];
+      const value = params[key];
+      if (!['number', 'string'].includes(typeof value) || !/^\d{1,4}$/.test(String(value)) ||
+          Number(value) > limit)
+        throw new TypeError(`Invalid ${key}`);
+      params[key] = Number(value);
+    }
     return params;
   }
   if (action === 'set_friend_add_request' && (Object.keys(params).some(key => !['flag', 'approve', 'remark'].includes(key)) ||
@@ -319,6 +352,47 @@ export function validateParams(action, input) {
   if (['set_group_remark', 'set_friend_remark'].includes(action) &&
       (typeof params.remark !== 'string' || params.remark.length > 256))
     throw new TypeError('Invalid remark');
+  if (action === 'get_record') {
+    // OneBot 的 get_record {file} 语义是「把这个语音落成本地文件」。
+    // 本机运行环境里语音的唯一可靠来源是原生消息元素：要么按 message_id 指一条
+    // 收过的语音，要么按 file（= pttElement.fileName，也就是 segment.data.file）
+    // 在本会话索引里回溯那条消息。两者必须给一个，且只认 silk——本运行端没有
+    // 转码器，谎报 mp3 比明确拒绝更糟。
+    const keys = Object.keys(params);
+    if (keys.some(key => !['file', 'message_id', 'out_format'].includes(key)))
+      throw new TypeError('Expected a record file name or message ID');
+    const { file, message_id, out_format = 'silk' } = params;
+    if (file === undefined && message_id === undefined)
+      throw new TypeError('Expected a record file name or message ID');
+    if (file !== undefined && (typeof file !== 'string' || !file || file.length > 4096))
+      throw new TypeError('Invalid record file name');
+    if (message_id !== undefined && (!['string', 'number'].includes(typeof message_id) ||
+        !/^[1-9]\d{0,9}$/.test(String(message_id)) || Number(message_id) > 2147483647))
+      throw new TypeError('Invalid record message ID');
+    if (out_format !== 'silk')
+      throw new TypeError('Only the native silk format is available; audio transcoding is not supported');
+    return {
+      out_format: 'silk',
+      ...(file !== undefined && { file }),
+      ...(message_id !== undefined && { message_id: Number(message_id) }),
+    };
+  }
+  if (action === 'send_group_notice') {
+    const keys = Object.keys(params);
+    if (keys.some(key => !['group_id', 'content', 'image', 'pinned'].includes(key)))
+      throw new TypeError('Expected group_id, content and optional image/pinned');
+    const content = typeof params.content === 'string' ? params.content.trim() : '';
+    if (!content || content.length > 2000) throw new TypeError('Group notice content must be 1 to 2000 characters');
+    if (params.image !== undefined &&
+        (typeof params.image !== 'string' || !params.image || params.image.length > 4096))
+      throw new TypeError('Invalid notice image path');
+    return {
+      group_id: params.group_id,
+      content,
+      ...(params.image !== undefined && { image: params.image }),
+      pinned: params.pinned === true || params.pinned === 'true',
+    };
+  }
   if (action === 'get_forward_msg') {
     const hasId = Object.hasOwn(params, 'id');
     const hasMessage = Object.hasOwn(params, 'message_id');
@@ -357,7 +431,7 @@ export function validateParams(action, input) {
     params.duration = Number(params.duration);
   }
   if (['set_group_ban','set_group_anonymous_ban'].includes(action)) params.duration ??= 1800;
-  if (['set_group_admin','set_group_whole_ban','set_group_anonymous'].includes(action)) params.enable ??= true;
+  if (['set_group_admin','set_group_whole_ban','set_group_anonymous','set_group_top','set_friend_top'].includes(action)) params.enable ??= true;
   if (['set_friend_add_request','set_group_add_request'].includes(action)) params.approve ??= true;
   if (action === 'send_msg') {
     const kind = params.message_type ?? (params.group_id ? 'group' : 'private');

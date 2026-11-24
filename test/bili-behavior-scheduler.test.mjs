@@ -95,6 +95,40 @@ describe('B 站行为层运行端宿主（离线单测）', () => {
     assert.match(warned[0], /动作通道/);
   });
 
+  // ★ 2026-11-23 真机踩到的：worker 按配置建好了生成器，但宿主只解构了 summarize，
+  //   把 generateComment / generateDmReply 静默丢掉 ⇒ 生产里「生成评论」「回私信」从来没生效
+  //   （流水只有一句 dm_reply_skipped: no-generator）。这条守住「宿主必须把生成器转交引擎」。
+  it('3b. 宿主把私信生成器转交引擎：真跑一轮会回一句', async () => {
+    const dir = tempDir();
+    writeConfig(dir, { ...NOW_CONFIG, 'dm.enabled': true, 'dm.pollSeconds': 5, 'browse.enabled': false });
+    const calls = [];
+    const app = {
+      onebot: {
+        call: async (action, params) => {
+          calls.push(action);
+          if (action === 'bili_dm_inbox') return { session_list: [{ talker_id: '1680813704', unread_count: 1, session_ts: 1795326711991671 }] };
+          if (action === 'bili_dm_peer_history') return { messages: [{ sender_uid: '1680813704', timestamp: 1795326711, msg_key: 'k1', content: JSON.stringify({ content: '在吗' }) }] };
+          if (action === 'bili_dm_send_text') return { msg_key: 'mk1' };
+          return {};
+        },
+      },
+    };
+    const host = startBiliBehavior({
+      app,
+      dataDir: dir,
+      platform: 'bilibili',
+      initialDelayMs: 0,
+      generateDmReply: async () => ({ text: '在的' }),
+    });
+    assert.ok(host, '该起得来');
+    try {
+      await host.behavior.runOnce();
+      assert.ok(calls.includes('bili_dm_send_text'), '生成器被丢掉时不可能会发消息（no-generator）');
+    } finally {
+      host.stop();
+    }
+  });
+
   it('4. 抽象动作名逐个映射到适配层，未登记的抛错（不返回空数组冒充成功）', async () => {
     const calls = [];
     const bridge = createActionBridge({

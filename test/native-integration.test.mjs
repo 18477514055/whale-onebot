@@ -18,7 +18,8 @@ const testTmp = fileURLToPath(new URL('../.tmp/', import.meta.url));
 
 async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResult = 'confirmed',
   groupFiles = 'confirmed', groupFolder, groupFileQuota, folderDeletion, fileOperations, profileUpdate, getRobotService, profileLike,
-  signatureResult = 'confirmed', groupNameResult = 'confirmed', recentContact, readNativeMessage, translateVoice, readReactionPage, downloadRichMedia, sendSsoCmd } = {}) {
+  signatureResult = 'confirmed', groupNameResult = 'confirmed', topResult = 'confirmed', friendTopResult = 'confirmed', recentContact, readNativeMessage, translateVoice, readReactionPage, downloadRichMedia, sendSsoCmd,
+  bulletinResult = 'confirmed', bulletinImageResult = 'confirmed', pskeyDisabled = false } = {}) {
   fs.mkdirSync(testTmp, { recursive: true });
   const temporary = fs.mkdtempSync(path.join(testTmp, 'native-integration-'));
   const root = path.join(temporary, 'qq-onebot');
@@ -30,11 +31,19 @@ async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResu
   let groupName = 'Synthetic Group';
   state.groupNameWrites = 0;
   state.remarkWrites = 0;
+  state.topWrites = [];
+  state.friendTopWrites = [];
   state.friendWrites = 0;
   state.signatureWrites = 0;
   let friendRemark = 'initial';
   let signature = 'initial';
   state.groupFileReads = 0;
+  // 群公告相关：pskey 调用、发布/删除/图片上传的实参都留痕（pskey 是敏感值，
+  // 这里只是本地校验「非空且来自 tipOff」，不代表可以打印）。
+  state.pskeyCalls = [];
+  state.bulletinPublish = [];
+  state.bulletinDelete = [];
+  state.bulletinPics = [];
   const msg = {
     ...(readNativeMessage && { getMsgsByMsgId: readNativeMessage }),
     ...(downloadRichMedia && { downloadRichMedia }),
@@ -44,6 +53,12 @@ async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResu
     addKernelMsgListener(value) { listener = value; return 1; },
     removeKernelMsgListener() {},
     generateMsgUniqueId() { return String(state.nextId++); },
+    // 私聊会话置顶：NodeIKernelMsgService.setContactLocalTop(peer, isTop)
+    setContactLocalTop(peer, isTop) {
+      state.friendTopWrites.push({ chatType: peer?.chatType, peerUid: peer?.peerUid, isTop: Boolean(isTop) });
+      if (friendTopResult === 'rejected') return { result: 1 };
+      return { result: 0 };
+    },
     async sendMsg(firstArgument, peer, elements) {
       assert.equal(firstArgument, '0');
       assert.match(peer.guildId, /^\d+$/);
@@ -61,6 +76,13 @@ async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResu
       state.groupNameWrites++;
       if (groupNameResult === 'rejected') return { result: 1 };
       if (groupNameResult !== 'mismatch') groupName = name;
+      return { result: 0 };
+    },
+    // 会话置顶：NodeIKernelGroupService.setTop(groupCode: string, isTop: boolean)
+    setTop(code, isTop) {
+      assert.equal(code, '20001');
+      state.topWrites.push(Boolean(isTop));
+      if (topResult === 'rejected') return { result: 1 };
       return { result: 0 };
     },
     addKernelGroupListener(value) { groupListener = value; return 2; },
@@ -83,6 +105,31 @@ async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResu
     async getUidByUins(ids) { return { errCode: 0, uids: new Map(ids.map(x => [x, 'u_fixture'])) }; },
     modifyMemberCardName() { state.cardWrites++; state.incomplete = true; },
     async getAllMemberList() { return { errCode: 0, result: { infos: new Map(), finish: !state.incomplete } }; },
+    // 群公告写/删：内核签名都带 qun.qq.com 的 pskey，夹具把「拿到的 pskey」记下来，
+    // 这样「空串 pskey」这个老 bug 会在测试里直接失败，而不是到真机上才表现为永远失败。
+    getGroupBulletin() { return { result: 0 }; },
+    async getGroupBulletinList() { return { result: 0, feet: [] }; },
+    async publishGroupBulletin(code, pskey, data) {
+      state.bulletinPublish.push({ code, pskey, data });
+      if (bulletinResult === 'rejected') return { result: 1 };
+      return { result: 0, noticeId: 'synthetic-notice' };
+    },
+    async deleteGroupBulletin(code, pskey, noticeId) {
+      state.bulletinDelete.push({ code, pskey, noticeId });
+      return { result: 0 };
+    },
+    async uploadGroupBulletinPic(code, pskey, imagePath) {
+      state.bulletinPics.push({ code, pskey, imagePath });
+      if (bulletinImageResult === 'rejected') return { errCode: 1, errMsg: 'rejected' };
+      return { errCode: 0, picInfo: { id: 'pic-synthetic', width: 640, height: 480 } };
+    },
+  };
+  // tipOff 服务：pskey 的唯一来源（真机 debug_native_surface 实证它有 getPskey）。
+  const tipOff = pskeyDisabled ? undefined : {
+    async getPskey(domains) {
+      state.pskeyCalls.push([...domains]);
+      return { domainPskeyMap: new Map(domains.map(domain => [domain, `${domain}-synthetic-pskey`])) };
+    },
   };
   const buddy = {
     isBuddy(uid) { return uid === 'u_fixture' && friendResult !== 'not-friend'; },
@@ -163,7 +210,8 @@ async function setup(t, { receipt = true, remarkResult = 'confirmed', friendResu
   if (fileOperations) Object.assign(richMedia, fileOperations);
   const bridge = new NativeBridge({ session: { getMsgService: () => msg, getGroupService: () => group,
     getBuddyService: () => buddy, getProfileService: () => profile, getRichMediaService: () => richMedia, getRobotService,
-    getProfileLikeService: () => profileLike, getRecentContactService: () => recentContact },
+    getProfileLikeService: () => profileLike, getRecentContactService: () => recentContact,
+    ...(tipOff && { getTipOffService: () => tipOff }) },
   identityProbe: async () => ({ user_id: BOT, uid: 'u_synthetic_self', nickname: 'Synthetic only',
     online: state.online, sessionId: state.session }), timeoutMs: 100 });
   await bridge.attach();
@@ -900,6 +948,53 @@ test('HTTP group remark preserves the unknown outcome latch on mismatch or sessi
   }
 });
 
+test('private conversation pin goes through msg.setContactLocalTop and reports the path', { timeout: 5000 }, async t => {
+  await t.test('pins and unpins a friend conversation', async subtest => {
+    const s = await setup(subtest);
+    const on = await s.request('set_friend_top', { user_id: 10001, enable: true });
+    assert.equal(on.retcode, 0);
+    assert.equal(on.data?.via, 'msg.setContactLocalTop');
+    assert.deepEqual(s.state.friendTopWrites.at(-1), { chatType: 1, peerUid: '10001', isTop: true });
+    const off = await s.request('set_friend_top', { user_id: 10001, enable: false });
+    assert.equal(off.retcode, 0);
+    assert.deepEqual(s.state.friendTopWrites.at(-1), { chatType: 1, peerUid: '10001', isTop: false });
+    assert.equal(s.store.pending, false);
+  });
+  await t.test('native rejection surfaces as 1500', async subtest => {
+    const s = await setup(subtest, { friendTopResult: 'rejected' });
+    assert.equal((await s.request('set_friend_top', { user_id: 10001 })).retcode, 1500);
+    assert.equal(s.state.friendTopWrites.length, 1);
+    assert.equal(s.store.pending, false);
+  });
+  await t.test('capability announced when the kernel exposes the method', async subtest => {
+    const s = await setup(subtest);
+    assert.ok(s.bridge.capabilities().includes('set_friend_top'));
+  });
+});
+
+test('group conversation pin defaults to enable and reports native rejection', { timeout: 5000 }, async t => {
+  await t.test('defaults to pinning', async subtest => {
+    const s = await setup(subtest);
+    // params.enable 缺省 ⇒ 传 true 下去（pin 就是本意，不需要额外参数）
+    assert.equal((await s.request('set_group_top', { group_id: 20001 })).retcode, 0);
+    assert.deepEqual(s.state.topWrites, [true]);
+    // 显式取消
+    assert.equal((await s.request('set_group_top', { group_id: 20001, enable: false })).retcode, 0);
+    assert.deepEqual(s.state.topWrites, [true, false]);
+    assert.equal(s.store.pending, false);
+  });
+  await t.test('native rejection surfaces as 1500', async subtest => {
+    const s = await setup(subtest, { topResult: 'rejected' });
+    assert.equal((await s.request('set_group_top', { group_id: 20001 })).retcode, 1500);
+    assert.deepEqual(s.state.topWrites, [true]);
+    assert.equal(s.store.pending, false);
+  });
+  await t.test('capability is announced only when the kernel exposes setTop', async subtest => {
+    const s = await setup(subtest);
+    assert.ok(s.bridge.capabilities().includes('set_group_top'));
+  });
+});
+
 test('explicit native group remark rejection clears the pending latch', { timeout: 5000 }, async t => {
   const s = await setup(t, { remarkResult: 'rejected' });
   assert.equal((await s.request('set_group_remark', { group_id: 20001, remark: 'updated' })).retcode, 1500);
@@ -1083,6 +1178,35 @@ test('HTTP group file listing ignores a repeated page ID from its previously obs
     assert.equal(result.data.files[0].file_id, 'synthetic-file');
   }
   assert.equal(s.state.groupFileReads, 2);
+});
+
+test('HTTP self profile writes a birthday when all three fields are supplied', async t => {
+  const writes = [];
+  let current = { nick: 'Initial', longNick: 'Previous', sex: 255,
+    birthday: { birthday_year: '2000', birthday_month: '2', birthday_day: '3' } };
+  const s = await setup(t, { profileUpdate: {
+    getUserDetailInfoByUin(uin) {
+      const base = Object.fromEntries(Object.entries(current.birthday).map(([field, value]) => [field, Number(value)]));
+      return { result: 0, detail: { uin, uid: 'u_synthetic_self', simpleInfo: { coreInfo: { nick: current.nick },
+        baseInfo: { ...base, longNick: current.longNick, sex: current.sex } } } };
+    },
+    modifyDesktopMiniProfile(value) {
+      writes.push(value);
+      current = value;
+      return { result: 0 };
+    },
+  } });
+  const update = params => s.request('set_qq_profile', params);
+  // 半截生日直接拒绝：原生会把缺的那几项当 0 写进去，读回来就是「我改坏了」。
+  assert.equal((await update({ birthday_year: 1999 })).retcode, 1400);
+  assert.equal((await update({ birthday_year: 1999, birthday_month: 5 })).retcode, 1400);
+  assert.equal((await update({ birthday_year: 99999, birthday_month: 5, birthday_day: 6 })).retcode, 1400);
+  assert.deepEqual(writes, []);
+  assert.equal((await update({ birthday_year: 1999, birthday_month: 5, birthday_day: 6 })).retcode, 0);
+  assert.deepEqual(writes[0].birthday, { birthday_year: '1999', birthday_month: '5', birthday_day: '6' });
+  // 不传生日时保持原值不动（这条以前靠"只读不写"隐式成立，现在要显式成立）。
+  assert.equal((await update({ nickname: 'Renamed' })).retcode, 0);
+  assert.deepEqual(writes[1].birthday, { birthday_year: '1999', birthday_month: '5', birthday_day: '6' });
 });
 
 test('HTTP self profile preserves omitted fields and requires same-account readback', async t => {
@@ -1287,6 +1411,149 @@ test('a picture with no public address keeps the md5 address when inline downloa
     data: { file: `${md5}.jpg`, url: `https://gchat.qpic.cn/gchatpic_new/0/0-0-${md5}/0` } }]);
   // Inline download is attempted; without a completion event it falls back to md5.
   assert.equal(transfers, 1);
+});
+
+// get_record（语音落地）：本运行端拿语音字节的唯一途径是原生传输
+// （downloadRichMedia downloadType:1 + onRichMediaDownloadComplete）。这条测试钉住三件事：
+// ① 两个入口（message_id / file）都能落到同一个文件；② 不会把非绝对路径当成功；
+// ③ 一条消息里多段语音而调用方没指定 file 时明确拒绝，不猜。
+test('get_record lands a voice message as a local silk file from either entry', async t => {
+  const record = { elementType: 4, elementId: 777, pttElement: { fileName: 'voice-fixture.amr' } };
+  const message = raw({ elements: [record] });
+  const transfers = [];
+  const s = await setup(t, {
+    downloadRichMedia(param) {
+      transfers.push(String(param.elementId));
+      assert.equal(param.downloadType, 1);
+      assert.equal(param.peerUid, '20001');
+      queueMicrotask(() => s.listener().onRichMediaDownloadComplete(
+        { msgId: message.msgId, msgElementId: 777, filePath: '/tmp/synthetic-record.silk' }));
+      return undefined;
+    },
+    readNativeMessage: () => ({ result: 0, msgList: [message] }),
+  });
+  const message_id = s.bridge.messages.put(message);
+  const byId = await s.request('get_record', { message_id });
+  assert.equal(byId.retcode, 0);
+  assert.equal(byId.data.file, '/tmp/synthetic-record.silk');
+  assert.equal(byId.data.out_format, 'silk');
+  // 按文件名回溯同一条：运行端的 segment.data.file 就是这个 fileName。
+  const byFile = await s.request('get_record', { file: 'voice-fixture.amr' });
+  assert.equal(byFile.retcode, 0);
+  assert.equal(byFile.data.file, '/tmp/synthetic-record.silk');
+  assert.equal(transfers.length, 2);
+  // 转码声明诚实地拒绝，而不是把 silk 说成 mp3。
+  const mp3 = await s.request('get_record', { file: 'voice-fixture.amr', out_format: 'mp3' });
+  assert.equal(mp3.retcode, 1400);
+  // 未登记过的文件名 = 找不到，不是拿别的语音顶替。
+  const missing = await s.request('get_record', { file: 'not-a-record.amr' });
+  assert.equal(missing.retcode, 1404);
+});
+
+test('get_record refuses to guess when one message carries several records', async t => {
+  const first = { elementType: 4, elementId: 801, pttElement: { fileName: 'voice-a.amr' } };
+  const second = { elementType: 4, elementId: 802, pttElement: { fileName: 'voice-b.amr' } };
+  const message = raw({ elements: [first, second] });
+  let transfers = 0;
+  const s = await setup(t, {
+    downloadRichMedia(param) {
+      transfers++;
+      // 指明了 file 之后才允许传，并且只传指定的那一段。
+      assert.equal(String(param.elementId), '802');
+      queueMicrotask(() => s.listener().onRichMediaDownloadComplete(
+        { msgId: message.msgId, msgElementId: 802, filePath: '/tmp/synthetic-record-b.silk' }));
+      return undefined;
+    },
+    readNativeMessage: () => ({ result: 0, msgList: [message] }),
+  });
+  const message_id = s.bridge.messages.put(message);
+  const ambiguous = await s.request('get_record', { message_id });
+  // 1400 = 「你得指明是哪一个」，而不是拿第一段顶替。传输层会把 1400 的 wording
+  // 归一成通用文案，所以这里断 retcode + 确认真的没有发起传输。
+  assert.equal(ambiguous.retcode, 1400);
+  assert.equal(transfers, 0);
+  const byFirst = await s.request('get_record', { message_id, file: 'voice-b.amr' });
+  assert.equal(byFirst.retcode, 0);
+  assert.equal(byFirst.data.file, '/tmp/synthetic-record-b.silk');
+  assert.equal(transfers, 1);
+});
+
+// 群公告写（send_group_notice）：以前内核通道缺 pskey，这个动作既没实现在能力表里、
+// 删除动作还一直传空串 pskey。这两条一起钉住：① 发布带**真实** pskey；② 取不到 pskey
+// 就明确拒绝，绝不拿空串去发请求；③ 正文按 NapCat 的形状 URI 编码。
+test('send_group_notice publishes with a real qun.qq.com pskey and URI-encoded text', async t => {
+  const s = await setup(t, {});
+  const published = await s.request('send_group_notice', {
+    group_id: 20001, content: '今晚 9 点维护', pinned: true,
+  });
+  assert.equal(published.retcode, 0);
+  assert.equal(s.state.bulletinPublish.length, 1);
+  const [call] = s.state.bulletinPublish;
+  assert.equal(call.code, '20001');
+  assert.equal(call.pskey, 'qun.qq.com-synthetic-pskey');
+  assert.deepEqual(call.data, {
+    text: encodeURI('今晚 9 点维护'), picInfo: undefined, oldFeedsId: '', pinned: 1, confirmRequired: 0,
+  });
+  assert.deepEqual(s.state.pskeyCalls, [['qun.qq.com']]);
+  // 第二次调用走 60 秒内存缓存，不再重复取 pskey。
+  const again = await s.request('send_group_notice', { group_id: 20001, content: '再说一次' });
+  assert.equal(again.retcode, 0);
+  assert.equal(s.state.pskeyCalls.length, 1);
+  assert.equal(s.state.bulletinPublish[1].data.pinned, 0);
+});
+
+test('send_group_notice refuses instead of sending an empty pskey', async t => {
+  const s = await setup(t, { pskeyDisabled: true });
+  const refused = await s.request('send_group_notice', { group_id: 20001, content: '没有 pskey' });
+  assert.equal(refused.retcode, 1404);
+  assert.equal(s.state.bulletinPublish.length, 0);
+});
+
+test('del_group_notice now carries the pskey it always needed', async t => {
+  const s = await setup(t, {});
+  const deleted = await s.request('del_group_notice', { group_id: 20001, notice_id: '42' });
+  assert.equal(deleted.retcode, 0);
+  assert.deepEqual(s.state.bulletinDelete, [
+    { code: '20001', pskey: 'qun.qq.com-synthetic-pskey', noticeId: '42' },
+  ]);
+});
+
+test('send_group_notice uploads a local picture before publishing', async t => {
+  const image = path.join(testTmp, 'bulletin-fixture.png');
+  fs.mkdirSync(testTmp, { recursive: true });
+  fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+  const s = await setup(t, {});
+  const published = await s.request('send_group_notice', { group_id: 20001, content: '看图', image });
+  assert.equal(published.retcode, 0);
+  assert.equal(s.state.bulletinPics.length, 1);
+  assert.equal(s.state.bulletinPics[0].pskey, 'qun.qq.com-synthetic-pskey');
+  assert.deepEqual(s.state.bulletinPublish[0].data.picInfo, { id: 'pic-synthetic', width: 640, height: 480 });
+});
+
+// 视频落地（get_message_videos）：运行端要抽帧就得有本地文件，而 QQ 的视频地址会过期。
+// 这条钉住：① 走的是同一条原生传输（downloadType 1）；② 返回绝对路径；③ 没有视频就明确 1404。
+test('get_message_videos lands a received video as a local path', async t => {
+  const video = { elementType: 5, elementId: 901, videoElement: { fileName: 'clip-fixture.mp4' } };
+  const message = raw({ elements: [video] });
+  const s = await setup(t, {
+    downloadRichMedia(param) {
+      assert.equal(param.downloadType, 1);
+      assert.equal(String(param.elementId), '901');
+      queueMicrotask(() => s.listener().onRichMediaDownloadComplete(
+        { msgId: message.msgId, msgElementId: 901, filePath: '/tmp/synthetic-video.mp4' }));
+      return undefined;
+    },
+    readNativeMessage: () => ({ result: 0, msgList: [message] }),
+  });
+  const message_id = s.bridge.messages.put(message);
+  const result = await s.request('get_message_videos', { message_id });
+  assert.equal(result.retcode, 0, JSON.stringify(result));
+  assert.deepEqual(result.data.videos, [{ file: 'clip-fixture.mp4', path: '/tmp/synthetic-video.mp4' }]);
+  // 没有视频的消息不是「空结果」，是「这条消息没视频」。
+  const noVideo = raw({ msgId: '90071992547400077', elements: [{ elementType: 1, textElement: { content: 'plain' } }] });
+  const plainId = s.bridge.messages.put(noVideo);
+  const none = await s.request('get_message_videos', { message_id: plainId });
+  assert.equal(none.retcode, 1404);
 });
 
 test('a picture whose inline download completes is delivered as a data URL', async t => {

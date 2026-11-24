@@ -70,6 +70,46 @@ describe('B 站行为层（离线单测）', () => {
     assert.equal(isInWindows(utc, [], 480), true);
   });
 
+  // ★ 真机踩出来的（2026-11-23 凌晨）：`bili_dm_inbox` 一次 1500（服务端抖动）就把整个行为层
+  //   冻结 15 分钟（全局限流），于是私信一整晚没被轮询到 —— 用户发「现在能回我吗？」也没人理。
+  //   读是幂等且便宜的：读失败只把**该动作**的冷却按连续失败次数拉长，永不设全局退避。
+  it('2b. 读失败只冷却该动作，永不把整个行为层冻结', async () => {
+    const dir = await makeTempDir();
+    const clock = makeClock(new Date(2026, 10, 22, 10, 0, 0, 0));
+    let inboxCalls = 0;
+    let sessionsCalls = 0;
+    const behavior = createBehavior({
+      config: {
+        'browse.enabled': false, 'browse.windows': ['00:00-23:59'],
+        'dm.enabled': true, 'dm.pollSeconds': 5, 'risk.backoffMinutes': 15, 'risk.maxPerHour': 100,
+      },
+      call: async (action) => {
+        const e = new Error(action + ' failed (1500)');
+        e.code = '1500';
+        if (action === 'bili_dm_inbox') { inboxCalls += 1; throw e; }
+        if (action === 'bili_dm_sessions') { sessionsCalls += 1; throw e; }
+        return {};
+      },
+      clock,
+      paths: { dir },
+      accountId: '3747573426818991',
+    });
+    try {
+      // 连跑 6 轮（两轮一拍：inbox 失败后还会退到 dm_sessions），全程不许出现 backoff
+      for (let i = 0; i < 6; i += 1) {
+        const r = await behavior.runOnce();
+        assert.notEqual(r.status, 'backoff', '读失败不该把整个行为层冻结（第 ' + (i + 1) + ' 轮）');
+        clock.advance(61_000);
+      }
+      assert.ok(inboxCalls >= 2, '短冷却过后要重新尝试，而不是一直不动');
+      assert.ok(inboxCalls <= 6, '也不能每轮都硬撞');
+      assert.ok(sessionsCalls >= 1);
+    } finally {
+      behavior.stop();
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
   it('1. 作息窗判断：窗内 / 窗外 / 跨午夜 / 多条窗', async () => {
     const t = (h, m) => new Date(2026, 10, 22, h, m, 0, 0).getTime();
 
@@ -93,13 +133,15 @@ describe('B 站行为层（离线单测）', () => {
     assert.equal(isInWindows(t(13, 0), multi), false);
     assert.equal(isInWindows(t(0, 45), multi), true);
 
-    // 引擎在窗外直接跳过不发起任何调用
+    // 引擎在窗外不发起任何**巡看**调用（但私信照看 —— 作息窗只管主动浏览，见 2026-11-23 的决定）
     const dir = await makeTempDir();
     let called = 0;
+    let dmCalled = 0;
     const clock = makeClock(t(13, 0));
     const behavior = createBehavior({
       config: { 'browse.windows': ['09:00-12:00', '14:00-23:00'] },
-      call: async () => {
+      call: async (action) => {
+        if (String(action).startsWith('bili_dm_')) { dmCalled += 1; return { session_list: [] }; }
         called += 1;
         return { videos: [] };
       },
@@ -109,7 +151,8 @@ describe('B 站行为层（离线单测）', () => {
     const res = await behavior.runOnce();
     assert.equal(res.status, 'skipped');
     assert.equal(res.reason, 'outside-window');
-    assert.equal(called, 0);
+    assert.equal(called, 0, '窗外不该去取流');
+    assert.ok(dmCalled >= 1, '窗外也要看私信（有人主动找你）');
     await fs.rm(dir, { recursive: true, force: true });
   });
 

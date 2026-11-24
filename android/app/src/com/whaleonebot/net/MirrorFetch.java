@@ -29,8 +29,8 @@ public final class MirrorFetch {
     /**
      * 固定顺序的镜像前缀（空串代表官方直连）。
      * ★ 2026-11-22 实测（不挂梯子、逐个下载同一个资产并比对 sha256）：
-     *   可用 = ghproxy.net / ghfast.top / ghfile.geekertao.top；
-     *   失效 = gh-proxy.com（返回 "Access to proxy rules is forbidden on this hostname"）、
+     *   可用 = ghproxy.net / ghfast.top / gh-proxy.com（★ 2026-11-23 05:4x 两次实测均 200 且内容正确）；
+     *   ghfile.geekertao.top 两次都回 429（被限流）⇒ 已降到兜底；
      *          github.moeyy.xyz、gh.llkk.cc、hub.gitmirror.com、mirror.ghproxy.com（不可达）。
      *   镜像会烂，所以这里是**实测出来的清单**，不是猜的；换源失败只是慢一点，校验仍以摘要为准。
      */
@@ -38,8 +38,8 @@ public final class MirrorFetch {
             "",
             "https://ghproxy.net/",
             "https://ghfast.top/",
-            "https://ghfile.geekertao.top/",
             "https://gh-proxy.com/",
+            "https://ghfile.geekertao.top/",
     };
 
     private static final int CONNECT_TIMEOUT_MS = 6000;

@@ -63,6 +63,9 @@ final class HomeScreen extends Screen {
         // ---------- 固定间距（不再用顶部弹性留白，卡片组贴着页头往下排） ----------
         col.addView(new View(activity), Ui.llp(MATCH_PARENT, dp(Theme.S4)));
 
+        // ---------- 新手指引（第一次用才出现，点「知道了」永久收起） ----------
+        if (!Onboarding.seen(activity)) addGuide(col);
+
         // ---------- 分区标签 ----------
         TextView label = Ui.text(activity, "平台", Theme.T_CAP, t.textSecondary);
         label.setTypeface(Typeface.DEFAULT_BOLD);
@@ -187,6 +190,76 @@ final class HomeScreen extends Screen {
         cards.add(card);
 
         if (!soon) platformCounts.put(icon == IconView.TV ? BotRegistry.P_BILIBILI : BotRegistry.P_QQ, sub);
+    }
+
+        /**
+     * 三步指引卡。
+     *
+     * <p>文案刻意只留三步动作、不解释原理 —— 第一个使用者的原话是「不知道该先做什么」。
+     * 三步各自的状态来自 {@link SetupState}（只读本地事实）：做完的打勾并变淡，没做的用主色标出来，
+     * 按钮直接指向「下一件要做的事」。三步全做完就不再出现 —— 不必让人点「知道了」才能清屏。
+     */
+    private void addGuide(LinearLayout parent) {
+        SetupState.Steps st = SetupState.read(activity.getFilesDir());
+        if (st.all()) return;
+
+        LinearLayout card = Ui.column(activity);
+        card.setBackground(Drawables.round(t.cardFill, t.accent, dp(1), dp(Theme.R_CARD)));
+        int pad = dp(Theme.S3);
+        card.setPadding(pad, pad, pad, pad);
+
+        card.addView(Ui.strong(activity, "第一次用？三步就能跑起来", Theme.T_CARD, t.textPrimary));
+        TextView progress = Ui.text(activity, "已完成 " + st.done() + " / 3",
+                Theme.T_CAP, st.done() == 0 ? t.textSecondary : t.accent);
+        LinearLayout.LayoutParams plp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        plp.topMargin = dp(Theme.S1);
+        card.addView(progress, plp);
+
+        LinearLayout steps = Ui.column(activity);
+        LinearLayout.LayoutParams stepsLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        stepsLp.topMargin = dp(Theme.S2);
+        card.addView(steps, stepsLp);
+        steps.addView(stepLine("1", "环境配置：下载内置核心（公共运行环境会一起装好）", st.env));
+        steps.addView(stepLine("2", "装好 Linux QQ 安装包（同一页有下载地址与扫描安装）", st.qq));
+        steps.addView(stepLine("3", "新建 QQ 机器人 → 启动它 → 连接", st.bot));
+
+        LinearLayout actions = Ui.row(activity);
+        // 环境与 QQ 都在「环境配置」页里做；这两步都过了才轮到新建机器人。
+        boolean envFirst = !st.env || !st.qq;
+        TextView go = Ui.button(activity, t, envFirst ? "去环境配置" : "新建机器人", true);
+        go.setOnClickListener(v -> {
+            if (envFirst) shell.pushEnv();
+            else shell.pushNewBot();
+        });
+        TextView ok = Ui.button(activity, t, "知道了", false);
+        ok.setOnClickListener(v -> {
+            Onboarding.markSeen(activity);
+            build();
+        });
+        LinearLayout.LayoutParams goLp = Ui.llp(0, dp(Theme.TOUCH));
+        goLp.weight = 1f;
+        actions.addView(go, goLp);
+        LinearLayout.LayoutParams okLp = Ui.llp(0, dp(Theme.TOUCH));
+        okLp.weight = 1f;
+        okLp.leftMargin = dp(Theme.S2);
+        actions.addView(ok, okLp);
+        LinearLayout.LayoutParams alp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        alp.topMargin = dp(Theme.S2);
+        card.addView(actions, alp);
+
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.bottomMargin = dp(Theme.S3);
+        parent.addView(card, lp);
+    }
+
+    /** 一行分步：做完的打勾并变淡，没做的用正文色 —— 一眼看得出「下一步在哪」。 */
+    private TextView stepLine(String no, String text, boolean done) {
+        TextView line = Ui.text(activity, (done ? "✓ " : "○ ") + no + ". " + text,
+                Theme.T_BODY, done ? t.textTertiary : t.textPrimary);
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = dp(Theme.S1);
+        line.setLayoutParams(lp);
+        return line;
     }
 
     @Override

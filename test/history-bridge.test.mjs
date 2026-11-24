@@ -39,6 +39,31 @@ async function fixture(t, { maxMessages = 10000, timeoutMs = 1000, missingGetMsg
   return { bridge, calls, state, msg, originals, receive, events };
 }
 
+// 2026-11-23 真机实据：群里灰条（elementType 8，senderUin "0"）与真实消息**共用同一个
+// msgSeq**（实测两条都是 831719）。原先按 (msgId, msgSeq) 双重去重 ⇒ 每个含灰条的群
+// 历史都被判成「响应畸形」→ 1502，「历史补齐」在真机上 886 次全失败。
+test('group history tolerates a gray tip that shares its sequence with a real message', async t => {
+  const f = await fixture(t);
+  const real = raw('831719', { msgId: '7785292425117701431' });
+  const grayTip = raw('831719', { msgId: '7785292453650608706', senderUin: '0', sendNickName: '',
+    elements: [{ elementType: 8, grayTipElement: { subElementType: 1 } }] });
+  f.state.response = { result: 0, msgList: [real, grayTip], needContinueGetMsg: false };
+  const result = await f.bridge.call('get_group_msg_history', { group_id: 20001 });
+  // 灰条被跳过（没有真实发送者，也没有 OneBot 表示），真实消息照常返回。
+  assert.deepEqual(result.messages.map(m => m.message_seq), ['831719']);
+  assert.equal(result.messages[0].sender.user_id, 10001);
+  assert.equal(f.bridge.stats.historySystemSkipped, 1);
+});
+
+// 去重守卫本身不能被削弱：同一个 msgId 出现两次仍然算畸形响应。
+test('group history still rejects a duplicated native message id', async t => {
+  const f = await fixture(t);
+  const message = raw('60', { msgId: '7785292425117701999' });
+  f.state.response = { result: 0, msgList: [message, { ...message }], needContinueGetMsg: false };
+  await assert.rejects(() => f.bridge.call('get_group_msg_history', { group_id: 20001 }),
+    { code: 'INVALID_NATIVE_RESPONSE' });
+});
+
 test('latest group history uses the exact two-argument latest-view contract and orders by lossless sequence', async t => {
   const f = await fixture(t);
   f.state.response = { result: 0, msgList: [raw('9007199254740993', { msgTime: '1' }), raw('9007199254740992', { msgTime: '100' })], needContinueGetMsg: false };
@@ -216,7 +241,13 @@ test('group history skips protected records without exposing their IDs or reject
   assert.deepEqual(await read(), { messages: [] });
   f.state.response.msgList = [{ ...protectedRecord, peerUid: '20002' }];
   await assert.rejects(read(), { code: 'INVALID_NATIVE_RESPONSE' });
+  // 共用同一个 msgSeq 不再是畸形：真机上灰条与真实消息就是这么共用的（见上面那条用例）。
+  // 唯一性只认 msgId —— 这里 protectedRecord 被跳过，visible 正常返回。
   f.state.response.msgList = [{ ...protectedRecord, msgSeq: visible.msgSeq }, visible];
+  const shared = await read();
+  assert.deepEqual(shared.messages.map(message => message.message_seq), ['53']);
+  // 而重复的 msgId 仍然是畸形响应。
+  f.state.response.msgList = [{ ...visible }, { ...visible }];
   await assert.rejects(read(), { code: 'INVALID_NATIVE_RESPONSE' });
   assert.equal(f.bridge.messages.byId.size, 2);
   assert.equal(f.events.length, 0);

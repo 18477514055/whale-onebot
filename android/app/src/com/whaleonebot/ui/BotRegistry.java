@@ -54,8 +54,7 @@ public final class BotRegistry {
             this.memoryMode = mode; this.httpUrl = http; this.wsUrl = ws;
         }
         public boolean localQQ() {
-            if(!P_QQ.equals(platform)||!accountId.isEmpty()||!httpUrl.isEmpty()||!wsUrl.isEmpty())return false;
-            Bot owner=BotRegistry.get("whale-1");return legacyQQ(owner)&&owner.bindings.contains(this);
+            return BotRegistry.localQqSlot(BotRegistry.holderOf(this), this);
         }
         public String label() {
             if(localQQ())return "QQ  本机账号";
@@ -76,6 +75,30 @@ public final class BotRegistry {
             for (Binding v : b.bindings) if (p.equals(v.platform)) found = true;
             if (!found) b.bindings.add(new Binding("initial-" + p, p, "", "shared", "", ""));
         }
+    }
+
+    /** 绑定所属的机器人（绑定本身没有反向引用，只能遍历注册表）。 */
+    static Bot holderOf(Binding b) {
+        if (b == null) return null;
+        for (Bot bot : BOTS) if (bot.bindings != null && bot.bindings.contains(b)) return bot;
+        return null;
+    }
+
+    /**
+     * 这是不是「本机（内置运行端）的 QQ 占位绑定」。
+     *
+     * <p>★ 2026-11-24 用户报「点『QQ 待登录』会进到外部 OneBot 的页面，完全登不了 QQ」。
+     * 旧判据是 {@code BotRegistry.get("whale-1")} 加 {@link #legacyQQ} —— 两者都写死了
+     * {@code whale-1}（早期的单机器人 id）。而新建机器人的 id 是 {@code bot-<uuid>}，
+     * 于是**内置运行端的新机器人一律被判成「外部接入」**，点绑定卡直接打开
+     * {@code BindingEditor}（它的标题就是「外部 OneBot 服务」，要填 http/ws 地址与令牌）。
+     * 判据改成按内容认：平台是 QQ、没填任何协议地址、所属机器人是内置运行端。
+     */
+    static boolean localQqSlot(Bot owner, Binding b) {
+        if (owner == null || b == null) return false;
+        if (!P_QQ.equals(b.platform)) return false;
+        if (!b.accountId.isEmpty() || !b.httpUrl.isEmpty() || !b.wsUrl.isEmpty()) return false;
+        return KIND_BUILTIN.equals(owner.runtimeKind) && owner.bindings.contains(b);
     }
 
     public static boolean legacyQQ(Bot b) {
@@ -150,7 +173,7 @@ public final class BotRegistry {
             if (!PLATFORM_SUPPORTED(after.platform) || !after.accountId.matches("[1-9][0-9]{0,15}") || Long.parseLong(after.accountId)>9007199254740991L) return "请输入有效的平台账号数字 ID（不超过 9007199254740991）";
             if (!after.peerId.isEmpty() && (!after.hostedBili() || !after.peerId.matches("[1-9][0-9]{0,15}") || Long.parseLong(after.peerId)>9007199254740991L || after.accountId.equals(after.peerId))) return "私信对端必须是与本人不同的有效 UID";
             if (before==null && b.bindings.size()>=32) return "每台机器人最多绑定 32 个账号";
-            if (!(after.hostedBili() && KIND_BUILTIN.equals(b.runtimeKind)) && (!endpoint(after.httpUrl, "http") || !endpoint(after.wsUrl, "ws"))) return "请填写本机 127.0.0.1 的 HTTP 和 WS 地址及端口，不含凭据、查询或片段";
+            if (!((after.hostedBili() || localQqSlot(b, after)) && KIND_BUILTIN.equals(b.runtimeKind)) && (!endpoint(after.httpUrl, "http") || !endpoint(after.wsUrl, "ws"))) return "请填写本机 127.0.0.1 的 HTTP 和 WS 地址及端口，不含凭据、查询或片段";
             if (!"shared".equals(after.memoryMode) && !"isolated".equals(after.memoryMode)) return "请选择记忆模式";
             for (Bot bot : BOTS) for (Binding v : bot.bindings) {
                 if (v == before) continue;
@@ -275,7 +298,9 @@ public final class BotRegistry {
             if (!running) {
                 return logged ? ("已停止 · 上次 " + account) : "已停止";
             }
-            return logged ? ("运行中 · 已登录 " + account) : "运行中 · 未登录";
+            // ★ 2026-11-23：容器在跑 ≠ 账号已登录。旧文案「运行中 · 未登录」让用户觉得自相矛盾
+            //   （手机上说机器人在运行，又说没登录）。现在把两件事写在同一句里，并给出下一步。
+            return logged ? ("容器在跑 · 已登录 " + account) : "容器在跑 · QQ 未登录（去扫码）";
         }
     }
 

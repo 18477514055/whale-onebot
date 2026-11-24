@@ -24,6 +24,14 @@ function fixture(overrides = {}) {
     session: {
       getMsgService: () => msg, getGroupService: () => group,
       getBuddyService: () => ({}), getProfileService: () => ({}),
+      // 群公告的写/删内核签名都带 qun.qq.com 的 pskey；真机上它在 tipOff 服务里
+      // （debug_native_surface 实证）。夹具给出它，测试才能钉住「传的是真 pskey」。
+      ...(overrides.noPskey ? {} : { getTipOffService: () => ({
+        async getPskey(domains) {
+          calls.push(['pskey', ...domains]);
+          return { domainPskeyMap: new Map(domains.map(d => [d, 'synthetic-pskey-value'])) };
+        },
+      }) }),
       getSessionId: () => identity.sessionId,
     },
     identityProbe: async () => identity,
@@ -57,7 +65,18 @@ test('群公告：del_group_notice 把 groupCode/noticeId 传给内核 deleteGro
   const hit = f.calls.find(c => c[0] === 'bulletin-del');
   assert.ok(hit, '应调用 deleteGroupBulletin');
   assert.equal(hit[1], GROUP);
+  // ★ 第二参以前一直是空串 —— 空 pskey 被服务端直接拒，却表现成「动作存在但永远失败」。
+  assert.equal(hit[2], 'synthetic-pskey-value', 'deleteGroupBulletin 必须带真实 pskey');
   assert.equal(hit[3], '42');
+});
+
+test('群公告：取不到 pskey 时明确拒绝，不用空串去发请求', async t => {
+  const f = fixture({ noPskey: true });
+  t.after(() => f.bridge.detach());
+  await f.bridge.attach();
+  await assert.rejects(() => f.bridge.call('del_group_notice', { group_id: Number(GROUP), notice_id: '42' }),
+    (error) => { assert.equal(error.retcode, 1404); return true; });
+  assert.equal(f.calls.some(c => c[0] === 'bulletin-del'), false, '拿不到 pskey 就不该提交');
 });
 
 test('群公告：内核拒绝时抛错（不当作成功）', async t => {

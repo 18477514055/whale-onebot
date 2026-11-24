@@ -139,26 +139,26 @@ final class SettingsScreen extends Screen {
                 : "关掉后被杀不会自动拉起";
     }
 
-    /** 开启自动重启时弹出系统自启动引导对话框。 */
+    /** 开启自动重启时弹出自制主题底部引导面板（替代原生黑框 AlertDialog）。 */
     private void showAutostartDialog() {
-        new AlertDialog.Builder(activity)
-                .setTitle("建议同时允许自启动")
-                .setMessage("否则被系统清理后不会再拉起。请在应用详情里允许自启动。")
-                .setPositiveButton("去设置", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        try {
-                            Intent intent = new Intent(
-                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                    Uri.parse("package:" + activity.getPackageName()));
-                            activity.startActivity(intent);
-                        } catch (Throwable ignored) {
-                            host().toast("无法打开应用详情");
-                        }
+        PromptSheet.confirm(
+                activity, t,
+                "建议同时允许自启动",
+                "否则被系统清理后不会再拉起。请在应用详情里允许自启动。",
+                "去设置",
+                () -> {
+                    try {
+                        Intent intent = new Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:" + activity.getPackageName()));
+                        activity.startActivity(intent);
+                    } catch (Throwable e) {
+                        android.util.Log.w("WhaleUI", "打开应用详情失败", e);
+                        host().toast("无法打开应用详情");
                     }
-                })
-                .setNegativeButton("知道了", null)
-                .show();
+                },
+                null, null,
+                "知道了");
     }
 
     private LinearLayout.LayoutParams cardMargin() {

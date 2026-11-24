@@ -148,6 +148,69 @@ test('私信发送被限频(1429)后进入冷却，不再每轮硬撞', async ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ★ 真机踩到（2026-11-23 凌晨）：第一次回的时候如果失败（模型抽风/发送失败），
+//   这条消息就停在「记过但没回过」，之后再也不会重试 —— 用户看到的就是「发什么都不回」。
+test('记过但没回过的消息会重试，且不会重复落库', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-'));
+  // 先铺一行「收到但没回」的库记录（模拟上次回复失败）
+  fs.writeFileSync(path.join(dir, 'dm.jsonl'), JSON.stringify({
+    talker: TALKER, kind: 'in', unread: 1, ts: 1795326711, sessionTs: 1795326711,
+    msgKey: 'k1', at: 1795326711, preview: '现在在吗', isAdmin: false,
+  }) + '\n', 'utf8');
+  const calls = [];
+  const behavior = createBehavior({
+    config: { enabled: true, 'browse.enabled': false, 'dm.enabled': true, 'dm.maxPerDay': 5, 'admin.uid': TALKER },
+    call: async (action, params) => {
+      calls.push({ action, params });
+      if (action === 'bili_dm_inbox') return { session_list: [{ talker_id: TALKER, unread_count: 1, session_ts: 1795326711991671 }] };
+      if (action === 'bili_dm_peer_history') return { messages: [{ sender_uid: TALKER, timestamp: 1795326711, msg_key: 'k1', content: JSON.stringify({ content: '现在在吗' }) }] };
+      if (action === 'bili_dm_send_text') return { msg_key: 'mk1' };
+      return {};
+    },
+    paths: { dir },
+    accountId: SELF,
+    generateDmReply: async ({ text }) => ({ text: '在的' + text }),
+  });
+  try {
+    const r = await behavior.runOnce();
+    const sent = calls.filter((c) => c.action === 'bili_dm_send_text');
+    assert.equal(sent.length, 1, '记过但没回过的要补回一次');
+    assert.equal(r.dmReplies, 1);
+    assert.equal(r.dmCount || 0, 0, '不该重复落「收到」那一行');
+    const rows = fs.readFileSync(path.join(dir, 'dm.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(rows.filter((x) => x.kind === 'in').length, 1);
+    assert.equal(rows.filter((x) => x.kind === 'reply').length, 1);
+  } finally {
+    behavior.stop();
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ★ 另一条真机教训：不该有静默 return。没回的时候必须留下原因，否则只能靠猜。
+test('不回的时候要留原因（no-generator / already-replied）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-'));
+  const events = [];
+  const behavior = createBehavior({
+    config: { enabled: true, 'browse.enabled': false, 'dm.enabled': true, 'dm.maxPerDay': 5 },
+    call: async (action) => {
+      if (action === 'bili_dm_inbox') return { session_list: [{ talker_id: TALKER, unread_count: 1, session_ts: 1795326711991671 }] };
+      if (action === 'bili_dm_peer_history') return { messages: [{ sender_uid: TALKER, timestamp: 1795326711, msg_key: 'k1', content: JSON.stringify({ content: '在吗' }) }] };
+      return {};
+    },
+    paths: { dir },
+    accountId: SELF,
+  });
+  try {
+    await behavior.runOnce();
+    const ev = behavior.getEvents();
+    assert.ok(ev.some((e) => e.type === 'dm_reply_skipped' && e.reason === 'no-generator'),
+      '没生成器要记一条原因，不能静默');
+  } finally {
+    behavior.stop();
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('收到私信会按会话回一句，并落 dm.jsonl + 记流水', async () => {
   const { behavior, calls, dir } = harness();
   try {

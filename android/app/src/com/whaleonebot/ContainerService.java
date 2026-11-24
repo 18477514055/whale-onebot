@@ -187,8 +187,14 @@ public class ContainerService extends Service {
             String ticket=intent.getStringExtra("ticket");new Thread(()->{if(InstalledRuntimeHost.core(getFilesDir(),bot)!=null)InstalledRuntimeHost.reconcile(this,bot,ticket,intent.getStringExtra("platform"),intent.getStringExtra("slot"));else if(intent.getStringExtra("platform")==null)BindingControl.launch(this,bot,ticket);},"bound-start").start();
             return START_NOT_STICKY;
         }
-        if ((ACTION_LOGIN.equals(action)||ACTION_REFRESH_QR.equals(action)||ACTION_BOT.equals(action)) && (new File(svcFilesDir(),"rootfs/.whale-public-environment").isFile()||!BindingControl.legacy(svcFilesDir(),false))) {
-            logLine("Legacy QQ not selected by registry"); return START_STICKY;
+        // ★ 2026-11-24 真机事故（这是「扫码永远不出码」的真因）：
+        //   这一行以前在「rootfs 里有 .whale-public-environment（内置环境）」或「legacy 未选中」时，
+        //   把 LOGIN / REFRESH_QR / BOT **全部**挡掉，只写一行 Legacy QQ not selected。
+        //   而内置环境这条路 QQ 客户端就装在同一个 rootfs 的 /opt/QQ —— 扫码登录跟「核心是不是受管」无关。
+        //   现在只拦「起机器人」（那确实要走受管宿主），登录与出码一律放行。
+        final boolean managedEnv = new File(svcFilesDir(), "rootfs/.whale-public-environment").isFile();
+        if (ACTION_BOT.equals(action) && !managedEnv && !BindingControl.legacy(svcFilesDir(),false)) {
+            logLine("BOT: 非 legacy 且非受管环境不走本地机器人（登录与出码不受影响）"); return START_STICKY;
         }
         if (http==null && (ACTION_START.equals(action)||ACTION_LOGIN.equals(action)||ACTION_BOT.equals(action)||ACTION_REFRESH_QR.equals(action))) {
             http=new HttpStatusServer(this);new Thread(http,"whale-http").start();
@@ -237,9 +243,11 @@ public class ContainerService extends Service {
                     int left = purgeStale();
                     if (left > 0) { logLine("BOT: 仍有 " + left + " 个残留未清掉"); try { Thread.sleep(1500); } catch (InterruptedException ignored) {} }
                     // 输出直接重定向进容器里的 bot.log：不走管道，就不会因为父进程没读而 SIGPIPE。
+                    // 在内置受管环境中只启动本机 QQ OneBot 协议端（不拉起旧版 agent），供受管宿主连接。
+                    final boolean isManagedEnv = new File(files, "rootfs/.whale-public-environment").isFile();
                     final Process np = spawnInContainerTo(files,
                             "cd /opt/whale && LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
-                            + "exec node container-bot.mjs --with-agent",
+                            + "exec node container-bot.mjs" + (isManagedEnv ? "" : " --with-agent"),
                             new File(files, "rootfs/opt/whale/qq-state/bot.log"));
                     botProc = np;
                     logLine("BOT: started");
@@ -338,11 +346,62 @@ public class ContainerService extends Service {
             // 这样「出码 + 拉起手机 QQ」的改动只需重装 APK，不必重打 1.2GB 的 rootfs 包。
             File whaleDir = new File(rootfs, "opt/whale");
             mkdirs(whaleDir);
-            if(!managedImage){mkdirs(new File(whaleDir, "qq-state"));
+            // ★ 2026-11-24 真机事故：登录脚本与 qq-state 必须**无条件**释放。以前它们被 !managedImage 挡住，
+            //   而内置环境（有 .whale-public-environment 回执）正好是 managedImage ⇒ 容器里根本没有
+            //   container-login.mjs ⇒ 点「扫码登录 QQ」永远等不到二维码。登录脚本与"是不是内置环境"无关。
+            mkdirs(new File(whaleDir, "qq-state"));
             extractAssetAlways("container-login.mjs", new File(whaleDir, "container-login.mjs"), 0644);
-            extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);}
+            extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
             extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
             extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
+            // ★ 2026-11-24 修正：native 桥与那 525 个图形库**只在「内置环境」这条路上释放**。
+            //   legacy（debug 的老 Debian rootfs）本来就有这些，且版本更新；无条件覆盖会把它换成旧库，
+            //   真机后果是 QQ 内核每收一条消息都打 `dlsym failed NodeContextifyContextMetrics1`，
+            //   协议端 online 起不来、发送侧 http identity probe 一直被拒（机器人"活着但不回话"）。
+            if(managedImage){
+            // ★ 2026-11-24 真机事故：内置环境（whale-environment）里**没有** opt/whale/native/，
+            //   而 container-login.mjs 第一件事就是 dlopen /opt/whale/native/loader.node
+            //   ⇒ 登录进程直接 FATAL（真机日志：「/opt/whale/native/loader.node: cannot open shared object file」
+            //   + 「LOGIN: exit rc=1」）⇒ 扫码永远出不来码。老 rootfs 里有这四份，所以历史上从没暴露。
+            //   这四份是我们自己的 native 桥产物（ARM64），现在随 APK 一起发，无条件释放。
+            File nativeDir=new File(whaleDir,"native");
+            mkdirs(nativeDir);
+            for(String n:new String[]{"loader.node","libonebot-node-host.so","consumer.node","probe.node"}){
+                extractAssetAlways("native/"+n,new File(nativeDir,n),0700);
+            }
+            // ★ 技术债（必须留档）：loader.node 的 DT_NEEDED 里写的是**编译机的绝对路径**
+            //   /mnt/d/qq-onebot/.tmp/native-host-arm64-0wfTF4/libonebot-node-host.so ——
+            //   老 rootfs 里当初就是靠把 .so 摆到这个路径上才跑通的（真机 files/rootfs/mnt/d/... 实证）。
+            //   根治要在根上重编 loader.node 加 $ORIGIN RPATH；在那之前这里必须照抄一份，否则
+            //   登录进程 dlopen loader.node 会 FATAL（真机日志：cannot open shared object file）。
+            File legacySoDir=new File(rootfs,"mnt/d/qq-onebot/.tmp/native-host-arm64-0wfTF4");
+            mkdirs(legacySoDir);
+            extractAssetAlways("native/libonebot-node-host.so",new File(legacySoDir,"libonebot-node-host.so"),0700);
+            // ★ 2026-11-24 真机事故：QQ 的 wrapper.node（Electron/Chromium）依赖一整套图形库
+            //   （libX11 / libxcb / libglib / libvips …）。内置环境是"只够跑 node"的迷你系统，缺这些 ——
+            //   真机日志：FATAL Error: libX11.so.6: cannot open shared object file（container-login.mjs:35）。
+            //   assets/native/gui 里是 38 个实体 + 其 SONAME 别名（共 12 MB），释放进 rootfs 的系统库目录。
+            File sysLib=new File(rootfs,"usr/lib/aarch64-linux-gnu");
+            mkdirs(sysLib);
+            // 增加印记跳过重复覆写 525 个基础图形库（138MB），消除每次启动长达数十秒的 IO 阻塞与 chmod 风暴
+            File guiStamp=new File(sysLib,".whale-gui-ready-v1");
+            if(!guiStamp.isFile()){
+                try{
+                    String[] gui=getAssets().list("native/gui");
+                    if(gui!=null){
+                        for(String g:gui){
+                            File targetLib=new File(sysLib,g);
+                            if(!targetLib.isFile() || targetLib.length()==0) extractAssetAlways("native/gui/"+g,targetLib,0644);
+                        }
+                    }
+                    guiStamp.createNewFile();
+                    logLine("native/gui: 基础运行库已增量就绪");
+                }catch(Exception e){
+                    android.util.Log.w("WhaleLog","释放 native/gui 失败",e);
+                }
+            }
+            }
+
             File bash = new File(rootfs, "usr/bin/bash");
             log("bash canExec=" + bash.canExecute() + " size=" + bash.length());
 
@@ -380,6 +439,10 @@ public class ContainerService extends Service {
             env.put("TMPDIR", tmp.getAbsolutePath());
             pb.redirectErrorStream(true);
 
+            // ★ 每次重新起容器都要把「已自动拉起机器人」的闩复位：
+            // 这个标记是 static volatile，会跨「停止容器 → 启动容器」保留，
+            // 于是同一个 App 进程里第二次起容器时机器人不会自己回来（2026-11-23 05:07 真机复现）。
+            autoBotStarted = false;
             log("exec proot -> /bin/bash -lc <版本检查>");
             proc = pb.start();
             running = true;
@@ -502,7 +565,17 @@ public class ContainerService extends Service {
         return direct.isDirectory() ? direct : getFilesDir();
     }
 
-    void logLine(String s) { log(s); }
+    /**
+     * 容器日志。
+     *
+     * <p>★ 2026-11-24：除了写 {@code files/logs/container.log}，**同时进 logcat**（tag {@code WhaleLog}）。
+     * 原因：release 签名的并排测试包没有 {@code run-as}，私有目录里的日志等于读不到 ——
+     * 「扫码不出码」这种问题就完全没法定位（只能猜）。以后排查一律 {@code adb logcat -s WhaleLog}。
+     */
+    void logLine(String s) {
+        log(s);
+        try { android.util.Log.i("WhaleLog", String.valueOf(s)); } catch (Throwable ignored) { }
+    }
 
     private static String now() {
         return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
@@ -633,7 +706,10 @@ public class ContainerService extends Service {
     }
 
     /** 在容器里执行一条命令并返回输出（供本地调试端点 /exec 用）。 */
-    static String execInContainer(File files, String cmd) {
+    /** 对外（ui 包）暴露同一个入口：QQ 客户端解包要用，语义与内部完全一致。 */
+  public static String execInContainerPublic(File files, String cmd) { return execInContainer(files, cmd); }
+
+  static String execInContainer(File files, String cmd) {
         try {
             ProcessBuilder pb = containerBuilder(files, cmd);
             Process p = pb.start();

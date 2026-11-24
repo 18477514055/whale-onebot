@@ -344,6 +344,22 @@ const PICTURE_INLINE_SUPPORTED = true;
 // A multi-picture message stays under the 8 MiB OneBot message budget where possible;
 // a single image may still reach 12 MiB, so allow one full image plus headroom.
 const PICTURE_INLINE_TOTAL_BYTES = 16 * 1024 * 1024;
+// get_record：语音落地。
+// 回溯窗口按索引条数算（索引默认上限 10000 条，扫全表会拖住事件循环）。
+const RECORD_FILE_SCAN_LIMIT = 400;
+// pskey 内存缓存的滑动 TTL（NapCat 用 60 秒；核验失败时下一次调用会重新取）。
+const PSKEY_TTL_MS = 60 * 1000;
+const PSKEY_TIMEOUT_MS = 8000;
+// 可选会话服务探测白名单（只调 getter，不调方法）。名字写死而不是动态猜：
+// 猜出来的 getter 名一旦拼错会被 getter 的副作用掩盖，读出来的"不存在"就是假的。
+const SESSION_SERVICE_PROBES = Object.freeze([
+  'getTipOffService', 'getUserService', 'getFileService', 'getAvatarService', 'getEmojiService',
+  'getRobotService', 'getRecentContactService', 'getProfileLikeService', 'getUixConvertService',
+  'getRichMediaService', 'getMsgService', 'getGroupService', 'getBuddyService', 'getProfileService',
+]);
+const RECORD_DOWNLOAD_POLL_MS = 200;
+// 一条消息最多落几个视频（多视频消息极罕见，给 4 个足够，也避免一次拖太久）。
+const VIDEO_PAGE_LIMIT = 4;
 
 // Bounded, non-sensitive counters for picture-address resolution. They answer
 // "why can't the App see an image" without recording any rkey, message id or
@@ -372,6 +388,28 @@ export function readMediaDiagnostics() {
 function hostOf(value) {
   if (typeof value !== 'string') return '';
   try { return new URL(value.startsWith('http') ? value : 'https://gchat.qpic.cn' + value).hostname; } catch { return ''; }
+}
+
+/**
+ * 把一个形状未知的内核对象裁成「只含标量」的有界对象。
+ * 用途：本机没实测过形状的字段（例如 SimpleInfo.intimate）不该原样透出 ——
+ * 里面可能有 Map、深层嵌套或 getter。只保留数字/布尔/短字符串，最多 24 个键。
+ * 一个标量都取不到就返回 undefined（宁可不给，也不给一个空壳）。
+ */
+function boundedPrimitives(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const out = {};
+  let keys = 0;
+  for (const key of Object.keys(value)) {
+    if (++keys > 24) break;
+    if (typeof key !== 'string' || key.length > 64 || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)) continue;
+    let entry;
+    try { entry = value[key]; } catch { continue; }
+    if (typeof entry === 'number' && Number.isFinite(entry)) out[key] = entry;
+    else if (typeof entry === 'boolean') out[key] = entry;
+    else if (typeof entry === 'string' && entry.length <= 256) out[key] = entry;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function mediaSegment(element) {
@@ -516,6 +554,9 @@ const mediaReadbackFields = {
   2: ['picElement', ['fileName', 'md5HexStr', 'picUrl', 'originImageUrl', 'summary']],
   3: ['fileElement', ['fileName', 'fileSize', 'fileUuid']],
   4: ['pttElement', ['fileName']],
+  // 视频（elementType 5）：只投影文件名。地址一律不采信 —— QQ 的视频 url 带 rkey 会过期，
+  // 视频只能走原生传输落到本地（get_message_videos）。
+  5: ['videoElement', ['fileName']],
 };
 
 function projectMediaReadback(message, requestedType) {
@@ -612,6 +653,8 @@ export class NativeBridge extends EventEmitter {
   #authorizationPolicy;
   #conversationPolicy;
   #reattachIdentity;
+  // qun.qq.com 域的 pskey 内存缓存（只在群公告写/删里用；不落盘、不打日志）。
+  #pskey;
   #maxSendCorrelations;
   #voiceTranscriptions = new Map();
   #pendingNativeTranscriptions = new Map();
@@ -788,6 +831,11 @@ export class NativeBridge extends EventEmitter {
       try { this.robot = this.session.getRobotService?.(); } catch { this.robot = undefined; }
       try { this.recentContact = this.session.getRecentContactService?.(); } catch { this.recentContact = undefined; }
       try { this.profileLike = this.session.getProfileLikeService?.(); } catch { this.profileLike = undefined; }
+      // 群公告写/删要 qun.qq.com 域的 pskey；内核里它在 tipOff 服务（getPskey）。
+      // ★ 实测（2026-11-23）：这台机的 QQ build 上 getTipOffService 存在且带 getPskey。
+      //   pskey 只放内存、60 秒滑动 TTL，绝不打印、绝不落盘、绝不进台账。
+      try { this.tipOff = this.session.getTipOffService?.(); } catch { this.tipOff = undefined; }
+      this.#pskey = null;
       // 免 hook 事件面：notice 回调（撤回/掉线/灰条/入群/群公告…）。失败不影响消息流。
       let notices = { msg: {}, group: {} };
       try { notices = this.noticeCallbacks(); } catch { this.stats.subscriberErrors++; }
@@ -875,6 +923,8 @@ export class NativeBridge extends EventEmitter {
     this.robot = undefined;
     this.recentContact = undefined;
     this.profileLike = undefined;
+    this.tipOff = undefined;
+    this.#pskey = null;
     this.memberRefreshes.clear();
     for (const { controller } of this.#voiceTranscriptions.values()) controller.abort();
     this.#voiceTranscriptions.clear();
@@ -935,6 +985,8 @@ export class NativeBridge extends EventEmitter {
     if (has(this.profile, 'setHeader')) available.push('set_qq_avatar');
     if (has(this.msg, 'getMsgsByMsgId', 'addFavEmoji')) available.push('add_custom_face');
     if (has(this.group, 'getGroupRemainAtTimes')) available.push('get_group_at_all_remain');
+    if (has(this.group, 'setTop')) available.push('set_group_top');
+    if (has(this.msg, 'setContactLocalTop') || has(this.buddy, 'setTop')) available.push('set_friend_top');
     if (has(this.group, 'getGroupExt0xEF0Info')) available.push('get_group_info_ex');
     if (has(this.group, 'getJoinGroupLink')) available.push('get_group_share_link');
     if (has(this.group, 'getGroupShutUpMemberList', 'addKernelGroupListener', 'removeKernelGroupListener'))
@@ -948,12 +1000,22 @@ export class NativeBridge extends EventEmitter {
     if (has(this.msg, 'setMsgRead')) available.push('mark_msg_as_read', 'mark_group_msg_as_read', 'mark_private_msg_as_read');
     if (has(this.msg, 'getMsgsByMsgId', 'setMsgEmojiLikes')) available.push('set_msg_emoji_like');
     if (has(this.msg, 'getMsgsByMsgId')) available.push('get_msg_emoji_likes', 'get_image', 'get_file', 'get_message_images', 'get_message_audio');
+    // 语音落地需要「读得回那条消息」+「原生能传字节」两件事同时成立，
+    // 少一样就不要把它列进能力表（宁可不报，也不报一个必失败的动作）。
+    if (has(this.msg, 'getMsgsByMsgId', 'downloadRichMedia')) available.push('get_record');
+    // 视频落地（运行端抽帧用）：同一条原生传输，只是元素类型是 5。
+    if (has(this.msg, 'getMsgsByMsgId', 'downloadRichMedia')) available.push('get_message_videos');
     if (has(this.msg, 'getMsgsByMsgId', 'getMsgEmojiLikesList')) available.push('fetch_emoji_like', 'get_emoji_likes');
     // P0 免 hook：会话元信息（纯本地即可回答，NapCat 同名动作对应）
     // get_login_info 在上面已无条件加过，这里只补其余三个（重复项会让能力表出现同一动作两次）
     available.push('get_version_info', 'can_send_image', 'can_send_record');
     // 内部诊断：列出本机 QQ build 真实暴露的内核方法名（只读，用来决定哪些动作能实现）。
     available.push('debug_native_surface');
+    // 内部诊断：历史读取卡在哪一步（绕开 wait() 的归一化错误）。
+    // ★ 注意：core 的 dispatch 先查能力表再查注册表 —— 只加 actions.mjs 而忘了这里，
+    //   调用会是 1404「动作不存在」，看起来像没生效（本轮踩过）。
+    if (has(this.msg, 'getAioFirstViewLatestMsgs')) available.push('debug_history_probe');
+    if (has(this.msg, 'getMsgsByMsgId')) available.push('debug_forward_probe');
     // 我们自己的扩展：机器人「见过」的会话清单（白名单勾选要用）。
     // 不依赖任何原生方法（纯本地登记表），所以无条件声明。
     // 背景：本机 getGroupList() 的 onGroupListUpdate 回调永不触发 ⇒ get_group_list 只回 1502。
@@ -968,6 +1030,9 @@ export class NativeBridge extends EventEmitter {
     // 群系统消息（getSingleScreenNotifies）、陌生人申请（buddy.getDoubtBuddyReq）。
     if (has(this.group, 'getGroupBulletin', 'getGroupBulletinList')) available.push('get_group_notice');
     if (has(this.group, 'deleteGroupBulletin')) available.push('del_group_notice');
+    // 群公告写要多一条 pskey 通道：内核 publishGroupBulletin 的第二个参数就是它。
+    // 取不到 pskey 就不要把动作列出来（列出来必失败，比不报更难查）。
+    if (has(this.group, 'publishGroupBulletin') && has(this.tipOff, 'getPskey')) available.push('send_group_notice');
     if (has(this.group, 'getSingleScreenNotifies')) available.push('get_group_system_msg');
     // get_doubt_friends_add_request：本机 build 的 buddy.getDoubtBuddyReq() 永不 resolve（实测 2026-11-18），
     // 故**不对外声明**。实现保留在 doubtFriendRequests()，等某个 build 真能回答时再打开这一行。
@@ -1154,7 +1219,19 @@ export class NativeBridge extends EventEmitter {
           result.push(buildPttElement({ filePath: d.file, size: checked.size,
             ...(d.duration ? { durationSec: Number(d.duration) } : {}) }));
         } else if (segment.type === 'video') {
-          result.push(buildVideoElement({ filePath: d.file, size: checked.size }));
+          // ★ 2026-11-23 真机：只给 filePath + size 的 videoElement 会被内核直接拒
+          //   （`1500 Native operation rejected`）。这里补上本机能算的元数据：md5、宽高、时长。
+          //   封面（thumbPath）必须放在 QQ 自己能读的目录，本模块不猜那个路径，所以不给 ——
+          //   万一封面对内核是必需的，这里会在真机上明确失败，而不是假装成功。
+          let meta = null;
+          try { meta = await this.videoProbe(d.file, options); } catch { meta = null; }
+          result.push(buildVideoElement({
+            filePath: d.file, size: checked.size,
+            ...(meta?.md5 ? { md5: meta.md5 } : {}),
+            ...(meta?.width ? { width: meta.width } : {}),
+            ...(meta?.height ? { height: meta.height } : {}),
+            ...(meta?.durationSec !== undefined ? { durationSec: meta.durationSec } : {}),
+          }));
         } else {
           result.push(buildFileElement({ filePath: d.file, size: checked.size, groupFile: peer.chatType === 2 }));
         }
@@ -1349,6 +1426,77 @@ export class NativeBridge extends EventEmitter {
     })) };
   }
 
+  /**
+   * 取 qun.qq.com 域的 pskey（内核：tipOff.getPskey([domain], forceRefresh)）。
+   *
+   * 为什么要它：群公告的**写**（publishGroupBulletin）与**删**（deleteGroupBulletin）
+   * 内核签名都带 pskey，deleteGroupBulletin 以前一直传空串 —— 空 pskey 会被服务端拒，
+   * 表现成「动作存在但永远失败」，看不出真因。
+   *
+   * 安全：返回值只在本进程内存里用（60 秒滑动 TTL），不打印、不落盘、不返回给调用方。
+   */
+  async groupPskey(options = {}) {
+    const domain = 'qun.qq.com';
+    const now = Date.now();
+    if (this.#pskey && this.#pskey.domain === domain && this.#pskey.expireAt > now) {
+      this.#pskey.expireAt = now + PSKEY_TTL_MS;
+      return this.#pskey.value;
+    }
+    if (typeof this.tipOff?.getPskey !== 'function')
+      throw new BridgeError('UNSUPPORTED', 'This native profile cannot obtain a qun.qq.com pskey', { retcode: 1404 });
+    let response;
+    try {
+      response = await this.wait(null, () => this.tipOff.getPskey([domain], true), { ...options, timeoutMs: PSKEY_TIMEOUT_MS });
+    } catch {
+      throw new BridgeError('UNSUPPORTED', 'qun.qq.com pskey request did not complete', { retcode: 1404 });
+    }
+    const map = response?.domainPskeyMap;
+    const value = map instanceof Map ? map.get(domain)
+      : (map && typeof map === 'object' ? map[domain] : undefined);
+    // 只接受有界字符串：拿不到就明确报「取不到」，绝不回退成空串去发请求。
+    if (typeof value !== 'string' || value.length < 8 || value.length > 512 || /[\s\x00-\x1f\x7f]/.test(value))
+      throw new BridgeError('UNSUPPORTED', 'qun.qq.com pskey was not returned by the runtime', { retcode: 1404 });
+    this.#pskey = { domain, value, expireAt: Date.now() + PSKEY_TTL_MS };
+    return value;
+  }
+
+  /**
+   * 发群公告（写）。内核：publishGroupBulletin(groupCode, pskey, data)。
+   * data 形状照 NapCat 的实现（text 是 URI 编码后的正文；pinned/confirmRequired 用 0/1）：
+   * 参数顺序不是猜的，是照它那一份可跑的实现。
+   */
+  async sendGroupNotice(params, options) {
+    const generation = this.generation;
+    const code = String(id(params.group_id, 'group_id'));
+    const content = typeof params.content === 'string' ? params.content.trim() : '';
+    if (!content || content.length > 2000) throw invalid('Group notice content must be 1 to 2000 characters');
+    await this.probe();
+    if (!this.attached || generation !== this.generation || options?.signal?.aborted)
+      throw new BridgeError('STALE_SESSION', 'Bulletin publish crossed a session change', { retcode: 1503 });
+    const pskey = await this.groupPskey(options);
+    let picInfo;
+    if (params.image !== undefined) {
+      // 只收本地绝对路径（不接 URL/base64：那要先落盘，未验证前不做）。
+      const checked = validateLocalMedia(params.image, { kind: 'image', maxBytes: MEDIA_SEND_LIMITS.image });
+      if (!checked.ok) throw new BridgeError('MEDIA_UNAVAILABLE', checked.reason || 'Bulletin image is not usable', { retcode: 1400 });
+      const uploaded = await this.wait(null,
+        () => this.group.uploadGroupBulletinPic(code, pskey, params.image),
+        { ...options, sideEffect: true });
+      if (uploaded?.errCode !== undefined && uploaded.errCode !== 0)
+        throw new BridgeError('UNCONFIRMED', 'Bulletin image upload was rejected', { retcode: 1502, outcome: 'unknown' });
+      const info = uploaded?.picInfo;
+      if (!info || typeof info.id !== 'string' || !info.id)
+        throw new BridgeError('UNCONFIRMED', 'Bulletin image upload returned no picture reference', { retcode: 1502, outcome: 'unknown' });
+      picInfo = { id: info.id, width: Number(info.width) || 0, height: Number(info.height) || 0 };
+    }
+    const data = { text: encodeURI(content), picInfo, oldFeedsId: '',
+      pinned: params.pinned === true ? 1 : 0, confirmRequired: 0 };
+    const receipt = await this.wait(null, () => this.group.publishGroupBulletin(code, pskey, data),
+      { ...options, sideEffect: true });
+    checkResult(receipt, true);
+    return { notice_id: String(receipt?.noticeId ?? receipt?.feedId ?? '') };
+  }
+
   /** 删除群公告（P0，写）。内核：deleteGroupBulletin(groupCode, seq, noticeId)。 */
   async deleteGroupNotice(params, options) {
     const generation = this.generation;
@@ -1357,7 +1505,9 @@ export class NativeBridge extends EventEmitter {
     await this.probe();
     if (!this.attached || generation !== this.generation || options?.signal?.aborted)
       throw new BridgeError('STALE_SESSION', 'Bulletin delete crossed a session change', { retcode: 1503 });
-    const receipt = await this.wait(null, () => this.group.deleteGroupBulletin(code, '', noticeId), { ...options, sideEffect: true });
+    // ★ 以前这里传的是空串 pskey —— 服务端直接拒，却被记成「动作存在但失败」。
+    const pskey = await this.groupPskey(options);
+    const receipt = await this.wait(null, () => this.group.deleteGroupBulletin(code, pskey, noticeId), { ...options, sideEffect: true });
     checkResult(receipt, true);
     return null;
   }
@@ -1625,6 +1775,12 @@ export class NativeBridge extends EventEmitter {
         return this.getRecentContacts(request.count, options, generation);
       }
       case 'get_image': return this.readIndexedImage(params, options);
+      case 'get_record': {
+        let request;
+        try { request = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.readIndexedRecord(request, options);
+      }
+      case 'get_message_videos': return this.getMessageVideos(params, options);
       case 'get_file': return this.readIndexedFile(params, options);
       case 'get_message_images':
       case 'get_message_audio': {
@@ -1977,6 +2133,11 @@ export class NativeBridge extends EventEmitter {
         };
         if (base?.longNick !== undefined) result.long_nick = text(base.longNick, 'signature');
         if (core?.remark !== undefined) result.remark = text(core.remark, 'remark');
+        // 官方亲密度：内核的 SimpleInfo 里本来就带 `intimate`（类型定义 user.ts:218），
+        // 这份数据随 get_stranger_info 一起回来了 —— 不用另开一次内核调用。
+        // 形状未在本机实测过，所以只放标量、限键数与长度，别把未知结构原样透出去。
+        const intimate = boundedPrimitives(detail.simpleInfo?.intimate);
+        if (intimate) result.intimate = intimate;
         await this.probe();
         if (!this.attached || this.generation !== generation || options.signal?.aborted)
           throw new BridgeError('STALE_SESSION', 'Profile query crossed a session change', { retcode: 1503 });
@@ -1996,6 +2157,11 @@ export class NativeBridge extends EventEmitter {
         return this.confirmMute(() => this.group.setMemberShutUp(code, [{ uid, timeStamp: duration }]), options, generation);
       }
       case 'get_group_notice': return this.groupNotices(params, options);
+      case 'send_group_notice': {
+        let request;
+        try { request = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.sendGroupNotice(request, options);
+      }
       case 'del_group_notice': return this.deleteGroupNotice(params, options);
       case 'get_group_system_msg': return this.groupSystemMessages(params, options);
       case 'get_doubt_friends_add_request': return this.doubtFriendRequests(params, options);
@@ -2011,7 +2177,226 @@ export class NativeBridge extends EventEmitter {
           try { proto = Object.getOwnPropertyNames(Object.getPrototypeOf(service)).filter(n => n !== 'constructor'); } catch {}
           surface[label] = [...new Set([...names, ...proto])].sort();
         }
-        return surface;
+        // 哪些可选服务在这台机的 QQ build 上真的挂得出来（只报存在性 + 方法名）。
+        // 用途：决定「群公告写 / pskey / 群文件上传」这类还差一条内核通道的动作能不能做 ——
+        // 没有证据就上，等于把 1404 换成一个更难查的失败。
+        const services = {};
+        for (const getter of SESSION_SERVICE_PROBES) {
+          let value;
+          try { value = this.session?.[getter]?.(); } catch { value = undefined; }
+          if (!value) { services[getter] = false; continue; }
+          const names = new Set();
+          try { for (const key in value) { if (typeof value[key] === 'function') names.add(key); } } catch {}
+          try { for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(value))) if (name !== 'constructor') names.add(name); } catch {}
+          services[getter] = [...names].sort();
+        }
+        return { ...surface, services };
+      }
+      /**
+       * 历史读取的诊断探针（只读、无副作用、不发任何消息）。
+       *
+       * 存在的理由：`wait()` 把「超时 / 原生调用抛错 / 取消」都归成同一句
+       * 「Native query did not complete」，于是 `get_group_msg_history` 在真机上恒 1502
+       * 却查不出到底卡在哪一步（真机日志里这一条 886 次，是最高频的失败）。
+       * 这里**绕开 wait()**，直接 await 内核 Promise，把耗时、错误名、返回外形原样报出来。
+       */
+      case 'debug_history_probe': {
+        const code = String(id(params.group_id, 'group_id'));
+        const count = integer(params.count ?? 20, 1, 50, 20);
+        const peer = { chatType: 2, peerUid: code, guildId: '' };
+        const out = { peer: { chatType: peer.chatType, peerUid: peer.peerUid }, count };
+        const startedAt = Date.now();
+        try {
+          const value = await Promise.race([
+            this.msg.getAioFirstViewLatestMsgs({ ...peer }, count),
+            new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 25000)),
+          ]);
+          out.elapsedMs = Date.now() - startedAt;
+          if (value === '__timeout__') { out.stage = 'timeout'; return out; }
+          out.stage = 'resolved';
+          out.result = typeof value?.result === 'number' ? value.result : null;
+          out.needContinueGetMsg = typeof value?.needContinueGetMsg;
+          out.msgListLength = Array.isArray(value?.msgList) ? value.msgList.length : null;
+          out.keys = Object.keys(value ?? {}).slice(0, 16);
+          // 把每条消息的**校验相关字段**原样报出来（id/seq/会话/元素类型），
+          // 这样「哪一条过不了哪一条校验」不用猜。
+          out.rows = (Array.isArray(value?.msgList) ? value.msgList : []).slice(0, 10).map((raw) => ({
+            msgId: String(raw?.msgId), msgSeq: String(raw?.msgSeq), chatType: raw?.chatType,
+            peerUid: String(raw?.peerUid), msgTime: String(raw?.msgTime),
+            senderUin: String(raw?.senderUin ?? ''),
+            elementTypes: Array.isArray(raw?.elements) ? raw.elements.map((e) => e?.elementType) : null,
+          }));
+          // ★ 关键一步：直接跑我们自己的 getHistory，把**原始错误**报出来。
+          //   core 在 reading 分支会用 READ_FAILURES 表把措辞统一成
+          //   「Native query did not complete」，真因（哪一步抛的、什么码）会被盖掉。
+          try {
+            const mapped = await this.getHistory({ group_id: code, count }, 'group', {});
+            out.getHistory = { ok: true, messages: mapped?.messages?.length ?? null };
+          } catch (error) {
+            out.getHistory = { ok: false, name: String(error?.name ?? ''), code: String(error?.code ?? ''),
+              retcode: error?.retcode ?? null, outcome: error?.outcome ?? null,
+              message: String(error?.message ?? error).slice(0, 300),
+              stack: String(error?.stack ?? '').split('\n').slice(1, 5).join(' | ').slice(0, 400) };
+          }
+        } catch (error) {
+          out.elapsedMs = Date.now() - startedAt;
+          out.stage = 'threw';
+          out.errorName = String(error?.name ?? '');
+          out.errorMessage = String(error?.message ?? error).slice(0, 300);
+        }
+        return out;
+      }
+      /**
+       * 合并转发诊断（只读）：真机上 `get_forward_msg` 对真实转发恒 1500，
+       * 日志里 `read_forward 1500 ×15` + 「展开合并转发失败」176 次就是它。
+       * 这里对同一条转发逐个试内核方法（getMultiMsg / fetchLongMsg / fetchLongMsgWithCb），
+       * 把每个的耗时、错误、返回外形原样报出来 —— 决定该用哪条。
+       */
+      case 'debug_forward_probe': {
+        const code = String(id(params.group_id, 'group_id'));
+        const messageId = Number(params.message_id);
+        const indexed = this.messages.byId.get(messageId);
+        const out = { group_id: code, message_id: messageId, indexed: Boolean(indexed) };
+        if (!indexed) return out;
+        const peer = rawPeer(indexed.raw);
+        const known = indexed.raw;
+        out.peer = { chatType: peer.chatType, peerUid: peer.peerUid };
+        const outerElements = Array.isArray(known.elements) ? known.elements : [];
+        const forwardElement = outerElements.find((element) => element?.elementType === 16 && element.multiForwardMsgElement?.resId);
+        out.resId = forwardElement?.multiForwardMsgElement?.resId ?? null;
+        const attempt = async (label, factory) => {
+          const startedAt = Date.now();
+          try {
+            const value = await Promise.race([factory(),
+              new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 25000))]);
+            if (value === '__timeout__') return { label, stage: 'timeout', ms: Date.now() - startedAt };
+            return { label, stage: 'resolved', ms: Date.now() - startedAt,
+              result: typeof value?.result === 'number' ? value.result : null,
+              errCode: typeof value?.errCode === 'number' ? value.errCode : null,
+              msgListLength: Array.isArray(value?.msgList) ? value.msgList.length : null,
+              keys: Object.keys(value ?? {}).slice(0, 16) };
+          } catch (error) {
+            return { label, stage: 'threw', ms: Date.now() - startedAt,
+              name: String(error?.name ?? ''), message: String(error?.message ?? error).slice(0, 240) };
+          }
+        };
+        // ★ NapCat 的签名是 getMultiMsg(peer, rootMsgId, parentMsgId)（apis/msg.ts:45-48）。
+        //   我们此前传的第三参是 multiForwardMsgElement.resId —— 语义对不上，所以先按置换逐个试。
+        const permutations = [];
+        const resId = out.resId ?? '';
+        const msgIdText = typeof known.msgId === 'string' ? known.msgId : String(known.msgId ?? '');
+        for (const [label, root, parent] of [
+          ['root=msgId parent=""', msgIdText, ''],
+          ['root=msgId parent=resId', msgIdText, resId],
+          ['root=resId parent=""', resId, ''],
+          ['root=resId parent=msgId', resId, msgIdText],
+        ]) {
+          if (!root) continue;
+          const startedAt = Date.now();
+          try {
+            const page = await Promise.race([
+              this.msg.getMultiMsg({ ...peer }, root, parent),
+              new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 12000)),
+            ]);
+            permutations.push(page === '__timeout__'
+              ? { label, stage: 'timeout', ms: Date.now() - startedAt }
+              : { label, stage: 'resolved', ms: Date.now() - startedAt,
+                  result: typeof page?.result === 'number' ? page.result : null,
+                  errMsg: typeof page?.errMsg === 'string' ? page.errMsg.slice(0, 100) : null,
+                  msgListLength: Array.isArray(page?.msgList) ? page.msgList.length : null });
+          } catch (error) {
+            permutations.push({ label, stage: 'threw', ms: Date.now() - startedAt,
+              message: String(error?.message ?? error).slice(0, 160) });
+          }
+        }
+        out.permutations = permutations;
+        const tries = [];
+        if (this.msg?.getMultiMsg) {
+          tries.push(await attempt('getMultiMsg(peer, msgId, resId)', () => this.msg.getMultiMsg({ ...peer }, known.msgId, out.resId ?? '')));
+        }
+        if (this.msg?.fetchLongMsg && typeof known.msgId === 'string') {
+          tries.push(await attempt('fetchLongMsg(peer, msgId)', () => this.msg.fetchLongMsg({ ...peer }, known.msgId)));
+        }
+        if (this.msg?.fetchLongMsgWithCb) {
+          tries.push(await attempt('fetchLongMsgWithCb(peer, Number(msgId))', () => this.msg.fetchLongMsgWithCb({ ...peer }, Number(known.msgId))));
+        }
+        out.tries = tries;
+        // ★ 第 151 轮实测过「fetchLongMsg 后等 1.5s 再读一次 getMultiMsg」仍是 result:5。
+        //   这里补两条**没试过**的路：
+        //   ① 内核有 setIsStopKernelFetchLongMsg 这个开关 —— 如果它默认停在 true，
+        //      fetchLongMsg 就只是空操作（上轮实测 1ms resolve 且零键，很像这种情形）；
+        //   ② 长消息可能是**异步**拉取，读窗口比 1.5s 长得多，所以要连续轮询而不是读一次。
+        const stopSwitch = {};
+        if (this.msg?.setIsStopKernelFetchLongMsg) {
+          for (const value of [false, true]) {
+            try {
+              const housekeeping = await Promise.race([
+                Promise.resolve(this.msg.setIsStopKernelFetchLongMsg(value)),
+                new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 5000)),
+              ]);
+              stopSwitch['arg=' + String(value)] = housekeeping === '__timeout__' ? 'timeout'
+                : { keys: Object.keys(housekeeping ?? {}).slice(0, 8),
+                    result: typeof housekeeping?.result === 'number' ? housekeeping.result : null };
+            } catch (error) {
+              stopSwitch['arg=' + String(value)] = { threw: String(error?.message ?? error).slice(0, 160) };
+            }
+          }
+        }
+        out.stopSwitch = stopSwitch;
+        if (this.msg?.fetchLongMsg && this.msg?.getMultiMsg && this.msg?.setIsStopKernelFetchLongMsg) {
+          const polls = [];
+          try { await this.msg.setIsStopKernelFetchLongMsg(false); } catch { /* 不可用就算了 */ }
+          const startedAt = Date.now();
+          try { await this.msg.fetchLongMsg({ ...peer }, known.msgId); } catch { /* void */ }
+          for (let index = 0; index < 15; index++) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            try {
+              const page = await Promise.race([
+                this.msg.getMultiMsg({ ...peer }, known.msgId, out.resId ?? ''),
+                new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 8000)),
+              ]);
+              polls.push(page === '__timeout__'
+                ? { at: Date.now() - startedAt, stage: 'timeout' }
+                : { at: Date.now() - startedAt,
+                    result: typeof page?.result === 'number' ? page.result : null,
+                    msgListLength: Array.isArray(page?.msgList) ? page.msgList.length : null });
+            } catch (error) {
+              polls.push({ at: Date.now() - startedAt, threw: String(error?.message ?? error).slice(0, 120) });
+            }
+            if (polls[polls.length - 1]?.msgListLength > 0) break;
+          }
+          out.stopFlagThenPoll = polls;
+          // 探针结束把开关恢复成「停止」——不把内核留在一个半开的状态里。
+          try { await this.msg.setIsStopKernelFetchLongMsg(true); } catch { /* ignore */ }
+        }
+        // ★ 关键假设：内核里的 fetchLongMsg 是 void（本次实测 keys=[]），像是「先把长消息拉下来、
+        //   之后 getMultiMsg 从缓存读」的模式。验证：拉一次、等一会儿、再读一次 getMultiMsg。
+        if (this.msg?.fetchLongMsg && this.msg?.getMultiMsg) {
+          const startedAt = Date.now();
+          try { await this.msg.fetchLongMsg({ ...peer }, known.msgId); } catch {}
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          try {
+            const again = await Promise.race([
+              this.msg.getMultiMsg({ ...peer }, known.msgId, out.resId ?? ''),
+              new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 20000)),
+            ]);
+            out.fetchThenGetMultiMsg = {
+              ms: Date.now() - startedAt,
+              stage: again === '__timeout__' ? 'timeout' : 'resolved',
+              result: typeof again?.result === 'number' ? again.result : null,
+              errMsg: typeof again?.errMsg === 'string' ? again.errMsg.slice(0, 120) : null,
+              msgListLength: Array.isArray(again?.msgList) ? again.msgList.length : null,
+              sample: Array.isArray(again?.msgList) && again.msgList.length
+                ? { elements: Array.isArray(again.msgList[0]?.elements) ? again.msgList[0].elements.length : null,
+                    senderUin: String(again.msgList[0]?.senderUin ?? '') }
+                : null,
+            };
+          } catch (error) {
+            out.fetchThenGetMultiMsg = { ms: Date.now() - startedAt, stage: 'threw',
+              message: String(error?.message ?? error).slice(0, 200) };
+          }
+        }
+        return out;
       }
       case 'get_version_info': return { app_name: 'whale-onebot', app_version: VERSION,
         protocol_version: 'v11', version: VERSION };
@@ -2076,6 +2461,43 @@ export class NativeBridge extends EventEmitter {
             { retcode: 1502, outcome: 'unknown' });
         }
         return null;
+      }
+      case 'set_group_top': {
+        // 会话置顶（不是群消息置顶）：内核 NodeIKernelGroupService.setTop(groupCode, isTop) 返回 void。
+        // 这是**本机可见的会话列表排序**，不改群设置、也不通知他人 —— 失败不会造成"看起来成功"的错觉：
+        // 原生拒绝会以 BridgeError 抛出，checkResult 会把非零 result 归一成 1500。
+        const code = groupCode();
+        const enable = params.enable !== false;
+        checkResult(await invoke(() => this.group.setTop(code, enable), true), true);
+        return { group_id: Number(code), enable };
+      }
+      case 'set_friend_top': {
+        // 私聊会话置顶。内核有两个候选，参数形状不同：
+        //   msg.setContactLocalTop({ chatType: 1, peerUid }, isTop)  —— chatType 1 = C2C（好友私聊）
+        //   buddy.setTop(uid: number, isTop)
+        // 这里按顺序都试一次，返回**实际生效的那条**（via），免得把"没验证的形状"说成已验证。
+        const uin = String(id(params.user_id, 'user_id'));
+        const enable = params.enable !== false;
+        const attempts = [];
+        if (typeof this.msg?.setContactLocalTop === 'function') {
+          try {
+            checkResult(await invoke(() => this.msg.setContactLocalTop({ chatType: 1, peerUid: uin }, enable), true), true);
+            return { user_id: Number(uin), enable, via: 'msg.setContactLocalTop' };
+          } catch (error) {
+            attempts.push({ via: 'msg.setContactLocalTop', retcode: error?.retcode ?? null,
+              message: String(error?.message ?? error).slice(0, 120) });
+          }
+        }
+        if (typeof this.buddy?.setTop === 'function') {
+          try {
+            checkResult(await invoke(() => this.buddy.setTop(Number(uin), enable), true), true);
+            return { user_id: Number(uin), enable, via: 'buddy.setTop', attempts };
+          } catch (error) {
+            attempts.push({ via: 'buddy.setTop', retcode: error?.retcode ?? null,
+              message: String(error?.message ?? error).slice(0, 120) });
+          }
+        }
+        throw new BridgeError('UNAVAILABLE', 'Native friend pin was rejected on every candidate', { retcode: 1500, attempts });
       }
       case 'set_group_leave': {
         const code = groupCode();
@@ -2256,6 +2678,142 @@ export class NativeBridge extends EventEmitter {
     for (const t of targets) if (typeof result.get(t.index) === 'string') succeeded++;
     if (succeeded) mediaDiagnostics.inlineSucceeded++; else mediaDiagnostics.inlineFailed++;
     return result;
+  }
+
+  // OneBot get_record：把一条语音消息落成本地文件。
+  //
+  // 本运行端拿语音字节的唯一被验证过的途径是原生传输：downloadRichMedia
+  // （downloadType: 1，与 inlinePictureData 同一契约，NapCat 的 downloadMedia 也用同一个
+  // 调用）→ onRichMediaDownloadComplete 回调给出 filePath。没有第二条路：pttElement
+  // 不带可直接下载的地址，服务端 url 会过期。
+  //
+  // 只返回原生 silk 文件。out_format 不是 silk 的在 validateParams 里就被拒了 ——
+  // 本运行端没有转码器，把 silk 说成 mp3 比明确拒绝更糟。
+  async readIndexedRecord(params, options) {
+    const generation = this.generation;
+    const notFound = () => new BridgeError('MEDIA_MESSAGE_NOT_FOUND',
+      'Record message could not be verified', { retcode: 1404 });
+    let indexed;
+    if (params.message_id !== undefined) {
+      indexed = this.messages.byId.get(params.message_id);
+      if (!indexed) throw notFound();
+    } else {
+      // 按文件名回溯：索引按插入顺序保存，从新到旧扫一个有界窗口。
+      const entries = [...this.messages.byId.values()];
+      const floor = Math.max(0, entries.length - RECORD_FILE_SCAN_LIMIT);
+      for (let index = entries.length - 1; index >= floor; index--) {
+        const candidate = entries[index];
+        const elements = Array.isArray(candidate?.raw?.elements) ? candidate.raw.elements : [];
+        if (elements.some(element => element?.elementType === 4 && element.pttElement?.fileName === params.file)) {
+          indexed = candidate;
+          break;
+        }
+      }
+      if (!indexed) throw notFound();
+    }
+    const known = indexed.raw;
+    const sender = this.#conversationUser(known.senderUin);
+    if (known.chatType === 1 && (!known.peerUin ||
+        (String(known.peerUin) === MAIN && this.#conversationPolicy !== 'original'))) throw notFound();
+    const peer = rawPeer(known);
+    const raw = await this.wait(null, () => this.msg.getMsgsByMsgId({ ...peer }, [known.msgId]), options);
+    const message = findMessageReadback(raw, peer, known.msgId);
+    if (!message || String(readOwnMessageField(message, 'senderUin')) !== sender ||
+        (known.senderUid && known.senderUid !== readOwnMessageField(message, 'senderUid'))) throw notFound();
+    let elements = projectMediaReadback(message, 4);
+    if (params.file !== undefined) {
+      elements = elements.filter(element => element.pttElement?.fileName === params.file);
+    }
+    if (elements.length === 0) throw notFound();
+    // 一条消息里有多段语音而调用方没指定文件时，不猜哪一段，明确要求指明。
+    if (elements.length > 1) throw new BridgeError('MEDIA_NOT_UNIQUE',
+      'Message carries more than one record; pass file to pick one', { retcode: 1400 });
+    if (typeof this.msg?.downloadRichMedia !== 'function')
+      throw new BridgeError('UNSUPPORTED', 'This native profile cannot transfer records', { retcode: 1404 });
+    const elementId = elements[0].elementId ?? '';
+    const key = `${message.msgId}:${String(elementId)}`;
+    const completions = this.richMediaCompletions;
+    completions.delete(key);
+    try {
+      await this.msg.downloadRichMedia({
+        fileModelId: '0', downSourceType: 0, downloadSourceType: 0, triggerType: 1,
+        msgId: message.msgId, chatType: peer.chatType, peerUid: peer.peerUid,
+        elementId, thumbSize: 0, downloadType: PICTURE_DOWNLOAD_TYPE, filePath: '',
+      });
+    } catch {
+      throw new BridgeError('MEDIA_UNAVAILABLE', 'Native record transfer failed', { retcode: 1502 });
+    }
+    const deadline = Date.now() + this.timeoutMs;
+    while (Date.now() < deadline) {
+      if (options?.signal?.aborted) break;
+      const done = completions.get(key);
+      if (done) {
+        completions.delete(key);
+        const path = done.filePath;
+        // 只接受绝对路径：回调里的相对路径无法被上层安全读取。
+        if (typeof path === 'string' && path && path.length <= 4096 &&
+            /^([/\\]|[A-Za-z]:[\\/])/.test(path)) {
+          await this.probe();
+          if (!this.attached || this.generation !== generation)
+            throw new BridgeError('STALE_SESSION', 'Record query crossed a session change', { retcode: 1503 });
+          return { file: path, out_format: 'silk',
+            ...(elements[0].pttElement?.fileName ? { name: elements[0].pttElement.fileName } : {}) };
+        }
+      }
+      await delay(RECORD_DOWNLOAD_POLL_MS, undefined, { signal: options?.signal }).catch(() => {});
+    }
+    throw new BridgeError('MEDIA_UNAVAILABLE', 'Native record transfer did not complete', { retcode: 1502 });
+  }
+
+  /**
+   * 把一条消息里的视频落到**本地文件**并返回绝对路径（OneBot 扩展动作 get_message_videos）。
+   *
+   * 为什么需要它：运行端要看视频只能「下载 → ffmpeg 抽帧」，而 QQ 的视频地址带 rkey、会过期
+   * （真机 `图片获取失败：HTTP 404` 就是这么来的）。`get_message_images` 只处理图片元素，
+   * 视频没有对等通道 ⇒ 收到视频消息时运行端无处可取。这里用与 get_record 完全同一条
+   * 原生传输（downloadRichMedia + 完成回调）把视频落到磁盘，运行端与本协议端在**同一个容器
+   * 文件系统**里，直接读路径即可，不需要把几十 MB 塞进 OneBot 消息体。
+   */
+  async getMessageVideos(params, options) {
+    const messageId = params.message_id;
+    if (!isOneBotMessageId(messageId)) throw invalid('Expected a current-session OneBot message ID');
+    const indexed = this.messages.byId.get(Number(messageId));
+    if (!indexed) throw new BridgeError('MESSAGE_NOT_FOUND', 'Message ID expired or belongs to another session', { retcode: 1404 });
+    const elements = await this.readIndexedMediaElements(indexed, 5, options);
+    if (!elements.length) throw new BridgeError('MEDIA_MESSAGE_NOT_FOUND', 'Message carries no video', { retcode: 1404 });
+    if (typeof this.msg?.downloadRichMedia !== 'function')
+      throw new BridgeError('UNSUPPORTED', 'This native profile cannot transfer videos', { retcode: 1404 });
+    const known = indexed.raw;
+    const peer = rawPeer(known);
+    const msgId = known.msgId;
+    const completions = this.richMediaCompletions;
+    const videos = [];
+    for (const element of elements.slice(0, VIDEO_PAGE_LIMIT)) {
+      const elementId = element.elementId ?? '';
+      const key = `${msgId}:${String(elementId)}`;
+      completions.delete(key);
+      try {
+        await this.msg.downloadRichMedia({
+          fileModelId: '0', downSourceType: 0, downloadSourceType: 0, triggerType: 1,
+          msgId, chatType: peer.chatType, peerUid: peer.peerUid,
+          elementId, thumbSize: 0, downloadType: PICTURE_DOWNLOAD_TYPE, filePath: '',
+        });
+      } catch { continue; }
+      const deadline = Date.now() + this.timeoutMs;
+      while (Date.now() < deadline) {
+        if (options?.signal?.aborted) break;
+        const done = completions.get(key);
+        if (!done) { await delay(RECORD_DOWNLOAD_POLL_MS, undefined, { signal: options?.signal }).catch(() => {}); continue; }
+        completions.delete(key);
+        const path = done.filePath;
+        if (typeof path === 'string' && path && path.length <= 4096 && /^([/\\]|[A-Za-z]:[\\/])/.test(path)) {
+          const name = element.videoElement?.fileName;
+          videos.push({ file: typeof name === 'string' && name ? name : '', path });
+        }
+        break;
+      }
+    }
+    return { videos, total: videos.length };
   }
 
   rememberRichMediaDownload(done) {
@@ -3122,10 +3680,29 @@ export class NativeBridge extends EventEmitter {
     };
     const previous = await read();
     const { uid, nick, longNick, sex, birthday } = previous;
-    const desired = { nick: params.nickname ?? nick, longNick: params.personal_note ?? longNick, sex: params.sex ?? sex, birthday };
+    // 生日写入补全（2026-11-23）：内核 modifyDesktopMiniProfile 本来就收 birthday，
+    // 以前只读不写（改了也只能改昵称/签名/性别）。三个字段必须一起给：
+    // 只给年或只给月，原生会写进一个半截生日，读回来就成了"我改坏了"。
+    const supplied = birthdayKeys.filter(key => params[key] !== undefined);
+    let desiredBirthday = birthday;
+    if (supplied.length) {
+      if (supplied.length !== birthdayKeys.length)
+        throw invalid('Provide birthday_year, birthday_month and birthday_day together');
+      const next = {};
+      for (const [i, field] of birthdayKeys.entries()) {
+        const value = Number(params[field]);
+        if (!Number.isInteger(value) || value < 0 || value > [9999, 12, 31][i])
+          throw invalid(`Invalid ${field}`);
+        next[field] = String(value);
+      }
+      desiredBirthday = next;
+    }
+    const desired = { nick: params.nickname ?? nick, longNick: params.personal_note ?? longNick,
+      sex: params.sex ?? sex, birthday: desiredBirthday };
     await this.probe();
     if (!current()) throw new BridgeError('STALE_SESSION', 'Profile request crossed a session change', { retcode: 1503 });
-    if (desired.nick === nick && desired.longNick === longNick && desired.sex === sex) return null;
+    if (desired.nick === nick && desired.longNick === longNick && desired.sex === sex &&
+        birthdayKeys.every(field => desiredBirthday[field] === birthday[field])) return null;
     const response = await this.wait(null, () => this.profile.modifyDesktopMiniProfile({ ...desired, location: undefined }),
       { ...options, sideEffect: true });
     checkResult(response, true);
@@ -3133,7 +3710,8 @@ export class NativeBridge extends EventEmitter {
       const observed = await read();
       await this.probe();
       if (!current() || observed.uid !== uid || observed.nick !== desired.nick || observed.longNick !== desired.longNick ||
-          observed.sex !== desired.sex || birthdayKeys.some(field => observed.birthday[field] !== birthday[field]))
+          observed.sex !== desired.sex ||
+          birthdayKeys.some(field => observed.birthday[field] !== desiredBirthday[field]))
         throw new Error('Profile mismatch');
     } catch {
       throw new BridgeError('UNCONFIRMED', 'Self profile readback did not match the requested update', { retcode: 1502, outcome: 'unknown' });
@@ -3697,9 +4275,20 @@ export class NativeBridge extends EventEmitter {
       if (raw.chatType !== peer.chatType || raw.peerUid !== peer.peerUid) rejectResponse();
       if (type === 'private' && ![BOT, String(params.user_id)].includes(String(raw.senderUin))) rejectResponse();
       nativeInteger(raw.msgId); const seq = nativeInteger(raw.msgSeq);
-      if (messageIds.has(raw.msgId) || sequences.has(raw.msgSeq)) rejectResponse();
+      // ★ 2026-11-23 真机实据：**msgSeq 在群里不唯一**。灰条（elementType 8，senderUin "0"）
+      //   是本地插入的，不占新序号 —— 实测同一页里 `msgId 7785292425117701431`（真实文本）
+      //   与 `msgId 7785292453650608706`（灰条）**都是 msgSeq 831719**。
+      //   原先用 (msgId, msgSeq) 双重去重，于是每个含灰条的群历史都被判成「响应畸形」→ 1502，
+      //   结果「历史补齐」在真机上 886 次全失败（最大的单一报错源）。
+      //   唯一性只认 msgId；msgSeq 只是翻页游标，不参与唯一性判断。
+      if (messageIds.has(raw.msgId)) rejectResponse();
       messageIds.add(raw.msgId); sequences.add(raw.msgSeq);
       if (params.message_seq !== undefined && seq > BigInt(params.message_seq)) throw new BridgeError('HISTORY_RANGE_UNCONFIRMED', 'Native history returned messages newer than the requested cursor', { retcode: 1502 });
+      // 系统/灰条消息的 senderUin 是 "0"（没有真实发送者），不能按账号格式校验。
+      const isSystem = String(raw.senderUin) === '0';
+      // 这类条目（群公告/入群/撤回等灰条）既没有真实发送者，也没有 OneBot 消息表示，
+      // 塞进历史只会让 translate() 在 sender 校验上抛错 —— 跳过它，别让它毁掉整页。
+      if (isSystem) { this.stats.historySystemSkipped = (this.stats.historySystemSkipped ?? 0) + 1; continue; }
       const sender = id(raw.senderUin, 'senderUin');
       if (type === 'group' && sender === MAIN && this.#conversationPolicy !== 'original') continue;
       if (!['string', 'number'].includes(typeof raw.msgTime) || !/^(0|[1-9]\d{0,15})$/.test(String(raw.msgTime)) || !Number.isSafeInteger(Number(raw.msgTime))) rejectResponse();

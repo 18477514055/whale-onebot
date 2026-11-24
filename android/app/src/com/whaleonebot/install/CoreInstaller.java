@@ -140,8 +140,40 @@ public final class CoreInstaller {
     return new ArrayList<>(out);
   }
 
-  public long downloadBytes(String version, List<String> selected) throws Exception {
-    Map<String, Object> r = row(version), e = env(r);
+  /**
+   * 只看「公共运行环境」（环境包）的当前状态，不下载、不动实例。
+   *
+   * <p>为什么单独暴露：环境配置页原来只有「下载内置核心」一个入口，而环境包是跟着核心一起下的 ——
+   * 用户在页面上看不到它、也不知道它有多大/在不在，于是提问「怎么没有下载环境包的选项」。
+   * 这里把 file/bytes/sha256/ready 报给 UI，让那个包在界面上成为一等公民。
+   */
+  public Map<String, Object> environmentInfo(String version) throws Exception {
+    Map<String, Object> e = env(row(version));
+    String hash = str(e, "sha256");
+    Map<String, Object> out = new LinkedHashMap<>(e);
+    out.put("ready", environment.ready(envHome(files, hash), hash) || cache.valid(hash, num(e, "bytes")));
+    return out;
+  }
+
+  /**
+   * 只下载 / 修复公共运行环境（不装核心、不碰任何实例的当前代）。
+   *
+   * <p>与 {@link #install} 内部那一段是同一条路径（同一个 cache key、同一个 prepare 校验），
+   * 所以「修复环境」产出的字节与「装核心时顺带装的环境」完全一致，不存在两套环境。
+   */
+  public void ensureEnvironment(String version, Progress p) throws Exception {
+    Map<String, Object> e = env(row(version));
+    String hash = str(e, "sha256");
+    File home = envHome(files, hash);
+    if (environment.ready(home, hash)) return;
+    File archive = cache.get("environment", str(e, "url"), hash, num(e, "bytes"), 4L << 30, p);
+    mkdir(home);
+    if (p != null) p.phase("正在解压运行环境");
+    environment.prepare(home, archive, hash);
+    require(environment.ready(home, hash), "Shared environment not ready");
+  }
+
+  public long downloadBytes(String version, List<String> selected) throws Exception {    Map<String, Object> r = row(version), e = env(r);
     Map<String, Map<String, Object>> rows = catalog(r);
     String hash = str(e, "sha256");
     long total =

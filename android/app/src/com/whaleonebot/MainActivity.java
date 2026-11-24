@@ -156,7 +156,19 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
 
     @Override public boolean containerRunning() { return ContainerService.isRunning(); }
 
-    @Override public void startContainer() { ContainerService.start(this); }
+    /**
+     * 启动容器 —— 之前若没有 rootfs 就静默起不来（新装的包、或只下过环境包没建过容器）。
+     * ★ 2026-11-24：先把 APK 自带的环境铺成 rootfs（已就绪则不动），再起容器；
+     *   铺不出来就把话说明白，而不是让用户对着「没反应」猜。
+     */
+    @Override public void startContainer() {
+        android.util.Log.i("WhaleEnv", "startContainer: 用户点了启动容器");
+        new Thread(() -> {
+            boolean ok = com.whaleonebot.ui.BundledEnvironment.ensure(this);
+            if (!ok) runOnUiThread(() -> toast("运行环境还没准备好：去「设置 → 环境配置」看环境包状态"));
+            ContainerService.start(this);
+        }, "prepare-environment").start();
+    }
 
     @Override public void stopContainer() { ContainerService.stop(this); }
 
@@ -206,7 +218,16 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         qrCache = null;
         qrCacheMtime = -1;
         requestAt = System.currentTimeMillis();
-        toast("正在向 QQ 请求二维码…（首次约 40 秒）");
+        // ★ 2026-11-24（用户反馈的死循环）：点「QQ 登录」被要求"先打开 QQ"，点「打开 QQ」又被要求"先登录"。
+        //   根因是登录动作只在容器里跑得起来，而容器没起时这里什么都不做/被上层挡回去。
+        //   现在登录前先把容器拉起来（start 幂等），把顺序固定成：起容器 → 要码 → 扫码 → 打开 QQ。
+        boolean wasRunning = ContainerService.isRunning();
+        if (!wasRunning) {
+            ContainerService.start(this);
+            toast("登录前先把容器拉起来（约 30–60 秒），起来后会自动要码");
+        } else {
+            toast("正在向 QQ 请求二维码…（首次约 40 秒）");
+        }
         ContainerService.startLogin(this);
     }
 

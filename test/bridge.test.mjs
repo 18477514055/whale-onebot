@@ -1101,6 +1101,26 @@ test('profile query checks native status, publishes only selected fields and ref
     sex: 'unknown', age: 20, long_nick: 'Synthetic signature', remark: 'Fixture' });
 });
 
+test('profile query exposes official intimacy as bounded scalars only', async t => {
+  const f = fixture();
+  await f.bridge.attach();
+  t.after(() => f.bridge.detach());
+  // 内核 SimpleInfo 里本来就带 intimate（类型定义 user.ts:218，形状未实测）⇒
+  // 只透出标量，Map/嵌套对象/超长字符串一个都不带出去。
+  f.profile.getUserDetailInfoByUin = uin => ({ result: 0, detail: { uin, uid: 'u_fixture', simpleInfo: {
+    coreInfo: { uin, uid: 'u_fixture', nick: 'Synthetic' },
+    baseInfo: { sex: 1, age: 20 },
+    intimate: { score: 128, level: 3, lastActiveDays: 0, alive: true, nested: { a: 1 }, huge: 'x'.repeat(300) },
+  } } });
+  const info = await f.bridge.call('get_stranger_info', { user_id: FRIEND });
+  assert.deepEqual(info.intimate, { score: 128, level: 3, lastActiveDays: 0, alive: true });
+  // 没有任何标量可取时干脆不给这个字段（不给空壳）。
+  f.profile.getUserDetailInfoByUin = uin => ({ result: 0, detail: { uin, uid: 'u_fixture', simpleInfo: {
+    coreInfo: { uin, uid: 'u_fixture', nick: 'Synthetic' }, baseInfo: { sex: 1, age: 20 }, intimate: { nested: {} },
+  } } });
+  assert.equal('intimate' in (await f.bridge.call('get_stranger_info', { user_id: FRIEND })), false);
+});
+
 test('profile query rejects inconsistent identity and discards a successful response after session replacement', async t => {
   const f = fixture();
   await f.bridge.attach();
@@ -1962,3 +1982,9 @@ test('add_custom_face maps to msg.addFavEmoji with a bounded source', async () =
   assert.deepEqual(f.calls.find(x => x[0] === 'face')[1], 'https://example.invalid/emoji.png');
   f.bridge.detach();
 });
+
+// 2026-11-23 真机：add_custom_face 连失败 43 次（全 1500，agent 侧日志写「可能收藏已满，改存本地库」）。
+// 怀疑是路径问题（贴纸在容器目录、addFavEmoji 在 QQ 进程内读不到），但**没能在真机上证实**：
+// 加了一版「先经 imagePlacement 落位再收藏」的改动，生产上仍是 1502「Action was not submitted」，
+// 而 imagePlacement 在生产宿主里到底注没注入也没确认 ⇒ 按「不留未验证的行为改动」回退。
+// 这条留作指针：要再攻先确认宿主是否注入 imagePlacement，以及 addFavEmoji 吃不吃 base64/路径。

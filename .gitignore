@@ -66,3 +66,6 @@ android/app/assets/
 
 # 开发记录（实测记录/审计/交接/变更日志等）只留在本机，不进仓库
 /_notes/
+android/app/assets/bundled/environment.bin
+android/app/assets/bundled/core.zip
+android/app/assets/native/

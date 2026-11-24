@@ -92,7 +92,16 @@ final class VersionScreen extends Screen {
         coreListBox = Ui.column(activity);
         coreCard.addView(coreListBox, topMargin(dp(Theme.S2)));
 
-        TextView pickCore = Ui.button(activity, t, "点这里选核心版本", true);
+        TextView downloadCore = Ui.button(activity, t, "下载与创建新核心", true);
+        downloadCore.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shell.corePage("download", null);
+            }
+        });
+        coreCard.addView(downloadCore, topMargin(dp(Theme.S2)));
+
+        TextView pickCore = Ui.button(activity, t, "管理已有核心版本", false);
         pickCore.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -448,26 +457,24 @@ final class VersionScreen extends Screen {
         }
 
         final String copyUrl = primaryUrl;
-        AlertDialog.Builder b = new AlertDialog.Builder(activity)
-                .setTitle(item.tag.length() > 0 ? item.tag : "下载地址")
-                .setMessage(msg.toString())
-                .setNegativeButton("关闭", null);
-        if (copyUrl != null && copyUrl.length() > 0) {
-            b.setPositiveButton("复制链接", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
+        PromptSheet.confirm(
+                activity, t,
+                item.tag.length() > 0 ? item.tag : "下载地址",
+                msg.toString(),
+                (copyUrl != null && copyUrl.length() > 0) ? "复制链接" : null,
+                (copyUrl != null && copyUrl.length() > 0) ? () -> {
                     try {
                         ClipboardManager cm = (ClipboardManager)
                                 activity.getSystemService(Context.CLIPBOARD_SERVICE);
                         cm.setPrimaryClip(ClipData.newPlainText("下载地址", copyUrl));
                         host().toast("链接已复制");
                     } catch (Throwable e) {
+                        android.util.Log.w("WhaleUI", "复制下载链接失败", e);
                         host().toast("复制失败");
                     }
-                }
-            });
-        }
-        b.show();
+                } : null,
+                null, null,
+                "关闭");
     }
 
     // ------------------------------------------------------------------ B. 内置核心版本

@@ -41,3 +41,29 @@ python -B scripts/verify-bot-release-arm64.py --assets $out --pin $indexPin
 ```
 
 最后一项在 Linux root 或 Windows + 本地 WSL Debian（qemu-aarch64-static）中构建一次性 chroot，实跑 ARM64 Bash、env、Node、内存 SQLite、五个 npm 导入、两个平台模块、B 站协议入口；运行时不访问手机或公网。它不证明真机安装、扫码、第三方网络、公开 URL 可下载或完整机器人会话。单独的真机下载验收与公开发行均须另行授权。
+
+## 发行物终审（`scripts/audit-release-assets.mjs`）
+
+以前每次「这批资产对不对」都是临场敲命令，还因为 Windows 的 `\r` 误判过一次（见台账第 153 轮的订正）。
+现在固化成一个脚本，一条命令复核全部可查项：
+
+```bash
+node scripts/audit-release-assets.mjs .tmp/release-1.1.5-assets
+```
+
+它查 13 项（每项 PASS/FAIL，退出码即结论）：
+
+| # | 检查 | 判据 |
+|---|---|---|
+| 1 | SHA256SUMS 覆盖且匹配 | 目录里除 SUMS 外的**每一个**资产都在清单里，且 sha256 逐字节相等 |
+| 2 | APK 内置 pin = 本索引 | 从 APK 的 `assets/core-release-pin.json` 读出 sha256，与 `release-index.json` 的 sha256 比较 |
+| 3 | pin 指向的 tag 与资产版本一致 | pin.url 里的 tag 必须和资产文件名里的版本对得上 |
+| 4-6 | APK 元数据 | versionCode / versionName / **无 debuggable**（P1）/ 签名证书 SHA-256 |
+| 7-9 | 核心 zip 内容 | 按**符号出现次数**核 `framesFromLocalVideo` / `get_message_videos` / `retryMediaViaProtocol`（收到视频）与 `readCooldownUntil` / `dm_replied`（B 站私信），不是看文件名 |
+| 10-13 | 环境包 | sha/bytes 与索引一致；**不含 QQ 协议端**（对外口径）；`bin/bash` 与 node 都在 |
+
+环境包列条目用 Windows 自带的 `tar -tzf`（bsdtar），不经 python，避免再被 `\r` 带偏。
+
+**1.1.5-beta.1 实测结果（2026-11-23）**：13 项全过 —— SUMS 覆盖 13 个资产、pin `76723270e067`、
+APK `11501 / 1.1.5-beta.1` / 无 debuggable / 证书 `4e2e2ef330e52243`、核心包 345 条目带两处修复、
+环境包 `b01a65727d55` 51 242 516 B 且 892 条目里 `qq-onebot`/native-bridge 各 0 条（bili-protocol 53 条）。

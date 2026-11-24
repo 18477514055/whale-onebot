@@ -375,7 +375,10 @@ final class QqScreen extends Screen {
         // 空态：没有 QQ 机器人时本页只有引导卡，没有可刷新的控件。
         if (statusText == null) return;
 
-        String status = running ? "容器运行中" : "容器已停止";
+        // ★ 2026-11-23：把「容器」和「QQ 账号」两件事写在一行 —— 原来一行「容器运行中」+ 一行「未登录」，
+        //   用户读起来就是"在运行但没登录"的矛盾。现在直接说清楚：跑起来了，但还没扫码。
+        String status = !running ? "容器已停止"
+                : (logged ? "容器运行中 · 已登录" : "容器运行中 · QQ 未登录（扫上方二维码）");
         if (!status.equals(lastStatus)) {
             statusText.setText(status);
             lastStatus = status;

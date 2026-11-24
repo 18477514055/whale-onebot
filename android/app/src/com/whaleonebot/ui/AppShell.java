@@ -566,7 +566,10 @@ public class AppShell {
                     break;
                 case P_QQ:
                     BotRegistry.Bot target = BotRegistry.get(arg == null ? currentBotId() : arg);
-                    s = BotRegistry.legacyQQ(target) ? new QqScreen(this) : new BoundStartScreen(this,target,"dashboard".equals(arg2));
+                    // ★ 2026-11-24 用户口径：「新登录的账号和已登录的账号是同一个启动页，只要填了 QQ 账号就能发起扫码」。
+                    //   以前 legacy 走 QqScreen（有二维码），新核心走 BoundStartScreen（没二维码）⇒ 新号根本没有扫码入口。
+                    //   现在两页合一：BoundStartScreen 自带容器启停 + 扫码登录 + QrPanel，legacy 与内置核心看到的是同一页。
+                    s = new BoundStartScreen(this,target,"dashboard".equals(arg2));
                     break;
                 case P_BILI_ACCOUNT:
                     s = arg2!=null&&(arg2.startsWith("slot:")||arg2.startsWith("new:"))?new BiliEnrollScreen(this,arg,arg2):new BiliPlatformScreen(this,BotRegistry.get(arg),arg2);
