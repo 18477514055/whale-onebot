@@ -33,11 +33,16 @@ public final class BundledEnvironment {
         File legacy = new File(files, "rootfs");
         boolean legacyReady = QqClientInstaller.usable(legacy);
         android.util.Log.i("WhaleEnv", "ensure: 容器用的 rootfs=" + legacy.getAbsolutePath() + " 可用=" + legacyReady);
-        if (legacyReady) return true;
+        if (legacyReady) {
+            ensureBundledAgentApp(ctx, legacy);
+            return true;
+        }
 
-        // 目录存在但不可用（空骨架 / 上次铺到一半被打断）：ManagedEnvironment.prepare 见到已存在的
-        // files/rootfs 会直接抛 "Existing environment preserved" 而拒绝覆盖 ⇒ 先挪到旁边留证再铺。
-        File qqKeep = new File(files, "tmp/qq-client-keep");
+        // [layer: shell-android] 外壳层环境准备：先确保 tmp 目录就绪，再处理旧 rootfs 的暂存与重铺。
+        // 换环境会整棵替换 files/rootfs，因此必须先把持久的 opt/QQ 提到 tmp 暂存，防止被更新覆盖（P13）。
+        File tmp = new File(files, "tmp");
+        if (!tmp.isDirectory() && !tmp.mkdirs()) return false;
+        File qqKeep = new File(tmp, "qq-client-keep");
         if (legacy.exists()) {
             // ★ 2026-11-25 用户问「为什么每次更新都要重新下载 QQ」：
             //   QQ 客户端是装在**环境目录里面**的（<rootfs>/opt/QQ），环境一旦整棵换掉它就跟没。
@@ -45,11 +50,16 @@ public final class BundledEnvironment {
             //   先把 opt/QQ 提到 tmp/qq-client-keep，铺完新环境再放回去 —— 环境换、客户端留。
             File oldQQ = new File(legacy, "opt/QQ");
             if (new File(oldQQ, "resources/app/wrapper.node").isFile()) {
-                if (qqKeep.exists()) qqKeep.delete();
-                if (oldQQ.renameTo(qqKeep)) {
-                    android.util.Log.i("WhaleEnv", "ensure: 旧环境里的 QQ 客户端已暂存（铺完再放回，不用重装）");
+                if (new File(qqKeep, "resources/app/wrapper.node").isFile()) {
+                    // 上次铺环境异常中断时已经保住了一份完整 QQ，保留它，不冒删掉好客户端的风险。
+                    android.util.Log.i("WhaleEnv", "ensure: 沿用上次已暂存的完整 QQ 客户端");
                 } else {
-                    android.util.Log.w("WhaleEnv", "ensure: 旧 QQ 客户端暂存失败，铺完需要重新装 QQ");
+                    if (qqKeep.exists()) deleteTree(qqKeep);
+                    if (oldQQ.renameTo(qqKeep)) {
+                        android.util.Log.i("WhaleEnv", "ensure: 旧环境里的 QQ 客户端已暂存（铺完再放回，不用重装）");
+                    } else {
+                        android.util.Log.w("WhaleEnv", "ensure: 旧 QQ 客户端暂存失败，铺完需要重新装 QQ");
+                    }
                 }
             }
             File aside = new File(files, "rootfs.broken-" + System.currentTimeMillis());
@@ -61,8 +71,6 @@ public final class BundledEnvironment {
             }
         }
 
-        File tmp = new File(files, "tmp");
-        if (!tmp.isDirectory() && !tmp.mkdirs()) return false;
         File out = new File(tmp, "environment.tar.gz");
 
         android.util.Log.i("WhaleEnv", "ensure: 开始拷贝内置环境包 → " + out.getAbsolutePath());
@@ -90,16 +98,25 @@ public final class BundledEnvironment {
             android.util.Log.i("WhaleEnv", "内置环境包已铺成 rootfs，sha256=" + sha);
             seedFileToCache(files, out, sha);
             // 新环境就位：把暂存的 QQ 客户端放回容器根（同分区 rename，瞬时，不复制 1.2 GB）
-            if (qqKeep.isDirectory()) {
+            if (new File(qqKeep, "resources/app/wrapper.node").isFile()) {
                 File opt = new File(legacy, "opt");
+                File destQQ = new File(opt, "QQ");
                 if (!opt.isDirectory() && !opt.mkdirs()) {
                     android.util.Log.w("WhaleEnv", "ensure: 建不出新环境的 /opt，QQ 客户端需要重新装");
-                } else if (qqKeep.renameTo(new File(opt, "QQ"))) {
-                    android.util.Log.i("WhaleEnv", "ensure: QQ 客户端已放回新环境（这次不用重新下载/重装）");
                 } else {
-                    android.util.Log.w("WhaleEnv", "ensure: QQ 客户端放回失败，需要重新装 QQ");
+                    // 若新环境自带空占位 /opt/QQ（无 wrapper.node），先清掉再放回，避免 renameTo 失败
+                    if (destQQ.exists() && !new File(destQQ, "resources/app/wrapper.node").isFile()) {
+                        deleteTree(destQQ);
+                    }
+                    if (!destQQ.exists() && qqKeep.renameTo(destQQ)
+                            && new File(destQQ, "resources/app/wrapper.node").isFile()) {
+                        android.util.Log.i("WhaleEnv", "ensure: QQ 客户端已放回新环境（这次不用重新下载/重装）");
+                    } else {
+                        android.util.Log.w("WhaleEnv", "ensure: QQ 客户端放回失败，需要重新装 QQ");
+                    }
                 }
             }
+            ensureBundledAgentApp(ctx, legacy);
             return QqClientInstaller.usable(legacy);
         } catch (Throwable e) {
             android.util.Log.w("WhaleEnv", "内置环境包铺开失败（可改用手动下载环境包）", e);
@@ -107,6 +124,67 @@ public final class BundledEnvironment {
         } finally {
             out.delete();
         }
+    }
+
+    /**
+     * [layer: shell-android] 外壳层环境准备（修第 200 轮主力机事故）：
+     * APK 内置 environment.bin 只含 bash/node（不含核心运行端），新机铺完环境后容器里缺少
+     * {@code /input/agent-app/src/binding-supervisor.mjs}，导致启动页报「缺少支持多绑定的内置运行端」。
+     * 这里在 rootfs 就绪后，若缺运行端代码则从 APK 内置 {@code bundled/core.zip} 释放源码，
+     * 绝不覆盖已有文件及核心运行期数据目录（data/ / config.json，遵守 P13）。
+     */
+    private static void ensureBundledAgentApp(android.content.Context ctx, File rootfs) {
+        if (ctx == null || rootfs == null || !rootfs.isDirectory()) return;
+        File agentRoot = new File(rootfs, "input/agent-app");
+        File supervisor = new File(agentRoot, "src/binding-supervisor.mjs");
+        if (supervisor.isFile() && supervisor.length() > 0) return;
+
+        android.util.Log.i("WhaleEnv", "ensure: rootfs 缺内置运行端，开始从 bundled/core.zip 释放 → " + agentRoot.getAbsolutePath());
+        int extracted = 0;
+        try (java.util.zip.ZipInputStream zin = new java.util.zip.ZipInputStream(
+                new java.io.BufferedInputStream(ctx.getAssets().open("bundled/core.zip")))) {
+            String baseCanonical = agentRoot.getCanonicalPath();
+            if (!agentRoot.isDirectory() && !agentRoot.mkdirs()) return;
+            java.util.zip.ZipEntry entry;
+            byte[] buf = new byte[65536];
+            while ((entry = zin.getNextEntry()) != null) {
+                String name = entry.getName();
+                if (name == null || name.isEmpty() || name.contains("..")) continue;
+                name = name.replace('\\', '/');
+                if (name.startsWith("agent-app/")) name = name.substring("agent-app/".length());
+                if (name.isEmpty() || name.startsWith("/") || name.equals("manifest.json") || name.equals(".bot-module.json")) continue;
+                // P13 禁改区保护：绝不写入/覆盖核心运行期数据目录与用户配置
+                if (name.equals("data") || name.startsWith("data/") || name.endsWith("/config.json") || name.equals("config.json")) continue;
+                File dest = new File(agentRoot, name);
+                if (!dest.getCanonicalPath().startsWith(baseCanonical + File.separator)) continue;
+                if (entry.isDirectory()) {
+                    if (!dest.isDirectory()) dest.mkdirs();
+                } else {
+                    if (dest.isFile() && dest.length() > 0) continue; // 不覆盖既有文件
+                    File parent = dest.getParentFile();
+                    if (parent != null && !parent.isDirectory()) parent.mkdirs();
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dest)) {
+                        int n;
+                        while ((n = zin.read(buf)) > 0) fos.write(buf, 0, n);
+                    }
+                    extracted++;
+                }
+            }
+            android.util.Log.i("WhaleEnv", "ensure: 内置运行端释放完成，文件数=" + extracted + " supervisor=" + supervisor.isFile());
+        } catch (Throwable e) {
+            android.util.Log.w("WhaleEnv", "ensure: 从 bundled/core.zip 释放运行端失败", e);
+        }
+    }
+
+    /** 递归清理非空残留目录（Java File.delete 对非空目录会静默返回 false）。 */
+    private static void deleteTree(File f) {
+        if (f == null || !f.exists()) return;
+        File[] kids = f.listFiles();
+        if (kids != null) {
+            for (File k : kids) deleteTree(k);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
     }
 
     /** 将 APK 内置资产按内容哈希（SHA-256）预埋进 core-release-cache，命中时免下载。 */

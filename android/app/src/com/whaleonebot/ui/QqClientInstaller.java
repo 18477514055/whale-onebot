@@ -238,21 +238,14 @@ final class QqClientInstaller {
         return shell && env && node;
     }
 
+    /**
+     * [layer: shell-android] 外壳层路径判据：与 ContainerService / BundledEnvironment 保持唯一真源，
+     * 只认容器实际挂载的 {@code files/rootfs}，不再退回扫描 {@code files/core-environments/<sha>/rootfs}。
+     * （否则在 files/rootfs 未就绪时，安装器会把 1.2 GB QQ 装进容器读不到的目录，导致启动页仍显示未装 QQ。）
+     */
     static File resolveRootfs(File files) {
         File direct = new File(files, "rootfs");
-        if (usable(direct)) return direct;
-        File envs = new File(files, "core-environments");
-        File[] dirs = envs.listFiles();
-        if (dirs == null) return null;
-        File best = null;
-        long bestAt = -1;
-        for (File dir : dirs) {
-            File candidate = new File(dir, "rootfs");
-            if (!usable(candidate)) continue;
-            long at = new File(candidate, "opt/QQ/resources/app/wrapper.node").isFile() ? Long.MAX_VALUE : candidate.lastModified();
-            if (at > bestAt) { bestAt = at; best = candidate; }
-        }
-        return best;
+        return usable(direct) ? direct : null;
     }
 
     /** 从客户端的 package.json 里读版本（形如 3.2.32-52194）；读不到返回空串。 */

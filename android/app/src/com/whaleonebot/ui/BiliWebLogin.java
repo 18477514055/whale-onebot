@@ -1,8 +1,8 @@
 package com.whaleonebot.ui;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Application;
+import android.app.Dialog;
 import android.content.pm.ApplicationInfo;
 import android.net.Uri;
 import android.os.Bundle;
@@ -92,7 +92,8 @@ public final class BiliWebLogin {
     private static final class Window implements Application.ActivityLifecycleCallbacks {
         final Activity a;
         WebView web;
-        AlertDialog dialog;
+        Dialog dialog;
+        android.widget.TextView switchBtn;
         boolean closed, rendererGone;
         Runnable onClosed;
         Window(Activity a) { this.a = a; }
@@ -133,32 +134,29 @@ public final class BiliWebLogin {
                     rendererGone = true; close(); return true;
                 }
             });
-            AlertDialog.Builder builder = new AlertDialog.Builder(a).setTitle("哔哩哔哩 · passport.bilibili.com")
-                    .setView(web).setNegativeButton("关闭登录页", null);
-            if (!START.equals(url)) builder.setNeutralButton("官网登录", null);
-            dialog = builder.create();
-            dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-            dialog.setOnDismissListener(d -> close());
-            dialog.show();
-            if (!START.equals(url)) {
-                android.widget.Button switchPage = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
-                switchPage.setEnabled(false);
-                switchPage.setOnClickListener(new View.OnClickListener() {
-                    boolean login;
-                    public void onClick(View v) {
+            // [layer: shell-android] 改用统一主题全屏面板并保留 FLAG_SECURE 防截屏，替代原生 AlertDialog。
+            Theme t = PromptSheet.currentTheme(a);
+            final android.widget.TextView[] neutralRef = new android.widget.TextView[1];
+            final boolean[] loginMode = { false };
+            dialog = PromptSheet.custom(
+                    a, t, "哔哩哔哩 · passport.bilibili.com", web,
+                    null, null,
+                    START.equals(url) ? null : "官网登录",
+                    START.equals(url) ? null : (d, btn) -> {
                         if (closed) return;
-                        login = !login;
-                        web.loadUrl(login ? START : url);
-                        switchPage.setText(login ? "返回本次授权" : "官网登录");
-                    }
-                });
-            }
-            dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                        loginMode[0] = !loginMode[0];
+                        web.loadUrl(loginMode[0] ? START : url);
+                        btn.setText(loginMode[0] ? "返回本次授权" : "官网登录");
+                    },
+                    "关闭登录页", (d, btn) -> d.dismiss(),
+                    true, true, d -> close(), neutralRef);
+            switchBtn = neutralRef[0];
+            if (switchBtn != null) Ui.enabled(switchBtn, false);
             a.getApplication().registerActivityLifecycleCallbacks(this);
             // Cold entry also discards cookies left behind by a killed login process.
             cm.removeAllCookies(removed -> {
                 if (closed || a.isDestroyed() || a.isFinishing()) return;
-                if (!START.equals(url)) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(true);
+                if (switchBtn != null) Ui.enabled(switchBtn, true);
                 web.loadUrl(url);
             });
         }

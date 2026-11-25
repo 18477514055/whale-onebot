@@ -1,6 +1,6 @@
 package com.whaleonebot.ui;
 
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.text.InputType;
 import android.view.View;
 import android.widget.CheckBox;
@@ -32,7 +32,7 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 final class BiliPlatformScreen extends Screen {
     final BotRegistry.Bot bot;
     private String tab;
-    private AlertDialog challengeDialog;
+    private Dialog challengeDialog;
     private String challengeBinding;
     private final Map<BotRegistry.Binding, TextView> statuses = new LinkedHashMap<BotRegistry.Binding, TextView>();
     private final Map<BotRegistry.Binding, TextView> verifyLines = new LinkedHashMap<BotRegistry.Binding, TextView>();
@@ -129,11 +129,10 @@ final class BiliPlatformScreen extends Screen {
             } else if (config) {                note(box, "私信对端：" + (row.peerId.isEmpty() ? "未设置" : row.peerId));
                 note(box, "记忆与知识库：" + ("isolated".equals(row.memoryMode) ? "独立" : "共享"));
                 if (row.hostedBili()) {
-                    button(box, "账号操作", false, () -> new AlertDialog.Builder(activity)
-                            .setTitle("账号操作")
-                            .setItems(new String[]{"退出账号 / 清除登录态"}, (d, i) -> forget(row))
-                            .setNegativeButton("取消", null)
-                            .show());
+                    button(box, "账号操作", false, () -> PromptSheet.choose(
+                            activity, t, "账号操作",
+                            new String[]{"退出账号 / 清除登录态"},
+                            i -> forget(row), null, null));
                     button(box, "编辑账号配置", false, () -> shell.pushBiliAccounts(bot.id, "edit:" + row.id));
                 } else if (row.accountId.isEmpty()) {
                     note(box, "在启动页登录后，可设置私信对端与记忆范围。");
@@ -618,19 +617,16 @@ final class BiliPlatformScreen extends Screen {
         for (int i = 0; i < flat.size(); i++) {
             checked[i] = chosen.contains(String.valueOf(flat.get(i).tid));
         }
-        new AlertDialog.Builder(activity)
-                .setTitle("按分区巡看")
-                .setMultiChoiceItems(names.toArray(new CharSequence[0]), checked,
-                        (dialog, which, isChecked) -> checked[which] = isChecked)
-                .setPositiveButton("确定", (dialog, which) -> {
+        PromptSheet.multiChoice(
+                activity, t, "按分区巡看",
+                names.toArray(new String[0]), checked,
+                picked -> {
                     chosen.clear();
                     for (int i = 0; i < flat.size(); i++) {
-                        if (checked[i]) chosen.add(String.valueOf(flat.get(i).tid));
+                        if (picked[i]) chosen.add(String.valueOf(flat.get(i).tid));
                     }
                     if (label != null) label.setText(zoneLabel(chosen));
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                });
     }
 
     private LinearLayout addSectionCard(LinearLayout col, String title) {
@@ -738,17 +734,18 @@ final class BiliPlatformScreen extends Screen {
         build();
     }
 
-    private void forget(BotRegistry.Binding row) {        new AlertDialog.Builder(activity)
-                .setTitle("退出 UID " + row.accountId + "？")
-                .setMessage("停止此账号并清除本机保存的登录。下次启动需重新授权。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("退出并清除", (d, k) -> {
+    private void forget(BotRegistry.Binding row) {
+        PromptSheet.confirm(
+                activity, t,
+                "退出 UID " + row.accountId + "？",
+                "停止此账号并清除本机保存的登录。下次启动需重新授权。",
+                "退出并清除", () -> {
                     loginFeedback.remove(row.id);
                     boolean ok = ContainerService.forgetBiliSession(activity, bot.id, row.id);
                     host().toast(ok ? "已退出此账号" : "未能清除登录，请重试");
                     build();
-                })
-                .show();
+                },
+                null, null, "取消");
     }
 
     private void setRowFeedback(BotRegistry.Binding row, String message) {
@@ -771,28 +768,19 @@ final class BiliPlatformScreen extends Screen {
             return;
         }
         setRowFeedback(row, "需要授权，已弹出授权窗");
-        LinearLayout form = Ui.column(activity);
-        int p = dp(Theme.S3);
-        form.setPadding(p, p, p, p);
-        TextView peer = new TextView(activity);
-        peer.setText(row.peerId.isEmpty() ? "未授权任何私信对端。" : "仅允许配置的私信对端 UID：" + row.peerId);
-        form.addView(peer);
-        note(form, "登录成功后保存到本机，下次可快速登录。");
-
-        AlertDialog d = new AlertDialog.Builder(activity)
-                .setTitle("授权 UID " + row.accountId)
-                .setView(form)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("开始授权", null)
-                .create();
-        d.show();
-        d.getButton(-1).setOnClickListener(v -> {
-            setRowFeedback(row, "正在准备登录…");
-            ContainerService.reauthorizeBiliProtocol(activity, bot.id, row.id, row.peerId);
-            setRowFeedback(row, "已发起，等待协议端起…");
-            d.dismiss();
-            refresh();
-        });
+        String authMsg = (row.peerId.isEmpty() ? "未授权任何私信对端。" : "仅允许配置的私信对端 UID：" + row.peerId)
+                + "\n\n登录成功后保存到本机，下次可快速登录。";
+        PromptSheet.confirm(
+                activity, t,
+                "授权 UID " + row.accountId,
+                authMsg,
+                "开始授权", () -> {
+                    setRowFeedback(row, "正在准备登录…");
+                    ContainerService.reauthorizeBiliProtocol(activity, bot.id, row.id, row.peerId);
+                    setRowFeedback(row, "已发起，等待协议端起…");
+                    refresh();
+                },
+                null, null, "取消");
     }
 
     private void open(BotRegistry.Binding row) {

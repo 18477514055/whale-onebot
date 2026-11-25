@@ -359,24 +359,14 @@ public class ContainerService extends Service {
             //   真机后果是 QQ 内核每收一条消息都打 `dlsym failed NodeContextifyContextMetrics1`，
             //   协议端 online 起不来、发送侧 http identity probe 一直被拒（机器人"活着但不回话"）。
             if(managedImage){
-            // ★ 2026-11-24 真机事故：内置环境（whale-environment）里**没有** opt/whale/native/，
-            //   而 container-login.mjs 第一件事就是 dlopen /opt/whale/native/loader.node
-            //   ⇒ 登录进程直接 FATAL（真机日志：「/opt/whale/native/loader.node: cannot open shared object file」
-            //   + 「LOGIN: exit rc=1」）⇒ 扫码永远出不来码。老 rootfs 里有这四份，所以历史上从没暴露。
-            //   这四份是我们自己的 native 桥产物（ARM64），现在随 APK 一起发，无条件释放。
+            // [layer: shell-android] 外壳层释放协议端 ARM64 原生桥产物到容器 /opt/whale/native/。
+            // loader.node 已于 2026-11-25 改用 dladdr 同目录解析 libonebot-node-host.so（src/native/loader-bootstrap.cc），
+            // 彻底根治旧编译机绝对路径硬编码，原 /mnt/d/qq-onebot/.tmp/... 伪造目录补偿层已按 P3 删除。
             File nativeDir=new File(whaleDir,"native");
             mkdirs(nativeDir);
             for(String n:new String[]{"loader.node","libonebot-node-host.so","consumer.node","probe.node"}){
                 extractAssetAlways("native/"+n,new File(nativeDir,n),0700);
             }
-            // ★ 技术债（必须留档）：loader.node 的 DT_NEEDED 里写的是**编译机的绝对路径**
-            //   /mnt/d/qq-onebot/.tmp/native-host-arm64-0wfTF4/libonebot-node-host.so ——
-            //   老 rootfs 里当初就是靠把 .so 摆到这个路径上才跑通的（真机 files/rootfs/mnt/d/... 实证）。
-            //   根治要在根上重编 loader.node 加 $ORIGIN RPATH；在那之前这里必须照抄一份，否则
-            //   登录进程 dlopen loader.node 会 FATAL（真机日志：cannot open shared object file）。
-            File legacySoDir=new File(rootfs,"mnt/d/qq-onebot/.tmp/native-host-arm64-0wfTF4");
-            mkdirs(legacySoDir);
-            extractAssetAlways("native/libonebot-node-host.so",new File(legacySoDir,"libonebot-node-host.so"),0700);
             // ★ 2026-11-24 真机事故：QQ 的 wrapper.node（Electron/Chromium）依赖一整套图形库
             //   （libX11 / libxcb / libglib / libvips …）。内置环境是"只够跑 node"的迷你系统，缺这些 ——
             //   真机日志：FATAL Error: libX11.so.6: cannot open shared object file（container-login.mjs:35）。

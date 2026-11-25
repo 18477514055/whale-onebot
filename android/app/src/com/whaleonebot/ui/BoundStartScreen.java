@@ -199,7 +199,12 @@ final class BoundStartScreen extends Screen {
             if(sb.length()>0)sb.append("\n\n");
             sb.append(v.label());
             if(!dashboard)sb.append("\n").append(v.detail());
-            sb.append("\n").append(verified?"已验证连接":v.accountId.isEmpty()?"待登录":("unknown".equals(state)?"状态未知（运行端在跑，尚未核验账号）":"未验证连接"));
+            // [layer: shell-android] 修第 200 轮矛盾文案：本机 QQ 槽位在容器已扫码登录后不再矛盾显示「待登录」。
+            String bindState = verified ? "已验证连接"
+                    : (v.localQQ() && logged ? ("本机已登录 " + uin)
+                    : v.accountId.isEmpty() ? "待登录"
+                    : ("unknown".equals(state) ? "状态未知（运行端在跑，尚未核验账号）" : "未验证连接"));
+            sb.append("\n").append(bindState);
         }
         if(dashboard&&sb.length()==0)sb.append("尚未添加 QQ 账号");
         String s=sb.toString();
