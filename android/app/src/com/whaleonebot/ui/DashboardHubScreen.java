@@ -68,7 +68,7 @@ final class DashboardHubScreen extends Screen {
                     }
                 });
         DashKit.divider(activity, t, c.body);
-        entry(c.body, "记忆", "会话印象 · 人物 · 长期记忆",
+        entry(c.body, "记忆", "群印象管理 · 最近的事 · 人物近况与转折",
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -84,7 +84,7 @@ final class DashboardHubScreen extends Screen {
                     }
                 });
         DashKit.divider(activity, t, c.body);
-        entry(c.body, "亲密度", "分数榜与单人明细（要算一次，约 1 分钟）",
+        entry(c.body, "亲密度与心情", "熟人榜 · 单人事件补记 · 心情精力调节",
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -126,7 +126,7 @@ final class DashboardHubScreen extends Screen {
 
         col.addView(c.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
 
-        TextView note = Ui.text(activity, "只有「待对账」会改发送状态，其余只读。",
+        TextView note = Ui.text(activity, "支持在「记忆」「亲密度与心情」「待对账」里进行快捷纠偏与微调，其余页面只读。",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         col.addView(note, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));

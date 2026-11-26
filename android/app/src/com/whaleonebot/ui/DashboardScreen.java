@@ -44,8 +44,8 @@ final class DashboardScreen extends Screen {
     private static final int MIN_INTERVAL_MS = 5000;
     /** 单次请求超时。 */
     private static final int HTTP_TIMEOUT_MS = 6000;
-    /** 亲密度榜单要扫 messages.sqlite，实测 56.7 s ⇒ 单独给 90 s。 */
-    private static final int INTIMACY_TIMEOUT_MS = 90000;
+    /** 亲密度榜单已改为增量副库统计，毫秒级返回。 */
+    private static final int INTIMACY_TIMEOUT_MS = 15000;
 
     private FrameLayout body;
 
@@ -137,8 +137,10 @@ final class DashboardScreen extends Screen {
             public void run() {
                 String s1 = DashApi.get(port, "/api/status", HTTP_TIMEOUT_MS);
                 String s2 = DashApi.get(port, "/api/local/mood/overview", HTTP_TIMEOUT_MS);
+                String s3 = DashApi.get(port, "/api/local/intimacy/list?limit=10", INTIMACY_TIMEOUT_MS);
                 final Object st = parseOrNull(s1);
                 final Object md = parseOrNull(s2);
+                final Object in = parseOrNull(s3);
                 final String err = st == null
                         ? (s1 == null ? "连不上运行端控制台（机器人没在跑？）" : "控制台返回的不是 JSON")
                         : null;
@@ -151,6 +153,10 @@ final class DashboardScreen extends Screen {
                             fetchedAt = System.currentTimeMillis();
                         }
                         if (md != null) mood = md;
+                        if (in != null) {
+                            intimacy = in;
+                            intimacyError = null;
+                        }
                         error = err;
                         render();
                     }
@@ -457,10 +463,10 @@ final class DashboardScreen extends Screen {
     // ---------------------------------------------------------------- 亲密度
 
     private View intimacyCard() {
-        Card c = card("亲密度", intimacyLoading ? "计算中…" : null);
+        Card c = card("亲密度 Top 榜", intimacyLoading ? "刷新中…" : null);
 
         if (intimacy == null && intimacyError == null) {
-            TextView tip = Ui.text(activity, "要点一次才算：会扫全部消息，约 1 分钟", Theme.T_CAP, t.textSecondary);
+            TextView tip = Ui.text(activity, fetching ? "正在读取亲密度榜…" : "暂无亲密度数据", Theme.T_CAP, t.textSecondary);
             tip.setLineSpacing(dp(3), 1f);
             c.body.addView(tip, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else if (intimacyError != null) {
@@ -479,15 +485,17 @@ final class DashboardScreen extends Screen {
                 if (r == null) continue;
                 if (i > 0) c.body.addView(ModelsScreen.W.divider(activity, t), Ui.llp(MATCH_PARENT, dp(1)));
                 String uin = ModelsScreen.U.s(r.get("uin")).trim();
+                String name = ModelsScreen.U.s(r.get("displayName")).trim();
+                String label = name.length() > 0 ? (name + "（" + uin + "）") : uin;
                 double score = BotConfigJson.numOf(r.get("score"));
                 String tier = ModelsScreen.U.s(r.get("tier")).trim();
                 long msgs = (long) BotConfigJson.numOf(r.get("messageCount"));
-                addRow(c.body, uin, Math.round(score) + " 分 · " + tier + " · " + msgs + " 句");
+                addRow(c.body, label, Math.round(score) + " 分 · " + tier + " · " + msgs + " 句");
             }
         }
 
         TextView action = Ui.button(activity, t,
-                intimacyLoading ? "正在算…" : (intimacy == null ? "算一次" : "重新算"), false);
+                intimacyLoading ? "刷新中…" : "刷新榜单", false);
         action.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

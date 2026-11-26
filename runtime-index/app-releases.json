@@ -1,5 +1,63 @@
 [
   {
+    "tag_name": "v1.2.9",
+    "name": "Whale OneBot 1.2.9 — 第三阶段记忆与画像（6 维画像 / LivingMemory / 三层语义引擎 / 多文件导入）",
+    "prerelease": false,
+    "published_at": "2026-11-26T17:09:24Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.9",
+    "assets": [
+      {
+        "name": "bot-core-1.2.9.zip",
+        "size": 2433290,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.9/bot-core-1.2.9.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 13531,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.9/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 259,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.9/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.9.apk",
+        "size": 109601932,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.9/whale-onebot-1.2.9.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.8",
+    "name": "Whale OneBot 1.2.8（预发布）— 拟人化全链路升级",
+    "prerelease": true,
+    "published_at": "2026-11-26T11:20:03Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.8",
+    "assets": [
+      {
+        "name": "bot-core-1.2.8.zip",
+        "size": 2404418,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.8/bot-core-1.2.8.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 13086,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.8/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 259,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.8/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.8.apk",
+        "size": 109593740,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.8/whale-onebot-1.2.8.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "v1.2.7",
     "name": "Whale OneBot v1.2.7",
     "prerelease": false,
@@ -64,6 +122,20 @@
         "name": "whale-onebot-1.2.6.apk",
         "size": 109540492,
         "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.6/whale-onebot-1.2.6.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "core-channel-v1",
+    "name": "发布通道指针（core-channel-v1）— 勿下载",
+    "prerelease": true,
+    "published_at": "2026-11-26T11:20:26Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/core-channel-v1",
+    "assets": [
+      {
+        "name": "channel.json",
+        "size": 827,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/core-channel-v1/channel.json"
       }
     ]
   },

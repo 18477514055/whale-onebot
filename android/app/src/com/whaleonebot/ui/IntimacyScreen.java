@@ -7,6 +7,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -15,24 +17,15 @@ import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 /**
- * 看板子页：**亲密度**（三个面，页内切）。
+ * 看板子页：**亲密度与心情**（熟人榜 / 查一个人 / 心情与精力）。
  *
- * <p>数据全部走 {@link DashApi}（只读；不回写、不改配置）：
+ * <p>核心升级（2026-11-26）：
  * <ul>
- *   <li>榜单：{@code api/local/intimacy/list?limit=20} —— <b>实测 56.7 s</b>（全表扫 messages.sqlite），
- *       所以<b>进页面绝不自动请求</b>，必须用户点一次「算一次」，超时给到 90 s。</li>
- *   <li>单查：{@code api/local/intimacy/person?uin=…} —— 60 s。</li>
- *   <li>心情流水：{@code api/local/mood/log?limit=30} —— 12 s（实测 279 ms，切到这一面时才取）。</li>
+ *   <li>底层已改为增量统计 + 批量融合，打开即自动秒出榜单，不再干等 1 分钟；</li>
+ *   <li>榜单、单查、心情流水全面中文化并展示昵称；</li>
+ *   <li>单查页展示近期加减分事件记录与客观相处状态，支持「手工补记事件」；</li>
+ *   <li>心情页展示当前心情/精力总览，支持快捷微调（哄一哄 / 充能 / 恢复平静 / 自定义微调）。</li>
  * </ul>
- *
- * <p><b>线程</b>：所有请求都在 {@code new Thread(...)} 里跑，回来 {@code activity.runOnUiThread} 填 View；
- * UI 线程一次网络都不发。取数失败一律 {@code null} → 渲染成「读不到数据」，不重试、不弹循环 Toast。
- *
- * <p><b>刷新</b>：{@link #refresh()} 由宿主每秒调；本页只在「榜单」面、并且距上次刷新 ≥10 s 时，
- * 把卡片右上角那句「算于 x 分钟前」重算一次 —— <b>不发任何请求</b>（榜单是 56 s 的慢接口，自动重算等于烧 CPU）。
- *
- * <p><b>滚动位置</b>：整页重建前记下 {@code ScrollView.getScrollY()}，重建后 {@code post} 回去，
- * 否则点一次「算一次」回来就被弹到顶部。
  */
 final class IntimacyScreen extends Screen {
 
@@ -40,22 +33,37 @@ final class IntimacyScreen extends Screen {
     private static final int FACET_PERSON = 1;
     private static final int FACET_MOOD = 2;
 
-    private static final String[] FACETS = {"榜单", "单查", "心情流水"};
+    private static final String[] FACETS = {"熟人榜", "查一个人", "心情与精力"};
 
-    /** 榜单：全表扫 messages.sqlite，实测 56.7 s。 */
-    private static final int LIST_TIMEOUT_MS = 90000;
-    /** 单查：单个人，实测数秒级。 */
-    private static final int PERSON_TIMEOUT_MS = 60000;
-    /** 心情流水：实测 279 ms，给足余量。 */
+    private static final int LIST_TIMEOUT_MS = 15000;
+    private static final int PERSON_TIMEOUT_MS = 15000;
     private static final int MOOD_TIMEOUT_MS = 12000;
-    /** refresh() 的限流（宿主每秒调一次）。 */
     private static final int MIN_TICK_MS = 10000;
 
-    private FrameLayout body;
+    private static final String[] EVENT_KIND_VALUES = {
+            "praise", "care", "help", "humor", "deep_talk", "defend", "apologize", "feed",
+            "annoy", "ignore", "spam", "troll", "insult", "harass"
+    };
+    private static final String[] EVENT_KIND_LABELS = {
+            "夸奖或感谢（加分）",
+            "关心体贴（加分）",
+            "帮忙解决问题（加分）",
+            "一起玩梗开玩笑（加分）",
+            "深入聊天谈心（加分）",
+            "维护机器人或群友（大加分）",
+            "道歉与和好（快速回暖）",
+            "投喂白饭（轻加分并回暖）",
+            "反复拍打打扰（小扣分）",
+            "问话不理（小扣分）",
+            "刷屏灌水（扣分）",
+            "恶意挑事（扣分）",
+            "辱骂攻击（大扣分）",
+            "骚扰纠缠（大扣分）"
+    };
 
+    private FrameLayout body;
     private ScrollView scrollView;
     private int scrollY;
-
     private int facet = FACET_LIST;
 
     // ---- 榜单 ----
@@ -70,9 +78,11 @@ final class IntimacyScreen extends Screen {
     private boolean personLoading;
     private String personError;
 
-    // ---- 心情流水 ----
+    // ---- 心情与精力 ----
+    private Object moodOverviewTree;
     private Object moodTree;
     private boolean moodLoading;
+    private boolean moodBusy;
     private String moodError;
 
     private long lastTickAt;
@@ -81,8 +91,6 @@ final class IntimacyScreen extends Screen {
         super(shell);
     }
 
-    // ================================================================ 骨架
-
     @Override
     void build() {
         root.removeAllViews();
@@ -90,12 +98,11 @@ final class IntimacyScreen extends Screen {
         body.setClipChildren(false);
         body.setClipToPadding(false);
         root.addView(body, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-        // 注意：这里**故意不取数**。榜单是 56 秒的接口，必须用户点一次；单查要等用户输入；
-        // 心情流水等切到那一面再取（见 switchFacet）。
         render();
+        // 底层已提速至毫秒级，进页即自动加载熟人榜
+        if (listTree == null && !listLoading) loadList();
     }
 
-    /** 宿主每秒调一次：只更新「算于 x 分钟前」这行小字，不发请求（限流 10 s，且只在榜单面）。 */
     @Override
     void refresh() {
         if (body == null || facet != FACET_LIST) return;
@@ -106,25 +113,23 @@ final class IntimacyScreen extends Screen {
         render();
     }
 
-    // ================================================================ 取数（后台线程）
+    // ================================================================ 取数
 
-    /** 榜单：只有用户点按钮才会走到这里。 */
     private void loadList() {
         if (listLoading) return;
         listLoading = true;
         listError = null;
         render();
-        Thread th = new Thread(new Runnable() {
+        new Thread(new Runnable() {
             @Override
             public void run() {
-                final Object tree = DashApi.json(activity, "api/local/intimacy/list?limit=20",
-                        LIST_TIMEOUT_MS);
+                final Object tree = DashApi.json(activity, "api/local/intimacy/list?limit=30", LIST_TIMEOUT_MS);
                 activity.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         listLoading = false;
                         if (tree == null) {
-                            listError = "读不到数据";
+                            listError = "暂时读不到数据（请确认运行端已启动）";
                         } else {
                             listTree = tree;
                             listAt = System.currentTimeMillis();
@@ -133,11 +138,9 @@ final class IntimacyScreen extends Screen {
                     }
                 });
             }
-        }, "intimacy-list");
-        th.start();
+        }, "intimacy-list").start();
     }
 
-    /** 单查：uin 已经过 5~15 位数字校验。 */
     private void loadPerson(final String uin) {
         if (personLoading) return;
         personLoading = true;
@@ -145,19 +148,18 @@ final class IntimacyScreen extends Screen {
         personUin = uin;
         personTree = null;
         render();
-        Thread th = new Thread(new Runnable() {
+        new Thread(new Runnable() {
             @Override
             public void run() {
-                final Object tree = DashApi.json(activity, "api/local/intimacy/person?uin=" + uin,
-                        PERSON_TIMEOUT_MS);
+                final Object tree = DashApi.json(activity, "api/local/intimacy/person?uin=" + uin, PERSON_TIMEOUT_MS);
                 activity.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         personLoading = false;
                         if (tree == null) {
-                            personError = "读不到数据";
+                            personError = "暂时读不到数据";
                         } else if (!truthyOk(tree)) {
-                            personError = "这个人没有互动记录";
+                            personError = "这个人还没有互动记录";
                         } else {
                             personTree = tree;
                         }
@@ -165,38 +167,137 @@ final class IntimacyScreen extends Screen {
                     }
                 });
             }
-        }, "intimacy-person");
-        th.start();
+        }, "intimacy-person").start();
     }
 
-    /** 心情流水：切到这一面且还没取过时取一次。 */
     private void loadMood() {
         if (moodLoading) return;
         moodLoading = true;
         moodError = null;
         render();
-        Thread th = new Thread(new Runnable() {
+        new Thread(new Runnable() {
             @Override
             public void run() {
-                final Object tree = DashApi.json(activity, "api/local/mood/log?limit=30", MOOD_TIMEOUT_MS);
+                final Object ov = DashApi.json(activity, "api/local/mood/overview", MOOD_TIMEOUT_MS);
+                final Object lg = DashApi.json(activity, "api/local/mood/log?limit=30", MOOD_TIMEOUT_MS);
                 activity.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         moodLoading = false;
-                        if (tree == null) {
-                            moodError = "读不到数据";
+                        if (ov == null && lg == null) {
+                            moodError = "暂时读不到心情数据";
                         } else {
-                            moodTree = tree;
+                            moodOverviewTree = ov;
+                            moodTree = lg;
                         }
                         render();
                     }
                 });
             }
-        }, "intimacy-mood");
-        th.start();
+        }, "intimacy-mood").start();
     }
 
-    /** {@code ok} 缺省算成功（有的实现不回 ok）；明确 false 才算「没有这个人」。 */
+    private void postMoodNudge(final double dMood, final double dEnergy, final String note, final String toastOk) {
+        if (moodBusy) return;
+        moodBusy = true;
+        render();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String body = "{}";
+                try {
+                    body = new JSONObject()
+                            .put("dMood", dMood)
+                            .put("dEnergy", dEnergy)
+                            .put("note", note)
+                            .toString();
+                } catch (Throwable ignored) {
+                    // ignore
+                }
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity), "/api/local/mood/nudge", body, 10000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        moodBusy = false;
+                        if (resp != null && resp.ok()) {
+                            ModelsScreen.W.toast(activity, toastOk);
+                            loadMood();
+                        } else {
+                            ModelsScreen.W.toast(activity, "调整失败：" + (resp == null ? "连不上运行端" : resp.reason()));
+                            render();
+                        }
+                    }
+                });
+            }
+        }, "mood-nudge").start();
+    }
+
+    private void postMoodSet(final double moodVal, final double energyVal, final String toastOk) {
+        if (moodBusy) return;
+        moodBusy = true;
+        render();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String body = "{}";
+                try {
+                    body = new JSONObject()
+                            .put("mood", moodVal)
+                            .put("energy", energyVal)
+                            .put("by", "app")
+                            .toString();
+                } catch (Throwable ignored) {
+                    // ignore
+                }
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity), "/api/local/mood/set", body, 10000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        moodBusy = false;
+                        if (resp != null && resp.ok()) {
+                            ModelsScreen.W.toast(activity, toastOk);
+                            loadMood();
+                        } else {
+                            ModelsScreen.W.toast(activity, "设定失败：" + (resp == null ? "连不上运行端" : resp.reason()));
+                            render();
+                        }
+                    }
+                });
+            }
+        }, "mood-set").start();
+    }
+
+    private void postManualEvent(final String uin, final String chatKey, final String kind, final String note) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String body = "{}";
+                try {
+                    body = new JSONObject()
+                            .put("uin", uin)
+                            .put("chatKey", chatKey)
+                            .put("kind", kind)
+                            .put("note", note)
+                            .toString();
+                } catch (Throwable ignored) {
+                    // ignore
+                }
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity), "/api/local/intimacy/event", body, 10000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (resp != null && resp.ok()) {
+                            ModelsScreen.W.toast(activity, "事件已补记");
+                            loadPerson(uin);
+                        } else {
+                            ModelsScreen.W.toast(activity, "补记失败：" + (resp == null ? "连不上运行端" : resp.reason()));
+                        }
+                    }
+                });
+            }
+        }, "intimacy-event-post").start();
+    }
+
     private static boolean truthyOk(Object tree) {
         Object ok = BotConfigJson.get(tree, "ok");
         if (ok == BotConfigJson.MISSING || ok == BotConfigJson.NULL) return true;
@@ -225,9 +326,9 @@ final class IntimacyScreen extends Screen {
 
     private ScrollView page() {
         LinearLayout col = Ui.column(activity);
-        col.addView(header("亲密度"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("亲密度与心情"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "只读 · 运行端本地数据", Theme.T_CAP, t.textSecondary);
+        TextView sub = Ui.text(activity, "查看熟人关系与相处事由，也可随时哄一哄或补满精力", Theme.T_CAP, t.textSecondary);
         col.addView(sub, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
 
         LinearLayout bar = DashKit.facets(activity, t, FACETS, facet, new DashKit.OnFacet() {
@@ -243,7 +344,7 @@ final class IntimacyScreen extends Screen {
         } else if (facet == FACET_PERSON) {
             col.addView(personCard(), mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
         } else {
-            col.addView(moodCard(), mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
+            col.addView(moodPanel(), mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
         }
 
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
@@ -253,38 +354,36 @@ final class IntimacyScreen extends Screen {
     private void switchFacet(int index) {
         if (index == facet) return;
         facet = index;
+        scrollY = 0;
         render();
-        // 心情流水便宜（279 ms）且没有「点一次」的约定，切过来就取；失败也只显示一次「读不到数据」。
-        if (facet == FACET_MOOD && moodTree == null && moodError == null && !moodLoading) {
+        if (facet == FACET_LIST && listTree == null && !listLoading) {
+            loadList();
+        } else if (facet == FACET_MOOD && moodOverviewTree == null && moodTree == null && !moodLoading) {
             loadMood();
         }
     }
 
-    // ---------------------------------------------------------------- 面 1：榜单
+    // ---------------------------------------------------------------- 面 1：熟人榜
 
     private View listCard() {
         int n = listTree == null ? 0 : DashApi.size(BotConfigJson.get(listTree, "rows"));
-        String right;
-        if (listLoading) right = "计算中…";
-        else if (listTree != null) right = (n + " 人上榜");
-        else right = null;
-
-        DashKit.Card c = DashKit.card(activity, t, "亲密度榜", right);
+        String right = listLoading ? "读取中…" : (listTree != null ? (n + " 人上榜") : null);
+        DashKit.Card c = DashKit.card(activity, t, "亲密度熟人榜", right);
 
         if (listLoading) {
-            c.body.addView(tipLine("正在扫全部消息，约 1 分钟…"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            c.body.addView(tipLine("正在读取熟人榜…"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else if (listError != null) {
             c.body.addView(tipLine(listError), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else if (listTree == null) {
-            c.body.addView(tipLine("要点一次才算：约 1 分钟"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            c.body.addView(tipLine("暂无数据"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else {
             List<Object> rows = BotConfigJson.asArray(BotConfigJson.get(listTree, "rows"));
             if (rows == null || rows.isEmpty()) {
                 c.body.addView(tipLine("还没有够门槛的互动对象"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
             } else {
-                TextView at = tipLine("算于 " + DashApi.ago(listAt));
-                c.body.addView(at, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-                int shown = Math.min(rows.size(), 20);
+                c.body.addView(tipLine("点击任意一人可看详细事件与补记 · 更新于 " + DashApi.ago(listAt)),
+                        Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                int shown = Math.min(rows.size(), 30);
                 for (int i = 0; i < shown; i++) {
                     Map<String, Object> r = BotConfigJson.asObject(rows.get(i));
                     if (r == null) continue;
@@ -294,8 +393,7 @@ final class IntimacyScreen extends Screen {
             }
         }
 
-        TextView action = Ui.button(activity, t,
-                listLoading ? "正在算…" : (listTree == null ? "算一次" : "重新算"), false);
+        TextView action = Ui.button(activity, t, listLoading ? "刷新中…" : "刷新榜单", false);
         Ui.enabled(action, !listLoading);
         action.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -307,10 +405,14 @@ final class IntimacyScreen extends Screen {
         return c.view;
     }
 
-    /** 一行：uin 当标题；副标题「score 分 · tier · 说 N 句 · 活跃 N 天」；右侧 rank。 */
     private void addRowOf(LinearLayout parent, Map<String, Object> r) {
-        String uin = ModelsScreen.U.s(r.get("uin")).trim();
-        String tier = ModelsScreen.U.s(r.get("tier")).trim();
+        final String uin = ModelsScreen.U.s(r.get("uin")).trim();
+        String platLabel = ModelsScreen.U.s(r.get("platformLabel")).trim();
+        String name = ModelsScreen.U.s(r.get("displayName")).trim();
+        String idBadge = (platLabel.length() > 0 && !"QQ".equals(platLabel)) ? ("[" + platLabel + "] " + uin) : uin;
+        String title = name.length() > 0 ? (name + "（" + idBadge + "）") : (idBadge.length() == 0 ? "—" : idBadge);
+        String state = ModelsScreen.U.s(r.get("relationshipState")).trim();
+        if (state.length() == 0) state = ModelsScreen.U.s(r.get("tier")).trim();
         String score = numText(BotConfigJson.numOf(r.get("score")));
         String msgs = numText(BotConfigJson.numOf(r.get("messageCount")));
         String days = numText(BotConfigJson.numOf(r.get("activeDays")));
@@ -318,21 +420,29 @@ final class IntimacyScreen extends Screen {
 
         StringBuilder sub = new StringBuilder();
         sub.append(score).append(" 分");
-        if (tier.length() > 0) sub.append(" · ").append(tier);
-        sub.append(" · 说 ").append(msgs).append(" 句");
-        sub.append(" · 活跃 ").append(days).append(" 天");
+        if (state.length() > 0) sub.append(" · ").append(state);
+        sub.append(" · 聊过 ").append(msgs).append(" 句 · 活跃 ").append(days).append(" 天");
 
-        DashKit.row(activity, t, parent, uin.length() == 0 ? "—" : uin, sub.toString(),
-                "—".equals(rank) ? null : rank, false, null);
+        DashKit.row(activity, t, parent, title, sub.toString(),
+                "—".equals(rank) ? null : ("#" + rank), uin.length() >= 3,
+                uin.length() >= 3 ? new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        facet = FACET_PERSON;
+                        scrollY = 0;
+                        loadPerson(uin);
+                    }
+                } : null);
     }
 
-    // ---------------------------------------------------------------- 面 2：单查
+    // ---------------------------------------------------------------- 面 2：查一个人
 
     private View personCard() {
-        DashKit.Card c = DashKit.card(activity, t, "查一个人", personUin.length() == 0 ? null : personUin);
+        LinearLayout col = Ui.column(activity);
+        DashKit.Card c = DashKit.card(activity, t, "单人关系明细", personUin.length() == 0 ? null : personUin);
 
-        DashKit.row(activity, t, c.body, "QQ 号",
-                personUin.length() == 0 ? "点这里输入" : personUin, null, true,
+        DashKit.row(activity, t, c.body, "查询对象（QQ 号或跨平台 ID）",
+                personUin.length() == 0 ? "支持 QQ 号、bilibili:UID、douyin:ID" : personUin, null, true,
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -348,36 +458,83 @@ final class IntimacyScreen extends Screen {
             Object info = BotConfigJson.get(personTree, "info");
             if (BotConfigJson.asObject(info) == null) info = personTree;
             DashKit.divider(activity, t, c.body);
-            kv(c.body, "score", numText(BotConfigJson.numOf(BotConfigJson.get(info, "score"))));
-            kv(c.body, "baseScore", numText(BotConfigJson.numOf(BotConfigJson.get(info, "baseScore"))));
-            kv(c.body, "eventScore", numText(BotConfigJson.numOf(BotConfigJson.get(info, "eventScore"))));
-            kv(c.body, "tier", ModelsScreen.U.s(BotConfigJson.get(info, "tier")).trim());
+
+            String platLabel = ModelsScreen.U.s(BotConfigJson.get(info, "platformLabel")).trim();
+            if (platLabel.length() > 0) kv(c.body, "所属平台", platLabel);
+            String name = ModelsScreen.U.s(BotConfigJson.get(info, "displayName")).trim();
+            if (name.length() > 0) kv(c.body, "昵称", name);
+            kv(c.body, "综合亲密度", numText(BotConfigJson.numOf(BotConfigJson.get(info, "score"))) + " / 100");
+            String relState = ModelsScreen.U.s(BotConfigJson.get(info, "relationshipState")).trim();
+            String tier = ModelsScreen.U.s(BotConfigJson.get(info, "tier")).trim();
+            kv(c.body, "当前相处状态", relState.length() > 0 ? relState : (tier.length() > 0 ? tier : "—"));
+            kv(c.body, "互动基础分", numText(BotConfigJson.numOf(BotConfigJson.get(info, "baseScore"))) + " 分");
+
+            double evDelta = BotConfigJson.numOf(BotConfigJson.get(info, "eventDelta"));
+            String evText = Double.isNaN(evDelta) || evDelta == 0
+                    ? "无加减分影响"
+                    : ((evDelta > 0 ? "+" : "") + numText(evDelta) + " 分");
+            kv(c.body, "近期事件影响", evText);
+
             String rank = numText(BotConfigJson.numOf(BotConfigJson.get(info, "rank")));
             String total = numText(BotConfigJson.numOf(BotConfigJson.get(info, "total")));
-            kv(c.body, "rank", "—".equals(total) ? rank : (rank + " / " + total));
-            kv(c.body, "total", total);
-            kv(c.body, "messageCount",
-                    numText(BotConfigJson.numOf(BotConfigJson.get(info, "messageCount"))));
+            kv(c.body, "熟人排名", "—".equals(total) ? rank : ("第 " + rank + " / " + total + " 名"));
+            kv(c.body, "累计发言", numText(BotConfigJson.numOf(BotConfigJson.get(info, "messageCount"))) + " 句");
+            kv(c.body, "活跃天数", numText(BotConfigJson.numOf(BotConfigJson.get(info, "activeDays"))) + " 天");
+
+            TextView addEv = Ui.button(activity, t, "手工补记一条事件", true);
+            addEv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    askManualEvent(personUin);
+                }
+            });
+            c.body.addView(addEv, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         } else {
-            c.body.addView(tipLine("输入 QQ 号查这一人的亲密度"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            c.body.addView(tipLine("输入 QQ 号或在「熟人榜」直接点人查看详细记录"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         }
-        return c.view;
+        col.addView(c.view, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 近期加减分事件清单
+        if (personTree != null) {
+            List<Object> events = BotConfigJson.asArray(BotConfigJson.get(personTree, "events"));
+            DashKit.Card evCard = DashKit.card(activity, t, "近期加减分事件",
+                    events == null ? "0 条" : (events.size() + " 条"));
+            if (events == null || events.isEmpty()) {
+                evCard.body.addView(tipLine("还没有记录过特别事件"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            } else {
+                int max = Math.min(events.size(), 25);
+                for (int i = 0; i < max; i++) {
+                    Map<String, Object> ev = BotConfigJson.asObject(events.get(i));
+                    if (ev == null) continue;
+                    if (i > 0) DashKit.divider(activity, t, evCard.body);
+                    String label = ModelsScreen.U.s(ev.get("label")).trim();
+                    if (label.length() == 0) label = kindLabel(ModelsScreen.U.s(ev.get("kind")));
+                    double w = BotConfigJson.numOf(ev.get("weight"));
+                    String wStr = Double.isNaN(w) || w == 0 ? "中性" : ((w > 0 ? "+" : "") + numText(w));
+                    String note = ModelsScreen.U.s(ev.get("note")).trim();
+                    long ts = (long) BotConfigJson.numOf(ev.get("ts"));
+                    String sub = (ts > 0 ? DashApi.when(ts) : ModelsScreen.U.s(ev.get("day")))
+                            + (note.length() > 0 ? (" · " + note) : "");
+                    DashKit.row(activity, t, evCard.body, label, sub, wStr, false, null);
+                }
+            }
+            col.addView(evCard.view, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        }
+
+        return col;
     }
 
-    /** 输入 QQ 号：数字键盘 + 5~15 位数字校验；通过后才在后台线程请求。 */
     private void askUin() {
-        ModelsScreen.W.textDialog(activity, t, "查亲密度",
-                "QQ 号 5~15 位数字", personUin, InputType.TYPE_CLASS_NUMBER, false,
+        ModelsScreen.W.textDialog(activity, t, "查一个人",
+                "输入 QQ 号（如 123456）或跨平台 ID（如 bilibili:12345 / douyin:abc）", personUin, InputType.TYPE_CLASS_TEXT, false,
                 new ModelsScreen.W.Check() {
                     @Override
                     public String check(String text) {
-                        if (text == null || text.length() == 0) return "QQ 号不能为空";
-                        if (text.length() < 5 || text.length() > 15) return "5~15 位数字";
-                        for (int i = 0; i < text.length(); i++) {
-                            char ch = text.charAt(i);
-                            if (ch < '0' || ch > '9') return "只能填数字";
-                        }
-                        return null;
+                        String s = text == null ? "" : text.trim();
+                        if (s.length() == 0) return "用户标识不能为空";
+                        if (s.matches("^\\d{5,15}$")) return null;
+                        if (s.matches("^(qq|bili|bilibili|douyin|dy|web|custom):[A-Za-z0-9._-]{1,80}$")) return null;
+                        return "请填 5~15 位 QQ 号，或带平台前缀的 ID（如 bilibili:12345）";
                     }
                 },
                 new ModelsScreen.W.TextCb() {
@@ -388,81 +545,257 @@ final class IntimacyScreen extends Screen {
                 });
     }
 
-    // ---------------------------------------------------------------- 面 3：心情流水
+    private void askManualEvent(final String uin) {
+        if (uin == null || uin.length() < 3) return;
+        final String defaultChatKey = uin.contains(":") ? uin.replaceFirst(":", ":private:") : ("private:" + uin);
+        ModelsScreen.W.chooseDialog(activity, t, "选择事件类型", "事件会按统一规则换算成加减分，并实时更新相处状态",
+                EVENT_KIND_LABELS, EVENT_KIND_VALUES, "praise",
+                new ModelsScreen.W.TextCb() {
+                    @Override
+                    public void onText(final String chosenKind) {
+                        ModelsScreen.W.textDialog(activity, t, "填写一句事由（可留空）",
+                                "例如：帮我修了电脑 / 刚刚哄了我", "", InputType.TYPE_CLASS_TEXT, false,
+                                null, new ModelsScreen.W.TextCb() {
+                                    @Override
+                                    public void onText(String note) {
+                                        postManualEvent(uin, defaultChatKey, chosenKind,
+                                                note == null ? "" : note.trim());
+                                    }
+                                });
+                    }
+                });
+    }
 
-    private View moodCard() {
-        int n = moodTree == null ? 0 : DashApi.size(BotConfigJson.get(moodTree, "rows"));
-        DashKit.Card c = DashKit.card(activity, t, "心情流水",
-                moodLoading ? "读取中…" : (moodTree == null ? null : (n + " 条")));
+    // ---------------------------------------------------------------- 面 3：心情与精力
 
-        if (moodLoading) {
-            c.body.addView(tipLine("读取中…"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+    private View moodPanel() {
+        LinearLayout col = Ui.column(activity);
+
+        // 卡片 A：当前心情与精力 + 快捷微调
+        DashKit.Card curCard = DashKit.card(activity, t, "当前状态与快捷调节", moodBusy ? "调整中…" : null);
+        if (moodOverviewTree != null) {
+            double mv = BotConfigJson.numOf(BotConfigJson.get(moodOverviewTree, "global.mood"));
+            double ev = BotConfigJson.numOf(BotConfigJson.get(moodOverviewTree, "global.energy"));
+            boolean sleeping = ModelsScreen.U.truthy(BotConfigJson.get(moodOverviewTree, "global.sleeping"));
+            if (!Double.isNaN(mv)) {
+                kv(curCard.body, "当前心情", numText(mv) + " / 100（" + moodDesc(mv) + "）");
+            }
+            if (!Double.isNaN(ev)) {
+                kv(curCard.body, "当前精力", numText(ev) + " / 100（" + energyDesc(ev) + (sleeping ? " · 休息时段" : "") + "）");
+            }
+            List<Object> scopes = BotConfigJson.asArray(BotConfigJson.get(moodOverviewTree, "scopes"));
+            if (scopes != null && !scopes.isEmpty()) {
+                int max = Math.min(scopes.size(), 4);
+                for (int i = 0; i < max; i++) {
+                    Map<String, Object> s = BotConfigJson.asObject(scopes.get(i));
+                    if (s == null) continue;
+                    String sc = ModelsScreen.U.s(s.get("scope"));
+                    double lm = BotConfigJson.numOf(BotConfigJson.get(s, "local.mood"));
+                    double le = BotConfigJson.numOf(BotConfigJson.get(s, "local.energy"));
+                    kv(curCard.body, DashKit.chatLabel(sc),
+                            "心情 " + signedText(lm) + " · 精力 " + signedText(le));
+                }
+            }
+        } else if (moodLoading) {
+            curCard.body.addView(tipLine("正在读取心情与精力…"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else if (moodError != null) {
-            c.body.addView(tipLine(moodError), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            curCard.body.addView(tipLine(moodError), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        }
+
+        // 快捷按钮：哄一哄 / 充能 / 恢复平静 / 精准微调
+        TextView btnSoothe = Ui.button(activity, t, "哄一哄（心情 +10）", true);
+        Ui.enabled(btnSoothe, !moodBusy);
+        btnSoothe.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                postMoodNudge(10, 0, "手机端哄一哄", "心情变好啦（+10）");
+            }
+        });
+        curCard.body.addView(btnSoothe, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        TextView btnCharge = Ui.button(activity, t, "休息充能（精力 +20）", false);
+        Ui.enabled(btnCharge, !moodBusy);
+        btnCharge.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                postMoodNudge(0, 20, "手机端充能休息", "精力恢复啦（+20）");
+            }
+        });
+        curCard.body.addView(btnCharge, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+
+        TextView btnReset = Ui.button(activity, t, "恢复平静（心情 55 · 精力 75）", false);
+        Ui.enabled(btnReset, !moodBusy);
+        btnReset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                postMoodSet(55, 75, "已恢复平静与充沛精力");
+            }
+        });
+        curCard.body.addView(btnReset, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+
+        TextView btnCustom = Ui.button(activity, t, "精准微调数值", false);
+        Ui.enabled(btnCustom, !moodBusy);
+        btnCustom.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                askCustomMood();
+            }
+        });
+        curCard.body.addView(btnCustom, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+        col.addView(curCard.view, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 卡片 B：全中文心情变化流水
+        int n = moodTree == null ? 0 : DashApi.size(BotConfigJson.get(moodTree, "rows"));
+        DashKit.Card logCard = DashKit.card(activity, t, "最近心情变化记录",
+                moodLoading ? "读取中…" : (moodTree == null ? null : (n + " 条")));
+        if (moodLoading) {
+            logCard.body.addView(tipLine("读取中…"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else if (moodTree == null) {
-            c.body.addView(tipLine("还没有记录"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            logCard.body.addView(tipLine("还没有变化记录"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         } else {
             List<Object> rows = BotConfigJson.asArray(BotConfigJson.get(moodTree, "rows"));
             if (rows == null || rows.isEmpty()) {
-                c.body.addView(tipLine("还没有记录"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                logCard.body.addView(tipLine("还没有变化记录"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
             } else {
                 int shown = Math.min(rows.size(), 30);
                 for (int i = 0; i < shown; i++) {
                     Map<String, Object> r = BotConfigJson.asObject(rows.get(i));
                     if (r == null) continue;
-                    if (i > 0) DashKit.divider(activity, t, c.body);
-                    DashKit.row(activity, t, c.body, moodTitle(r), moodSub(r), null, false, null);
+                    if (i > 0) DashKit.divider(activity, t, logCard.body);
+                    DashKit.row(activity, t, logCard.body, moodRowTitle(r), moodRowSub(r), null, false, null);
                 }
             }
         }
-
-        if (moodError != null || moodTree != null) {
-            TextView again = Ui.button(activity, t, "重新读取", false);
-            Ui.enabled(again, !moodLoading);
-            again.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (!moodLoading) loadMood();
-                }
-            });
-            c.body.addView(again, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        }
-        return c.view;
+        TextView again = Ui.button(activity, t, "刷新记录", false);
+        Ui.enabled(again, !moodLoading);
+        again.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!moodLoading) loadMood();
+            }
+        });
+        logCard.body.addView(again, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(logCard.view, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        return col;
     }
 
-    /** 标题：会话标签（群 123 / 私聊 456）；没有 scope/chatKey 时显示「全局」。 */
-    private String moodTitle(Map<String, Object> r) {
+    private void askCustomMood() {
+        ModelsScreen.W.textDialog(activity, t, "精准设定全局心情（0~100）",
+                "例如 65（50 为平静，70 以上为很开心）", "60", InputType.TYPE_CLASS_NUMBER, false,
+                new ModelsScreen.W.Check() {
+                    @Override
+                    public String check(String text) {
+                        try {
+                            double v = Double.parseDouble(text.trim());
+                            if (v < 0 || v > 100) return "请填写 0~100 之间的数字";
+                            return null;
+                        } catch (Throwable th) {
+                            return "请填写有效数字";
+                        }
+                    }
+                },
+                new ModelsScreen.W.TextCb() {
+                    @Override
+                    public void onText(String moodText) {
+                        final double targetMood = Double.parseDouble(moodText.trim());
+                        ModelsScreen.W.textDialog(activity, t, "精准设定全局精力（0~100）",
+                                "例如 80（65 为正常，40 以下偏累）", "75", InputType.TYPE_CLASS_NUMBER, false,
+                                new ModelsScreen.W.Check() {
+                                    @Override
+                                    public String check(String text) {
+                                        try {
+                                            double v = Double.parseDouble(text.trim());
+                                            if (v < 0 || v > 100) return "请填写 0~100 之间的数字";
+                                            return null;
+                                        } catch (Throwable th) {
+                                            return "请填写有效数字";
+                                        }
+                                    }
+                                },
+                                new ModelsScreen.W.TextCb() {
+                                    @Override
+                                    public void onText(String energyText) {
+                                        double targetEnergy = Double.parseDouble(energyText.trim());
+                                        postMoodSet(targetMood, targetEnergy, "已更新心情与精力");
+                                    }
+                                });
+                    }
+                });
+    }
+
+    private String moodRowTitle(Map<String, Object> r) {
         String key = ModelsScreen.U.s(r.get("scope")).trim();
-        if (key.length() == 0) key = ModelsScreen.U.s(r.get("scopeKey")).trim();
-        if (key.length() == 0) key = ModelsScreen.U.s(r.get("chatKey")).trim();
-        if (key.length() == 0) return "全局";
-        return DashKit.chatLabel(key);
+        String place = (key.length() == 0 || "global".equals(key)) ? "全局状态" : DashKit.chatLabel(key);
+        String kind = kindLabel(ModelsScreen.U.s(r.get("kind")).trim());
+        return place + " · " + kind;
     }
 
-    /** 副标题：时间 + 最多 4 个标量字段（k=v）。总长压到 12 字以内的观感。 */
-    private String moodSub(Map<String, Object> r) {
+    private String moodRowSub(Map<String, Object> r) {
         StringBuilder sb = new StringBuilder();
         long ms = timeOf(r);
         if (ms > 0) sb.append(DashApi.when(ms));
-
-        int used = 0;
-        for (Map.Entry<String, Object> e : r.entrySet()) {
-            if (used >= 4) break;
-            String k = e.getKey();
-            if (k == null || isMetaKey(k)) continue;
-            Object v = e.getValue();
-            if (v instanceof Map || v instanceof List) continue;
-            if (v == BotConfigJson.NULL || v == BotConfigJson.MISSING) continue;
-            String sv = DashKit.textOf(v);
-            if (sv.length() == 0) continue;
+        double dm = BotConfigJson.numOf(r.get("dMood"));
+        if (Double.isNaN(dm)) dm = BotConfigJson.numOf(r.get("d_mood"));
+        double de = BotConfigJson.numOf(r.get("dEnergy"));
+        if (Double.isNaN(de)) de = BotConfigJson.numOf(r.get("d_energy"));
+        if (!Double.isNaN(dm) && dm != 0) {
             if (sb.length() > 0) sb.append(" · ");
-            sb.append(k).append('=').append(DashKit.cut(sv, 12));
-            used++;
+            sb.append("心情 ").append(signedText(dm));
+        }
+        if (!Double.isNaN(de) && de != 0) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append("精力 ").append(signedText(de));
+        }
+        String note = ModelsScreen.U.s(r.get("note")).trim();
+        if (note.length() > 0) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(DashKit.cut(note, 24));
         }
         return sb.toString();
     }
 
-    /** 时间戳字段在不同实现里叫法不一，按顺序取第一个能解析的。 */
+    private static String kindLabel(String kind) {
+        if ("praise".equals(kind)) return "夸奖/感谢";
+        if ("humor".equals(kind)) return "玩梗开心";
+        if ("care".equals(kind)) return "收到关心";
+        if ("help".equals(kind)) return "得到帮忙";
+        if ("deep_talk".equals(kind)) return "深入聊天";
+        if ("defend".equals(kind)) return "被人维护";
+        if ("share".equals(kind)) return "好物分享";
+        if ("apologize".equals(kind)) return "道歉和好";
+        if ("feed".equals(kind)) return "投喂白饭";
+        if ("insult".equals(kind)) return "遭到辱骂";
+        if ("harass".equals(kind)) return "遭到骚扰";
+        if ("troll".equals(kind)) return "恶意挑事";
+        if ("annoy".equals(kind)) return "反复打扰";
+        if ("spam".equals(kind)) return "刷屏灌水";
+        if ("ignore".equals(kind)) return "遭到冷落";
+        if ("politics".equals(kind)) return "敏感引战";
+        if ("manual".equals(kind)) return "手工微调";
+        if ("admin".equals(kind)) return "管理员设定";
+        return kind == null || kind.length() == 0 ? "状态变动" : kind;
+    }
+
+    private static String moodDesc(double m) {
+        if (m >= 65) return "心情很好";
+        if (m >= 45) return "平静正常";
+        if (m >= 30) return "有点低落";
+        return "很不痛快";
+    }
+
+    private static String energyDesc(double e) {
+        if (e >= 70) return "精神充沛";
+        if (e >= 40) return "精力正常";
+        if (e >= 20) return "有点疲惫";
+        return "精疲力尽";
+    }
+
+    private static String signedText(double v) {
+        if (Double.isNaN(v)) return "0";
+        String s = numText(v);
+        return v > 0 ? ("+" + s) : s;
+    }
+
     private static long timeOf(Map<String, Object> r) {
         String[] keys = {"ts", "at", "time", "createdAt", "updatedAt", "lastAt", "timestamp"};
         for (int i = 0; i < keys.length; i++) {
@@ -471,16 +804,6 @@ final class IntimacyScreen extends Screen {
         }
         return 0;
     }
-
-    /** 已经从时间 / 会话标签里用掉的键，不要再重复进「标量字段」。 */
-    private static boolean isMetaKey(String k) {
-        return "ts".equals(k) || "at".equals(k) || "time".equals(k) || "timestamp".equals(k)
-                || "createdAt".equals(k) || "updatedAt".equals(k) || "lastAt".equals(k)
-                || "scope".equals(k) || "scopeKey".equals(k) || "chatKey".equals(k)
-                || "id".equals(k);
-    }
-
-    // ================================================================ 小工具
 
     private TextView tipLine(String text) {
         TextView v = Ui.text(activity, text, Theme.T_CAP, t.textSecondary);
@@ -492,7 +815,6 @@ final class IntimacyScreen extends Screen {
         DashKit.kv(activity, t, parent, k, v);
     }
 
-    /** 数字 → 文本：整数不带小数点，小数留一位（分数可能是 72.5 这种）。 */
     private static String numText(double d) {
         if (Double.isNaN(d)) return "—";
         if (d == Math.rint(d) && Math.abs(d) < 1e15) return String.valueOf((long) d);

@@ -76,11 +76,9 @@ final class KnowledgeScreen extends Screen {
      * {@code docs/knowledge-base-user-guide.md}，这里刻意不长篇大论。
      */
     private static final String KB_GUIDE =
-            "① 将 .md / .txt（UTF-8）放到容器目录：\n"
-            + "   /agent/data/knowledge-inbox/库名/\n"
-            + "② 点「新建资料库」，填名称、上述目录与后缀（默认 .md,.txt）。\n"
-            + "③ 显示「未索引」表示尚未建索引，暂不可检索。\n"
-            + "④ 增改语料或更换向量模型后需重建索引。";
+            "① 最简单的方式：直接点本页「从手机多选文件导入资料」，选好多个 .md / .txt 文件后，软件会自动建库并安全建立全文高速索引（0 模型费用）。\n"
+            + "② 手动目录方式：也可把文件放入 /agent/data/knowledge-inbox/库名/ 后新建资料库再点「安全刷新索引」。\n"
+            + "③ 语义引擎共用：知识库与记忆库共用三层检索引擎（在线向量 API → 离线轻量中文向量包 → FTS5+中文近义词垫底），配一次两边同时生效。";
 
     private static final String CUSTOM = "\u0000custom";
 
@@ -94,6 +92,10 @@ final class KnowledgeScreen extends Screen {
     private Object libs;
     /** stats.json 里的 {@code chunks}；null = 还没有统计。 */
     private Map<String, Object> stats;
+    /** 运行端实时返回的索引状态（段数 / FTS5 全文索引 / 更新时间）。 */
+    private Object liveStatus;
+    private boolean rebuilding;
+    private String rebuildNote;
     /** stats.json 里的 {@code memory.impressions}：记忆库里存了多少条印象（-1 = 未知）。 */
     private int memoryImpressions = -1;
 
@@ -116,6 +118,77 @@ final class KnowledgeScreen extends Screen {
         root.addView(body, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         loadAll();
         render();
+        fetchLiveStatus();
+    }
+
+    private void fetchLiveStatus() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final Object st = DashApi.json(activity, "api/local/knowledge/status", 10000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (st != null) {
+                            liveStatus = st;
+                            Map<String, Object> ch = BotConfigJson.asObject(BotConfigJson.get(st, "chunks"));
+                            if (ch != null) stats = ch;
+                            render();
+                        }
+                    }
+                });
+            }
+        }, "kb-live-status").start();
+    }
+
+    private void triggerSafeRebuild(final String libId) {
+        if (rebuilding) return;
+        rebuilding = true;
+        rebuildNote = libId == null || libId.length() == 0
+                ? "正在安全刷新所有已启用资料库索引（带事务保护，不会清库）…"
+                : "正在安全刷新「" + libId + "」索引…";
+        render();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String body = "{}";
+                if (libId != null && libId.length() > 0) {
+                    try {
+                        body = new org.json.JSONObject().put("libId", libId).toString();
+                    } catch (Throwable ignored) {
+                        body = "{}";
+                    }
+                }
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity),
+                        "/api/local/knowledge/rebuild", body, 180000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        rebuilding = false;
+                        if (resp != null && resp.ok()) {
+                            try {
+                                Object tree = BotConfigJson.parse(resp.body);
+                                Object st = BotConfigJson.get(tree, "status");
+                                if (BotConfigJson.asObject(st) != null) {
+                                    liveStatus = st;
+                                    Map<String, Object> ch = BotConfigJson.asObject(BotConfigJson.get(st, "chunks"));
+                                    if (ch != null) stats = ch;
+                                }
+                            } catch (Throwable ignored) {
+                                // 解析失败仍保持成功提示
+                            }
+                            rebuildNote = "索引已安全刷新完成（已启用高速全文检索）。";
+                            ModelsScreen.W.toast(activity, "知识库索引刷新完成");
+                        } else {
+                            String reason = resp == null ? "连不上运行端" : resp.reason();
+                            rebuildNote = "刷新未完成（旧索引已自动回滚保护）：" + reason;
+                            ModelsScreen.W.toast(activity, "刷新失败，旧数据未受影响");
+                        }
+                        render();
+                    }
+                });
+            }
+        }, "kb-safe-rebuild").start();
     }
 
     private void render() {
@@ -334,13 +407,26 @@ final class KnowledgeScreen extends Screen {
     // ---------------------------------------------------------------- 资料库
 
     private View librariesCard() {
-        Card c = card("资料库", null);
+        boolean hasFts = liveStatus != null && ModelsScreen.U.truthy(BotConfigJson.get(liveStatus, "hasFts"));
+        String engineLabel = liveStatus == null ? ""
+                : ModelsScreen.U.s(BotConfigJson.get(liveStatus, "semanticEngine.activeLabel")).trim();
+        String statusLine = liveStatus == null
+                ? "资料库只在机器人查具体知识时才会检索"
+                : ("全文索引：" + (hasFts ? "已开启" : "待刷新")
+                + (engineLabel.length() > 0 ? (" · 共用引擎：" + engineLabel) : ""));
+        Card c = card("资料库", statusLine);
+
+        if (rebuildNote != null && rebuildNote.length() > 0) {
+            TextView note = Ui.text(activity, rebuildNote, Theme.T_CAP, t.accent);
+            note.setLineSpacing(dp(3), 1f);
+            c.body.addView(note, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        }
 
         Map<String, Object> libMap = libMap();
         List<String> ids = new ArrayList<String>(libMap.keySet());
         if (ids.isEmpty()) {
             TextView empty = Ui.text(activity,
-                    problem == null ? "还没有资料库，点下面新建一个。" : problem,
+                    problem == null ? "还没有资料库，直接点下面从手机选文件导入，或新建资料库。" : problem,
                     Theme.T_CAP, t.textSecondary);
             empty.setLineSpacing(dp(3), 1f);
             c.body.addView(empty, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
@@ -353,26 +439,118 @@ final class KnowledgeScreen extends Screen {
             }
         }
 
-        TextView add = Ui.button(activity, t, "新建资料库", false);
+        TextView importBtn = Ui.button(activity, t,
+                rebuilding ? "正在导入并建索引…" : "从手机多选文件导入资料", true);
+        Ui.enabled(importBtn, !rebuilding);
+        importBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startMultiFileImport();
+            }
+        });
+        c.body.addView(importBtn, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        TextView rebuild = Ui.button(activity, t,
+                rebuilding ? "正在安全刷新索引…" : "安全刷新索引", false);
+        Ui.enabled(rebuild, !rebuilding && !ids.isEmpty());
+        rebuild.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                triggerSafeRebuild("");
+            }
+        });
+        c.body.addView(rebuild, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+
+        TextView add = Ui.button(activity, t, "新建资料库（手动填目录）", false);
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 newLibraryDialog();
             }
         });
-        c.body.addView(add, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        c.body.addView(add, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
 
-        // 「怎么装一个知识库」：本页没有上传入口，新用户第一次来必然卡在"文件怎么进来"。
-        // 这里只给一段最短说明（三步），细节推给 docs 里的用户指南 —— 别把浮层写成文档。
-        TextView howTo = Ui.button(activity, t, "怎么装一个知识库", false);
+        TextView howTo = Ui.button(activity, t, "怎么导入资料库", false);
         howTo.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                ModelsScreen.W.infoDialog(activity, t, "怎么装一个知识库", KB_GUIDE);
+                ModelsScreen.W.infoDialog(activity, t, "怎么导入资料库", KB_GUIDE);
             }
         });
         c.body.addView(howTo, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
         return c.view;
+    }
+
+    private void startMultiFileImport() {
+        ModelsScreen.W.textDialog(activity, t, "导入到哪个资料库？",
+                "填写库名（不存在会自动新建，如：群规手册 / 群星资料）", "手机导入资料",
+                InputType.TYPE_CLASS_TEXT, false,
+                new ModelsScreen.W.Check() {
+                    @Override
+                    public String check(String text) {
+                        if (text == null || text.trim().length() == 0) return "资料库名称不能为空";
+                        return null;
+                    }
+                },
+                new ModelsScreen.W.TextCb() {
+                    @Override
+                    public void onText(final String libName) {
+                        shell.pickMultipleTextFiles(new AppShell.MultiTextCallback() {
+                            @Override
+                            public void onPicked(final java.util.List<AppShell.PickedTextFile> files, String err) {
+                                if (files == null || files.isEmpty()) {
+                                    if (err != null) ModelsScreen.W.toast(activity, err);
+                                    return;
+                                }
+                                uploadFilesToKnowledge(libName.trim(), files);
+                            }
+                        });
+                    }
+                });
+    }
+
+    private void uploadFilesToKnowledge(final String libName, final java.util.List<AppShell.PickedTextFile> files) {
+        if (rebuilding) return;
+        rebuilding = true;
+        rebuildNote = "正在上传 " + files.size() + " 个文件到「" + libName + "」并安全建索引…";
+        render();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String body = "{}";
+                try {
+                    org.json.JSONArray arr = new org.json.JSONArray();
+                    for (int i = 0; i < files.size(); i++) {
+                        AppShell.PickedTextFile f = files.get(i);
+                        arr.put(new org.json.JSONObject().put("name", f.name).put("content", f.content));
+                    }
+                    body = new org.json.JSONObject()
+                            .put("libName", libName)
+                            .put("files", arr)
+                            .toString();
+                } catch (Throwable ignored) {
+                    // ignore
+                }
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity),
+                        "/api/local/import/knowledge", body, 180000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        rebuilding = false;
+                        if (resp != null && resp.ok()) {
+                            rebuildNote = "已成功导入 " + files.size() + " 个文件并建好高速全文索引。";
+                            ModelsScreen.W.toast(activity, "知识库导入并索引完成");
+                            loadAll();
+                            fetchLiveStatus();
+                        } else {
+                            rebuildNote = "导入失败：" + (resp == null ? "连不上运行端" : resp.reason());
+                            ModelsScreen.W.toast(activity, "导入失败");
+                        }
+                        render();
+                    }
+                });
+            }
+        }, "kb-multi-import").start();
     }
 
     private View libraryRow(final String id, final Map<String, Object> lib) {
@@ -385,10 +563,16 @@ final class KnowledgeScreen extends Screen {
         v.append(on ? "已启用" : "已停用");
         if (dirs > 0) v.append(" · ").append(dirs).append(" 个目录");
         Object n = stats == null ? null : stats.get(id);
-        if (n != null) {
-            v.append(" · ").append((int) BotConfigJson.numOf(n)).append(" 段");
+        if (n != null && (int) BotConfigJson.numOf(n) > 0) {
+            v.append(" · 已索引 ").append((int) BotConfigJson.numOf(n)).append(" 段");
         } else if (dirs > 0) {
-            v.append(" · 未索引");
+            v.append(" · 尚未建索引");
+        }
+        if (liveStatus != null) {
+            double upd = BotConfigJson.numOf(BotConfigJson.get(liveStatus, "libMeta." + id + ".updatedAt"));
+            if (!Double.isNaN(upd) && upd > 0) {
+                v.append(" · 更新于 ").append(DashApi.ago((long) upd));
+            }
         }
         return ModelsScreen.W.row(activity, t, name, v.toString(), true, new View.OnClickListener() {
             @Override

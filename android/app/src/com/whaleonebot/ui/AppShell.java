@@ -73,6 +73,24 @@ public class AppShell {
 
     /** 选图请求码。宿主应在 onActivityResult 里把 requestCode 原样转给 {@link #onActivityResult}。 */
     public static final int REQ_PICK_IMAGE = 0x5701;
+    /** 多选文本文件导入请求码（知识库 / 记忆库共用）。 */
+    public static final int REQ_PICK_MULTI_TEXT = 0x5705;
+
+    static final class PickedTextFile {
+        final String name;
+        final String content;
+
+        PickedTextFile(String name, String content) {
+            this.name = name;
+            this.content = content;
+        }
+    }
+
+    interface MultiTextCallback {
+        void onPicked(java.util.List<PickedTextFile> files, String error);
+    }
+
+    private MultiTextCallback pendingMultiTextCb;
 
     // 过渡动效统一来自 Motion：参数只有一份，任何页面切换都不许自己再写一套入场动画。
     private static final int MOTION_PUSH = Motion.PUSH;
@@ -270,6 +288,74 @@ public class AppShell {
             if (current instanceof EnvConfigScreen && resultCode == Activity.RESULT_OK && data != null) {
                 ((EnvConfigScreen) current).onRemoteDebPicked(data.getData());
             }
+            return true;
+        }
+        if (requestCode == REQ_PICK_MULTI_TEXT) {
+            final MultiTextCallback cb = pendingMultiTextCb;
+            pendingMultiTextCb = null;
+            if (cb == null) return true;
+            if (resultCode != Activity.RESULT_OK || data == null) {
+                cb.onPicked(new java.util.ArrayList<PickedTextFile>(), "已取消选择");
+                return true;
+            }
+            final java.util.List<android.net.Uri> uris = new java.util.ArrayList<android.net.Uri>();
+            android.content.ClipData clip = data.getClipData();
+            if (clip != null && clip.getItemCount() > 0) {
+                for (int i = 0; i < clip.getItemCount() && uris.size() < 20; i++) {
+                    android.net.Uri u = clip.getItemAt(i).getUri();
+                    if (u != null) uris.add(u);
+                }
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+            if (uris.isEmpty()) {
+                cb.onPicked(new java.util.ArrayList<PickedTextFile>(), "未选择有效文件");
+                return true;
+            }
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    final java.util.List<PickedTextFile> out = new java.util.ArrayList<PickedTextFile>();
+                    String err = null;
+                    long totalBytes = 0;
+                    for (int i = 0; i < uris.size(); i++) {
+                        android.net.Uri u = uris.get(i);
+                        try {
+                            String name = queryDisplayName(u, "doc-" + (i + 1) + ".txt");
+                            java.io.InputStream in = activity.getContentResolver().openInputStream(u);
+                            if (in == null) continue;
+                            try {
+                                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                                byte[] buf = new byte[8192];
+                                int n;
+                                while ((n = in.read(buf)) > 0) {
+                                    bos.write(buf, 0, n);
+                                    if (bos.size() > 2 * 1024 * 1024) break;
+                                }
+                                totalBytes += bos.size();
+                                if (totalBytes > 8 * 1024 * 1024) {
+                                    err = "所选文件总大小超过 8MB 上限，已截断部分文件";
+                                    break;
+                                }
+                                String text = new String(bos.toByteArray(), "UTF-8");
+                                if (text.length() > 0 && text.charAt(0) == '\uFEFF') text = text.substring(1);
+                                out.add(new PickedTextFile(name, text));
+                            } finally {
+                                try { in.close(); } catch (Throwable ignored) { }
+                            }
+                        } catch (Throwable th) {
+                            err = "读取部分文件失败：" + th.getMessage();
+                        }
+                    }
+                    final String finalErr = err;
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            cb.onPicked(out, finalErr);
+                        }
+                    });
+                }
+            }, "pick-multi-text").start();
             return true;
         }
         if (requestCode != REQ_PICK_IMAGE) return false;
@@ -926,6 +1012,42 @@ public class AppShell {
         } catch (Throwable t) {
             host.toast("这台机器上没有可用的图片选择器");
         }
+    }
+
+    /** 调用系统文件选择器多选 .txt/.md/.json 文件（供知识库与记忆库一键导入使用）。 */
+    void pickMultipleTextFiles(MultiTextCallback cb) {
+        pendingMultiTextCb = cb;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "text/markdown", "application/json", "text/*"});
+        try {
+            activity.startActivityForResult(
+                    Intent.createChooser(intent, "选择要导入的文档（支持多选）"), REQ_PICK_MULTI_TEXT);
+        } catch (Throwable t) {
+            pendingMultiTextCb = null;
+            host.toast("这台机器上没有可用的文件选择器");
+        }
+    }
+
+    private String queryDisplayName(android.net.Uri uri, String fallback) {
+        android.database.Cursor cursor = null;
+        try {
+            cursor = activity.getContentResolver().query(uri,
+                    new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                String n = cursor.getString(0);
+                if (n != null && n.trim().length() > 0) return n.trim();
+            }
+        } catch (Throwable ignored) {
+            // ignore
+        } finally {
+            if (cursor != null) {
+                try { cursor.close(); } catch (Throwable ignored) { }
+            }
+        }
+        return fallback;
     }
 
     /** 「QQ 登录 / 换一张码」统一入口：先清掉认码窗口，再交给宿主。 */
