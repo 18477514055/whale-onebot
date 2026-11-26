@@ -314,7 +314,90 @@ public final class BotRegistry {
 
     private static final java.util.LinkedHashMap<String,CoreInventory.Instance> CORES=new java.util.LinkedHashMap<>();
     private static boolean writable;
+    /** 远程控制模式投影（纯 Java，不依赖 Android）：开启后读/写全部定向到远端快照，绝不覆写本机 bots.json。 */
+    public interface RemotePersistHook {
+        boolean saveSnapshot(String snapshotJson);
+    }
+    private static boolean remoteMode;
+    private static String remotePeerId;
+    private static RemotePersistHook remotePersistHook;
+
     private BotRegistry() {}
+
+    public static synchronized void setRemotePersistHook(RemotePersistHook hook) {
+        remotePersistHook = hook;
+    }
+
+    public static synchronized boolean isRemoteMode() {
+        return remoteMode;
+    }
+
+    public static synchronized void enterRemoteMode(String peerId) {
+        remoteMode = true;
+        remotePeerId = peerId;
+        BOTS.clear();
+        CORES.clear();
+        writable = true;
+    }
+
+    public static synchronized void exitRemoteMode() {
+        remoteMode = false;
+        remotePeerId = null;
+        init(storeDir);
+    }
+
+    public static synchronized boolean applyRemoteSnapshot(String peerId, String snapshotJson) {
+        if (!remoteMode || peerId == null || !peerId.equals(remotePeerId) || snapshotJson == null || snapshotJson.isEmpty()) return false;
+        List<Bot> nb = new ArrayList<Bot>();
+        java.util.LinkedHashMap<String, CoreInventory.Instance> nc = new java.util.LinkedHashMap<String, CoreInventory.Instance>();
+        try {
+            BotStore.loadText(snapshotJson, nb, nc);
+            BOTS.clear();
+            BOTS.addAll(nb);
+            CORES.clear();
+            CORES.putAll(nc);
+            sortByCreatedAt();
+            writable = true;
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 被控端导出本机 bots.json 权威快照（供 system.snapshot 下发）。 */
+    public static synchronized String exportLocalSnapshotJson() {
+        if (remoteMode && storeDir != null) {
+            File f = new File(storeDir, BotStore.FILE_NAME);
+            List<Bot> lb = new ArrayList<Bot>();
+            java.util.LinkedHashMap<String, CoreInventory.Instance> lc = new java.util.LinkedHashMap<String, CoreInventory.Instance>();
+            if (f.isFile()) {
+                try { BotStore.load(f, lb, lc); } catch (Throwable ignored) {}
+            }
+            return BotStore.toJson(lb, lc.values());
+        }
+        return BotStore.toJson(BOTS, CORES.values());
+    }
+
+    /** 被控端收到来自端到端加密控制端的原子快照写回。 */
+    public static synchronized boolean applyIncomingRemoteSnapshot(String snapshotJson) {
+        if (storeDir == null || snapshotJson == null || snapshotJson.isEmpty()) return false;
+        List<Bot> nb = new ArrayList<Bot>();
+        java.util.LinkedHashMap<String, CoreInventory.Instance> nc = new java.util.LinkedHashMap<String, CoreInventory.Instance>();
+        try {
+            BotStore.loadText(snapshotJson, nb, nc);
+            boolean ok = BotStore.save(new File(storeDir, BotStore.FILE_NAME), nb, nc.values());
+            if (ok && !remoteMode) {
+                BOTS.clear();
+                BOTS.addAll(nb);
+                CORES.clear();
+                CORES.putAll(nc);
+                sortByCreatedAt();
+            }
+            return ok;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
 
     /** Empty installs remain empty. Existing registry owners are projected in place, without IO on init. */
     public static synchronized void init(File dir) {
@@ -325,9 +408,15 @@ public final class BotRegistry {
         try {BotStore.load(file,BOTS,CORES);sortByCreatedAt();}
         catch(Exception ex){BOTS.clear();CORES.clear();writable=false;} // Don't clobber corrupt/future registries.
     }
-    private static boolean persist(){return writable && BotStore.save(new File(storeDir,BotStore.FILE_NAME),BOTS,CORES.values());}
+    private static boolean persist(){
+        if (remoteMode) {
+            RemotePersistHook h = remotePersistHook;
+            return h != null && h.saveSnapshot(BotStore.toJson(BOTS, CORES.values()));
+        }
+        return writable && BotStore.save(new File(storeDir,BotStore.FILE_NAME),BOTS,CORES.values());
+    }
     private static CoreInventory.Instance current(CoreInventory.Instance c){
-        if(c==null || c.legacy || !KIND_BUILTIN.equals(c.kind))return c;
+        if(remoteMode || c==null || c.legacy || !KIND_BUILTIN.equals(c.kind))return c;
         String v=CoreInventory.activeVersion(storeDir,c.id);return v==null || v.equals(c.version)?c:c.withVersion(v);
     }
     public static synchronized List<CoreInventory.Instance> cores(){List<CoreInventory.Instance> rows=new ArrayList<>();for(CoreInventory.Instance c:CORES.values())rows.add(current(c));return rows;}
@@ -435,14 +524,14 @@ public final class BotRegistry {
     private static Bot allocate(String id,String name,String persona,List<String> platforms,List<Binding> restored,BeforeCreate prepare){
         CoreInventory.Instance c=CORES.get(id);
         if(!writable || c==null || c.legacy || !c.ownerId.isEmpty() || name==null || name.trim().isEmpty() || platforms==null || platforms.isEmpty() || !c.platforms.containsAll(platforms))return null;
-        if(prepare==null && new File(storeDir,"rootfs/opt/whale/instance-data/.maintenance-"+id).exists())return null;
+        if(!remoteMode && prepare==null && new File(storeDir,"rootfs/opt/whale/instance-data/.maintenance-"+id).exists())return null;
         String display=truncate(name.trim());
         if(restored==null){if(nameProblem(name,null)!=null)return null;}
         else if(nameProblem(display,null)!=null){
             for(int i=2;;i++){String suffix=" ("+i+")";int end=Math.min(display.length(),NAME_MAX-suffix.length());if(end>0&&Character.isHighSurrogate(display.charAt(end-1)))end--;String candidate=display.substring(0,end)+suffix;if(nameProblem(candidate,null)==null){display=candidate;break;}}
         }
         String version=c.version;
-        if(KIND_BUILTIN.equals(c.kind)){version=CoreInventory.activeVersion(storeDir,id);if(version==null)return null;}
+        if(!remoteMode && KIND_BUILTIN.equals(c.kind)){version=CoreInventory.activeVersion(storeDir,id);if(version==null)return null;}
         Bot b=new Bot(id);b.id="bot-"+java.util.UUID.randomUUID();b.name=display;b.persona=persona==null?"":persona;
         b.platforms=sanitizePlatforms(platforms);if(restored==null)syncPlatforms(b);else b.bindings.addAll(restored);b.runtimeKind=c.kind;b.runtimeRef=version;b.runtimeUi.addAll(c.pages);
         b.createdAt=b.updatedAt=System.currentTimeMillis();

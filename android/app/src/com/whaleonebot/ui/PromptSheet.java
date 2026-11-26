@@ -25,7 +25,7 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
  * 复用现有 Theme 色盘、Drawables 圆角卡片与 Ui 按钮体系，零新增依赖；
  * 支持：确认框 / 单选列表 / 多选列表 / 文本输入 / 自定义 View / 全屏 WebView / FLAG_SECURE 防截屏。
  */
-final class PromptSheet {
+public final class PromptSheet {
 
     interface ItemClick { void onSelect(int index); }
     interface MultiConfirm { void onConfirm(boolean[] checked); }
@@ -33,6 +33,14 @@ final class PromptSheet {
     interface DialogAction { void onClick(Dialog dialog, TextView button); }
 
     private PromptSheet() {}
+
+    /** 跨包便捷入口（供 MainActivity 等外壳根类替代系统原生 AlertDialog）。 */
+    public static Dialog showConfirm(Activity activity, String title, String message,
+                                     String positiveLabel, Runnable onPositive,
+                                     String negativeLabel) {
+        return confirm(activity, currentTheme(activity), title, message,
+                positiveLabel, onPositive, null, null, negativeLabel);
+    }
 
     /** 确认弹窗：标题 + 正文 + 主操作 / 可选中性操作 / 取消。 */
     static Dialog confirm(Activity activity, Theme t, String title, String message,
@@ -175,6 +183,44 @@ final class PromptSheet {
 
         showCard(activity, d, card, false, false);
         return d;
+    }
+
+    /** 单行或多行文本输入面板（带说明文字）。 */
+    static Dialog showInput(Activity activity, String title, String message, String hint, String initial,
+                            boolean multiline, String positiveLabel, TextConfirm onConfirm) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return null;
+        Theme t = currentTheme(activity);
+        LinearLayout box = Ui.column(activity);
+        if (message != null && message.length() > 0) {
+            TextView tv = Ui.text(activity, message, Theme.T_CAP, t.textSecondary);
+            tv.setLineSpacing(Ui.dp(activity, 3), 1f);
+            LinearLayout.LayoutParams mlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+            mlp.bottomMargin = Ui.dp(activity, Theme.S2);
+            box.addView(tv, mlp);
+        }
+        EditText edit = new EditText(activity);
+        edit.setSingleLine(!multiline);
+        if (multiline) {
+            edit.setMinLines(3);
+            edit.setMaxLines(6);
+            edit.setGravity(Gravity.TOP | Gravity.START);
+        }
+        edit.setTextColor(t.textPrimary);
+        edit.setHintTextColor(t.textTertiary);
+        if (hint != null) edit.setHint(hint);
+        if (initial != null) edit.setText(initial);
+        edit.setBackground(Drawables.round(t.cardFill, t.cardStroke, Ui.dp(activity, 1), Ui.dp(activity, Theme.R_BTN)));
+        int hp = Ui.dp(activity, Theme.S2);
+        edit.setPadding(hp, hp, hp, hp);
+        box.addView(edit, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        return custom(activity, t, title, box,
+                positiveLabel == null ? "确定" : positiveLabel, (d, btn) -> {
+                    d.dismiss();
+                    if (onConfirm != null) onConfirm.onConfirm(edit.getText().toString().trim());
+                },
+                null, null,
+                "取消", (d, btn) -> d.dismiss(),
+                false, false, null, null);
     }
 
     /** 单行文本输入面板。 */

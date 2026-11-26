@@ -48,6 +48,19 @@ foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'binding-host.
   Write-Host ("[0/6] bundled {0} ({1} B)" -f $script, (Get-Item $src).Length)
 }
 
+# [layer: shell-android] 协议端胶水随 APK 分发（真源 = src/bridge/，assets 只是派生物）：
+#   container-bot.mjs 会 import /qq-onebot/src/bridge/native-bridge.mjs（原生收发/看图/看视频/戳一戳全在那），
+#   但这棵树以前不在任何发布产物里 —— 真机那份是手工塞进 rootfs 的，于是「改了 bridge 也发不出去」。
+$bridgeSrc = Join-Path $PSScriptRoot '../src/bridge'
+$bridgeDst = Join-Path $assetsDir 'bridge'
+New-Item -ItemType Directory -Path $bridgeDst -Force | Out-Null
+foreach ($n in @('error.mjs', 'native-bridge.mjs', 'qq-profile.mjs', 'rkey.mjs')) {
+  $src = Join-Path $bridgeSrc $n
+  if (-not (Test-Path $src)) { throw "missing: $src" }
+  Copy-Item $src (Join-Path $bridgeDst $n) -Force
+}
+Write-Host ("[0/6] bundled src/bridge/ (4 files, native-bridge {0} B)" -f (Get-Item (Join-Path $bridgeSrc 'native-bridge.mjs')).Length)
+
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/client.mjs') (Join-Path $assetsDir 'bili-client.mjs') -Force
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/authorized-client.mjs') (Join-Path $assetsDir 'authorized-client.mjs') -Force
 

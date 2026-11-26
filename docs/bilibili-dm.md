@@ -17,12 +17,12 @@ node scripts/bili-browser-smoke.mjs
 
 只在弹出的独立窗口登录小号。终端按 Enter 验证后，输入同意测试的另一个 UID，输入 `REPLY`，由对端发送 `READY` 后显示的随机挑战。程序取得发送回执后退出，浏览器会话关闭；只将非秘密设备 UUID 留在本项目忽略的 `runtime/`。也可选择 `READ` 仅收，或在对端 UID 处直接回车，仅验登录。**本次实测走的就是这个入口：服务报告入站验证和正回执，操作者另行确认看到了回显。**
 
-已有测试 Cookie 的 Windows 替代路径：在自己控制的 PowerShell 窗口执行 `powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\bili-attended.ps1 -Reply`。按提示输入两个 UID 和测试会话 Cookie（隐藏输入）；省略 `-Reply` 就只验接收。不要在聊天中发送这些凭据。
+已有测试 Cookie 的 Windows 替代路径：在自己控制的 PowerShell 窗口执行 `powershell -NoProfile -ExecutionPolicy Bypass -File D:\qq-onebot\scripts\bili-attended.ps1 -Reply`。按提示输入两个 UID 和测试会话 Cookie（隐藏输入）；省略 `-Reply` 就只验接收。不要在聊天中发送这些凭据。
 
 手动方式：要求 Node 24+，先在项目根执行 `npm ci`（已安装依赖则跳过）。在**自己的 PowerShell 窗口**准备环境，不把任何 Cookie 放在命令行、配置文件或聊天里。下面的 `Read-Host -AsSecureString` 隐藏输入；进程环境中仍会有明文，仅在自己的测试机器使用。Cookie 只输入该测试会话必需的 `SESSDATA=…; bili_jct=…`（只收可省略 `bili_jct`）。不要提供主账号或其他网站的 Cookie。
 
 ```powershell
-Set-Location <repo>
+Set-Location D:\qq-onebot
 $env:BILI_SELF_ID = Read-Host '授权测试机器人的 B站 UID'
 $env:BILI_PEER_ID = Read-Host '同意测试的另一个 B站 UID'
 $secret = Read-Host '测试号 Cookie（不回显）' -AsSecureString
@@ -49,7 +49,7 @@ $secret.Dispose()
 ```powershell
 $env:WHALE_AGENT_PLATFORM = 'bilibili'
 $env:WHALE_BILI_SELF_ID = Read-Host '与协议端相同的 B站测试号 UID'
-$env:QQ_AGENT_DATA_DIR = "<repo>\runtime\bilibili-$($env:WHALE_BILI_SELF_ID)"
+$env:QQ_AGENT_DATA_DIR = "D:\qq-onebot\runtime\bilibili-$($env:WHALE_BILI_SELF_ID)"
 $env:WHALE_BILI_CONSOLE_PORT = '13210'
 $env:WHALE_ONEBOT_HTTP_URL = 'http://127.0.0.1:13810'
 $env:WHALE_ONEBOT_WS_URL = 'ws://127.0.0.1:13810/'

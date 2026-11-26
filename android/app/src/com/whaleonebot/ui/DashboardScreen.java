@@ -109,6 +109,7 @@ final class DashboardScreen extends Screen {
     /** 控制台端口：读容器里的 config.json 的 {@code server.port}；读不到就用 41907。 */
     private int resolveConsolePort() {
         portError = null;
+        if (RemoteBridge.isRemote()) return 41907;
         String text = readText(agentConfigFile());
         if (text == null) {
             portError = "读不到运行端配置（容器没起过？）";
@@ -134,8 +135,8 @@ final class DashboardScreen extends Screen {
         Thread th = new Thread(new Runnable() {
             @Override
             public void run() {
-                String s1 = Api.get(port, "/api/status", HTTP_TIMEOUT_MS);
-                String s2 = Api.get(port, "/api/local/mood/overview", HTTP_TIMEOUT_MS);
+                String s1 = DashApi.get(port, "/api/status", HTTP_TIMEOUT_MS);
+                String s2 = DashApi.get(port, "/api/local/mood/overview", HTTP_TIMEOUT_MS);
                 final Object st = parseOrNull(s1);
                 final Object md = parseOrNull(s2);
                 final String err = st == null
@@ -170,7 +171,7 @@ final class DashboardScreen extends Screen {
         Thread th = new Thread(new Runnable() {
             @Override
             public void run() {
-                String s = Api.get(port, "/api/local/intimacy/list?limit=10", INTIMACY_TIMEOUT_MS);
+                String s = DashApi.get(port, "/api/local/intimacy/list?limit=10", INTIMACY_TIMEOUT_MS);
                 final Object tree = parseOrNull(s);
                 activity.runOnUiThread(new Runnable() {
                     @Override

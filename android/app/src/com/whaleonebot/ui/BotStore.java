@@ -26,7 +26,11 @@ final class BotStore {
     // ================================================================ 读
 
     static void load(File file,List<BotRegistry.Bot> bots,Map<String,CoreInventory.Instance> cores) throws Exception {
-        Object rawRoot=new Json(readText(file)).parse();CoreInventory.require(rawRoot instanceof Map);
+        loadText(readText(file), bots, cores);
+    }
+
+    static void loadText(String jsonText,List<BotRegistry.Bot> bots,Map<String,CoreInventory.Instance> cores) throws Exception {
+        Object rawRoot=new Json(jsonText).parse();CoreInventory.require(rawRoot instanceof Map);
         Map<?,?> root=(Map<?,?>)rawRoot;
         CoreInventory.require(!root.containsKey("schemaVersion") || root.get("schemaVersion") instanceof Long);
         long version=num(root.get("schemaVersion"),1L);
@@ -196,7 +200,7 @@ final class BotStore {
         } catch(Exception ex){return false;} finally{if(tmp!=null && tmp.exists())tmp.delete();}
     }
 
-    private static String toJson(List<BotRegistry.Bot> bots,java.util.Collection<CoreInventory.Instance> cores) {
+    static String toJson(List<BotRegistry.Bot> bots,java.util.Collection<CoreInventory.Instance> cores) {
         StringBuilder sb = new StringBuilder(512);
         sb.append("{\n");
         sb.append("  \"schemaVersion\": ").append(SCHEMA_VERSION).append(",\n");

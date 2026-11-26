@@ -97,6 +97,22 @@ final class BindingControl {
         try {
             if(!id(bot))throw new IOException();JSONObject b=find(bots(c.getFilesDir()),bot); Run run=runs.get(bot);
             state="custom".equals(b.optString("runtimeKind"))?"external":run==null?"stopped":run.state;
+            // ★ 2026-11-26（第 230 轮实测真因）：legacy 实例（whale-1）在 App 重启或未走 queue()+launch() 时
+            //   内存 runs 为空导致恒报 stopped（实际上容器内 container-bot + agent 一直在跑、13800 LISTEN）。
+            //   此处改用真实活体探针（bot.json phase + /proc/<pid> + 端口 LISTEN）核验，不再只信静态 Map。
+            int liveOnebotPort = 0;
+            int liveAgentPid = 0;
+            if (!"external".equals(state) && ("stopped".equals(state) || "stale".equals(state))
+                    && "whale-1".equals(bot) && legacy(c.getFilesDir(), false)) {
+                ContainerService.LiveRuntimeProbe probe = ContainerService.probeLiveRuntime(c.getFilesDir());
+                liveOnebotPort = probe.onebotPort;
+                liveAgentPid = probe.agentPid;
+                if (probe.agentAlive) {
+                    state = "running";
+                } else if (probe.onebotAlive) {
+                    state = "protocol_only";
+                }
+            }
             JSONArray rows=b.optJSONArray("bindings"), live=null;
             // ★ 2026-11-22：以前这里只要拿不到「30 秒内刷新的 binding-status.json」就把整台机器判成
             //   "stale"，于是每个绑定都显示「未连接」—— 而 legacy 运行端**根本不写那个证明文件**
@@ -106,16 +122,21 @@ final class BindingControl {
             boolean proofFresh=false;
             if("running".equals(state)){
                 try {JSONObject proof=read(new File(c.getFilesDir(),"rootfs/opt/whale/bindings/"+bot+"/binding-status.json"));long at=proof.getLong("updatedAt"),age=System.currentTimeMillis()-at;
-                    if(run.proc!=null&&run.proc.isAlive()&&rows!=null&&rows.toString().equals(run.selection)&&bot.equals(proof.getString("botId"))&&run.runId.equals(proof.optString("runId"))&&at>=run.since&&age>=0&&age<30000){live=proof.getJSONArray("bindings");proofFresh=true;}
+                    if(run!=null&&run.proc!=null&&run.proc.isAlive()&&rows!=null&&rows.toString().equals(run.selection)&&bot.equals(proof.getString("botId"))&&run.runId.equals(proof.optString("runId"))&&at>=run.since&&age>=0&&age<30000){live=proof.getJSONArray("bindings");proofFresh=true;}
                 }catch(Exception ignored){}
-                // 没有可用的证明文件时：进程在就仍是 running（账号状态未知），进程没了才是 stale。
-                if(!proofFresh) state=(run!=null&&run.proc!=null&&run.proc.isAlive())?"running":"stale";
+                // 没有可用的证明文件时：受管进程或活体探针任一确认活着就仍是 running。
+                if(!proofFresh) {
+                    boolean aliveNow = (run!=null&&run.proc!=null&&run.proc.isAlive()) || liveOnebotPort > 0 || liveAgentPid > 0;
+                    state = aliveNow ? "running" : "stale";
+                }
             }
             for(int i=0;rows!=null&&i<rows.length();i++){JSONObject r=rows.getJSONObject(i);String k=r.optString("id"),s="external".equals(state)?"external":"stopped";
                 // 运行端在跑但没有账号核验证明 ⇒ 状态未知（不是"未连接"）。
                 if("running".equals(state)&&live==null)s="unknown";
                 if(live!=null){s="disconnected";try {JSONObject v=find(live,k);String raw=v.optString("state"); if(r.optString("accountId").equals(v.optString("selfId"))&&r.optString("platform").equals(v.optString("platform"))&&Arrays.asList("starting","disconnected","verified","failed","disabled","stopped").contains(raw))s=raw;}catch(Exception ignored){}}
                 result.put(new JSONObject().put("id",k).put("platform",r.optString("platform")).put("accountId",r.optString("accountId")).put("state",s));}
+            if (liveOnebotPort > 0) out.put("onebotPort", liveOnebotPort);
+            if (liveAgentPid > 0) out.put("agentPid", liveAgentPid);
         }catch(Exception e){state="failed";}
         try{out.put("state",state).put("bindings",result);}catch(Exception ignored){}return out;
     }

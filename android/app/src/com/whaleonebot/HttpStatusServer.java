@@ -80,7 +80,7 @@ final class HttpStatusServer implements Runnable {
                 body = tail(new File(svc.getFilesDir(), "rootfs/opt/whale/qq-state/bot.log"), 200);
             } else if (path.startsWith("/bot")) {
                 type = "application/json; charset=utf-8";
-                body = BindingControl.legacy(svc.getFilesDir(),false) && ContainerService.botRunning()
+                body = BindingControl.legacy(svc.getFilesDir(),false) && ContainerService.botRunning(svc)
                         ? readAll(new File(svc.getFilesDir(), "rootfs/opt/whale/qq-state/bot.json")) : "{\"phase\":\"stopped\"}";
             } else if (path.startsWith("/raw")) {
                 String cmd = param(path, "cmd");

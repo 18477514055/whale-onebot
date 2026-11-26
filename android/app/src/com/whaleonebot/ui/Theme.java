@@ -173,6 +173,14 @@ final class Theme {
 
     // ---------------------------------------------------------------- 预置主题
 
+    /**
+     * [layer: shell-android] 默认主题 ID（P2 留证）：
+     * 原默认值为 Theme.ALL[0]（"abyss" 深海深色主题）；
+     * 2026-11-25 问答报告 Q15 用户明确拍板「从现在开始，默认浅色主题」→ 改为 "dawn"（晨纸，白色圆角卡片）。
+     * 仅作用于尚未保存过偏好的新装用户，老用户 SharedPreferences 中已选主题不受影响。
+     */
+    static final String DEFAULT_ID = "dawn";
+
     static final Theme[] ALL;
 
     static {
@@ -220,6 +228,10 @@ final class Theme {
             for (int i = 0; i < ALL.length; i++) {
                 if (ALL[i].id.equals(id)) return ALL[i];
             }
+        }
+        // [layer: shell-android] 默认回退到浅色主题 dawn（晨纸），与 DEFAULT_ID 保持一致。
+        for (int i = 0; i < ALL.length; i++) {
+            if (DEFAULT_ID.equals(ALL[i].id)) return ALL[i];
         }
         return ALL[0];
     }

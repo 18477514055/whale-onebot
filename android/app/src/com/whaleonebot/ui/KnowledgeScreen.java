@@ -98,6 +98,8 @@ final class KnowledgeScreen extends Screen {
     private int memoryImpressions = -1;
 
     private String problem;
+    /** 远程模式下的 ecnu.env 文本快照（零本地落盘）。 */
+    private String remoteEnvText;
 
     KnowledgeScreen(AppShell shell) {
         super(shell);
@@ -146,7 +148,18 @@ final class KnowledgeScreen extends Screen {
             }
         }
 
-        String libText = readText(libsFile());
+        String libText;
+        String statsText;
+        if (RemoteBridge.isRemote()) {
+            org.json.JSONObject remoteKb = RemoteBridge.rpcSync("kb.load", null, 8000);
+            libText = (remoteKb != null && !remoteKb.optString("libs", "").isEmpty()) ? remoteKb.optString("libs") : null;
+            statsText = (remoteKb != null && !remoteKb.optString("stats", "").isEmpty()) ? remoteKb.optString("stats") : null;
+            remoteEnvText = remoteKb == null ? "" : remoteKb.optString("env", "");
+        } else {
+            libText = readText(libsFile());
+            statsText = readText(statsFile());
+            remoteEnvText = null;
+        }
         if (libText == null) {
             problem = "读不到资料库清单（容器还没起过？）";
         } else {
@@ -161,7 +174,6 @@ final class KnowledgeScreen extends Screen {
             libs = null;
         }
 
-        String statsText = readText(statsFile());
         if (statsText != null) {
             try {
                 Object tree = BotConfigJson.parse(statsText);
@@ -839,7 +851,19 @@ final class KnowledgeScreen extends Screen {
         Map<String, Object> root = BotConfigJson.asObject(libs);
         if (root == null) return false;
         if (!root.containsKey("version")) root.put("version", Integer.valueOf(1));
-        boolean ok = writeText(libsFile(), BotConfigJson.write(libs) + "\n");
+        String serialized = BotConfigJson.write(libs) + "\n";
+        boolean ok;
+        if (RemoteBridge.isRemote()) {
+            try {
+                org.json.JSONObject r = RemoteBridge.rpcSync("kb.saveLibs",
+                        new org.json.JSONObject().put("json", serialized), 8000);
+                ok = r != null && r.optBoolean("ok", false);
+            } catch (Throwable t) {
+                ok = false;
+            }
+        } else {
+            ok = writeText(libsFile(), serialized);
+        }
         if (!ok) ModelsScreen.W.toast(activity, "写入清单失败");
         return ok;
     }
@@ -847,7 +871,7 @@ final class KnowledgeScreen extends Screen {
     /** 写这一类模型的三个 env 键，保留文件里别的键（向量与重排互不覆盖）。 */
     private boolean saveVars(Vars v, String base, String model, String key) {
         File f = envFile();
-        LinkedHashMap<String, String> env = readEnv(f);
+        LinkedHashMap<String, String> env = readCurrentEnv(f);
         env.remove(v.baseKey);
         env.remove(v.modelKey);
         env.remove(v.keyKey);
@@ -860,14 +884,35 @@ final class KnowledgeScreen extends Screen {
     /** 只清掉这一类模型的三个键；都清空了就把文件删掉（回到跟随渠道）。 */
     private boolean clearVars(Vars v) {
         File f = envFile();
-        LinkedHashMap<String, String> env = readEnv(f);
+        LinkedHashMap<String, String> env = readCurrentEnv(f);
         env.remove(v.baseKey);
         env.remove(v.modelKey);
         env.remove(v.keyKey);
         return flushEnv(f, env);
     }
 
+    private LinkedHashMap<String, String> readCurrentEnv(File f) {
+        if (RemoteBridge.isRemote()) return parseEnvText(remoteEnvText);
+        return readEnv(f);
+    }
+
     private boolean flushEnv(File f, LinkedHashMap<String, String> env) {
+        if (RemoteBridge.isRemote()) {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, String> e : env.entrySet()) {
+                sb.append(e.getKey()).append('=').append(e.getValue() == null ? "" : e.getValue()).append('\n');
+            }
+            String txt = sb.toString();
+            try {
+                org.json.JSONObject r = RemoteBridge.rpcSync("kb.saveEnv",
+                        new org.json.JSONObject().put("text", txt), 8000);
+                boolean ok = r != null && r.optBoolean("ok", false);
+                if (ok) remoteEnvText = txt;
+                return ok;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
         if (env.isEmpty()) {
             f.delete();
             return !f.isFile();
@@ -879,12 +924,10 @@ final class KnowledgeScreen extends Screen {
         }
         boolean ok = writeText(f, sb.toString());
         if (ok) {
-            // 密钥文件只留给自己读写（与运行端其它凭据文件同口径）
             try {
                 f.setReadable(true, true);
                 f.setWritable(true, true);
             } catch (Throwable ignored) {
-                // 个别 ROM 不支持 owner-only，退化成默认权限也不影响功能
             }
         }
         return ok;
@@ -899,8 +942,11 @@ final class KnowledgeScreen extends Screen {
 
     /** 读 env 文件（{@code KEY=VALUE}，容忍引号与注释）。 */
     private static LinkedHashMap<String, String> readEnv(File f) {
+        return parseEnvText(readText(f));
+    }
+
+    private static LinkedHashMap<String, String> parseEnvText(String text) {
         LinkedHashMap<String, String> out = new LinkedHashMap<String, String>();
-        String text = readText(f);
         if (text == null) return out;
         String[] lines = text.split("\n");
         for (int i = 0; i < lines.length; i++) {

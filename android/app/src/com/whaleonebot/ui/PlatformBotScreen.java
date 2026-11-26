@@ -78,7 +78,7 @@ final class PlatformBotScreen extends Screen {
                 if(on){boolean account=false;String vacant=null;for(BotRegistry.Binding binding:bot.bindings)if(platformId.equals(binding.platform)){if(!binding.accountId.isEmpty())account=true;else vacant=binding.id;}
                     if(!account){toggle.setChecked(false);if(BotRegistry.P_BILIBILI.equals(platformId)&&vacant!=null)shell.pushBiliAccounts(bot.id,"slot:"+vacant);else host().toast("请先完成该平台账号登录");return;}}
                 if(!BotRegistry.setPlatformEnabled(bot.id,platformId,on)){toggle.setChecked(!on);host().toast("无法保存平台开关");return;}
-                toggle.setEnabled(false);new Thread(()->{try{if(on)com.whaleonebot.ContainerService.startInstalledPlatform(activity,bot.id,platformId);else com.whaleonebot.ContainerService.stopInstalledPlatform(activity,bot.id,platformId);}catch(Exception e){activity.runOnUiThread(()->host().toast(on?"已允许此平台，启动未完成":"已关闭此平台，停止状态待核验"));}finally{activity.runOnUiThread(()->{toggle.setChecked(BotRegistry.platformEnabled(bot.id,platformId));toggle.setEnabled(true);});}},"platform-switch").start();
+                toggle.setEnabled(false);new Thread(()->{try{if(on)RemoteBridge.startInstalledPlatform(activity,bot.id,platformId);else RemoteBridge.stopInstalledPlatform(activity,bot.id,platformId);}catch(Exception e){activity.runOnUiThread(()->host().toast(on?"已允许此平台，启动未完成":"已关闭此平台，停止状态待核验"));}finally{activity.runOnUiThread(()->{toggle.setChecked(BotRegistry.platformEnabled(bot.id,platformId));toggle.setEnabled(true);});}},"platform-switch").start();
             });
         }
 

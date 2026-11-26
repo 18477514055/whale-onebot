@@ -15,11 +15,18 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const UI = path.join(ROOT, 'android/app/src/com/whaleonebot/ui');
+const REMOTE = path.join(ROOT, 'android/app/src/com/whaleonebot/remote');
+const QRGEN = path.join(ROOT, 'android/app/src/com/whaleonebot/ui/thirdparty/qrcodegen');
+const INSTALL = path.join(ROOT, 'android/app/src/com/whaleonebot/install');
 const TEST_DIR = path.join(ROOT, 'test/java');
 const OUT = path.join(ROOT, '.tmp/java-logic-test');
 
 // 被测的纯逻辑类（都刻意不 import Android）
 const LOGIC = ['Theme.java', 'BotConfigJson.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java','QqClientFiles.java','SetupState.java'];
+const REMOTE_LOGIC = ['RemoteCrypto.java', 'StunClient.java', 'MqttSignaling.java', 'NostrSignaling.java', 'RemoteTransport.java', 'NostrRelayChannel.java', 'RemoteStore.java', 'QrDecoder.java'];
+const QRGEN_LOGIC = ['BitBuffer.java', 'DataTooLongException.java', 'QrCode.java', 'QrSegment.java'];
+// P14：v2 部件索引的读取器也刻意不 import Android，所以进纯逻辑测试
+const INSTALL_LOGIC = ['ComponentIndex.java'];
 
 const logicSrcs = LOGIC.map((n) => path.join(UI, n));
 for (const f of logicSrcs) {
@@ -44,10 +51,22 @@ fs.rmSync(OUT, { recursive: true, force: true });
 const stage = path.join(OUT, 'src');
 const classes = path.join(OUT, 'classes');
 fs.mkdirSync(path.join(stage, 'com/whaleonebot/ui'), { recursive: true });
+fs.mkdirSync(path.join(stage, 'com/whaleonebot/remote'), { recursive: true });
+fs.mkdirSync(path.join(stage, 'io/nayuki/qrcodegen'), { recursive: true });
+fs.mkdirSync(path.join(stage, 'com/whaleonebot/install'), { recursive: true });
 fs.mkdirSync(classes, { recursive: true });
 
 for (const n of LOGIC) {
   fs.copyFileSync(path.join(UI, n), path.join(stage, 'com/whaleonebot/ui', n));
+}
+for (const n of REMOTE_LOGIC) {
+  fs.copyFileSync(path.join(REMOTE, n), path.join(stage, 'com/whaleonebot/remote', n));
+}
+for (const n of QRGEN_LOGIC) {
+  fs.copyFileSync(path.join(QRGEN, n), path.join(stage, 'io/nayuki/qrcodegen', n));
+}
+for (const n of INSTALL_LOGIC) {
+  fs.copyFileSync(path.join(INSTALL, n), path.join(stage, 'com/whaleonebot/install', n));
 }
 for (const f of testSrcs) {
   fs.copyFileSync(f, path.join(stage, path.basename(f)));
@@ -55,6 +74,9 @@ for (const f of testSrcs) {
 
 const files = [
   ...LOGIC.map((n) => path.join(stage, 'com/whaleonebot/ui', n)),
+  ...REMOTE_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/remote', n)),
+  ...QRGEN_LOGIC.map((n) => path.join(stage, 'io/nayuki/qrcodegen', n)),
+  ...INSTALL_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/install', n)),
   ...testSrcs.map((f) => path.join(stage, path.basename(f))),
 ];
 

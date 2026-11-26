@@ -41,7 +41,8 @@ final class ThemeStore {
         sp = a.getSharedPreferences(PREFS, Activity.MODE_PRIVATE);
         dir = new File(a.getFilesDir(), "ui");
         bg = new File(dir, "background.png");
-        themeId = sp.getString(K_THEME, Theme.ALL[0].id);
+        // [layer: shell-android] 默认主题由原 ALL[0]（深海）改为 Theme.DEFAULT_ID（"dawn" 晨纸浅色，P2 留证）。
+        themeId = sp.getString(K_THEME, Theme.DEFAULT_ID);
         custom = sp.getBoolean(K_CUSTOM, false);
         if (custom && !bg.isFile()) {
             // 文件被清掉了（清数据/重装），状态跟着回退，别让界面撒谎。

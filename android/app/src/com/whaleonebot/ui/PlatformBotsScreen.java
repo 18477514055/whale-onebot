@@ -65,12 +65,18 @@ final class PlatformBotsScreen extends Screen {
         if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
 
         if (BotRegistry.P_QQ.equals(platformId)) {
-            java.io.File files=activity.getFilesDir();
-            boolean legacyOnly=!bots.isEmpty() && bots.stream().allMatch(BotRegistry::legacyQQ);
-            java.io.File client=legacyOnly?new java.io.File(files,"rootfs/opt/QQ"):new java.io.File(files,"platform-clients/qq/active/opt/QQ");
-            if (!QqClientFiles.present(client)) {
-                col.addView(Ui.strong(activity,"本机 QQ 客户端",Theme.T_CARD,t.textPrimary),marginTop(Theme.S3));
-                col.addView(Ui.text(activity,"本地协议服务需要 Linux QQ（ARM64），不是手机上的 QQ。下载地址与安装引导在「设置 → 环境配置」里；使用外部协议服务可跳过。",Theme.T_BODY,t.textSecondary),marginTop(Theme.S1));
+            boolean hasQq;
+            if (RemoteBridge.isRemote()) {
+                hasQq = RemoteBridge.qqClientVersion(activity) != null;
+            } else {
+                java.io.File files=activity.getFilesDir();
+                boolean legacyOnly=!bots.isEmpty() && bots.stream().allMatch(BotRegistry::legacyQQ);
+                java.io.File client=legacyOnly?new java.io.File(files,"rootfs/opt/QQ"):new java.io.File(files,"platform-clients/qq/active/opt/QQ");
+                hasQq = QqClientFiles.present(client);
+            }
+            if (!hasQq) {
+                col.addView(Ui.strong(activity,"QQ 客户端",Theme.T_CARD,t.textPrimary),marginTop(Theme.S3));
+                col.addView(Ui.text(activity,"协议服务需要 Linux QQ（ARM64），不是手机上的 QQ。下载地址与安装引导在「设置 → 环境配置」里；使用外部协议服务可跳过。",Theme.T_BODY,t.textSecondary),marginTop(Theme.S1));
                 TextView download=Ui.button(activity,t,"去「环境配置」取 QQ 安装包",false);
                 download.setOnClickListener(v->shell.pushEnv());
                 col.addView(download,marginTop(Theme.S1));

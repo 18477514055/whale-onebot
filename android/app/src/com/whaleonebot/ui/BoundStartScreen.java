@@ -99,7 +99,7 @@ final class BoundStartScreen extends Screen {
         loginBtn.setOnClickListener(new View.OnClickListener(){public void onClick(View v){
             // ★ 先确认容器里真有 QQ：环境包本身**不含** QQ 客户端，没装就点扫码只会干等 40 秒然后什么都没有
             //   （用户就是这么被卡住的）。这里直接把话说明白并把人送到装的入口。
-            if(QqClientInstaller.clientVersion(activity.getFilesDir())==null){
+            if(RemoteBridge.qqClientVersion(activity)==null){
                 host().toast("容器里还没有 QQ：先去「环境配置」装 QQ 安装包，回来再扫码");
                 shell.pushEnv();
                 return;
@@ -142,16 +142,16 @@ final class BoundStartScreen extends Screen {
                 }
                 new Thread(() -> {
                     // 先确保容器内本机 QQ OneBot 协议端已拉起，再连接受管核心
-                    ContainerService.startBot(activity);
-                    try{ContainerService.startInstalledPlatform(activity,bot.id,BotRegistry.P_QQ);}
+                    RemoteBridge.startBot(activity);
+                    try{RemoteBridge.startInstalledPlatform(activity,bot.id,BotRegistry.P_QQ);}
                     catch(Exception e){activity.runOnUiThread(() -> host().toast("QQ 启动未完成：" + (e.getMessage()==null?"未知原因":e.getMessage())));}
                 },"connect-qq").start();
             });
         } else if (BotRegistry.KIND_BUILTIN.equals(bot.runtimeKind)) {
             col.addView(sectionLabel("这个机器人"), sectionLp());
-            if (!host().containerRunning()) add(col,"准备本地容器",false,v -> {ContainerService.start(activity);host().toast("正在准备本地容器");});
-            add(col,"启动本机器人",true,v -> {ContainerService.startBoundBot(activity,bot.id);refresh();});
-            add(col,"停止本机器人",false,v -> {ContainerService.stopBoundBot(bot.id);refresh();});
+            if (!host().containerRunning()) add(col,"准备容器",false,v -> {host().startContainer();host().toast("正在准备容器");});
+            add(col,"启动本机器人",true,v -> {RemoteBridge.startBoundBot(activity,bot.id);refresh();});
+            add(col,"停止本机器人",false,v -> {RemoteBridge.stopBoundBot(bot.id);refresh();});
         }
     }
 
@@ -169,12 +169,13 @@ final class BoundStartScreen extends Screen {
     void refresh(){
         if(bot==null || status==null)return;
 
-        // 本机 QQ 登录区的实时状态（与 QqScreen 同一套判据：容器 + 已登录 uin）
+        // 三态独立展示（容器 / QQ 登录 / 运行端），各看真实活体状态，不再互相混淆
         boolean running=host().containerRunning();
         String uin=host().loginUin();
         boolean logged=uin!=null && uin.length()>0;
-        String loginLine="本机 QQ：" + (!running ? "容器已停止（先点「启动容器」）"
-                : (logged ? "已登录 " + uin : "容器在运行 · 还没登录（点「扫码登录 QQ」）"));
+        String containerLine="容器：" + (running ? "运行中" : "已停止（先点「启动容器」）");
+        String loginLine="QQ 登录：" + (!running ? "容器未启动"
+                : (logged ? "已登录 " + uin : "等待扫码登录（点「扫码登录 QQ」）"));
         if(!loginLine.equals(lastLoginLine)){
             lastLoginLine=loginLine;
             if(loginBtn!=null) loginBtn.setText(logged ? "重新扫码" : "扫码登录 QQ");
@@ -184,9 +185,17 @@ final class BoundStartScreen extends Screen {
         if(saveBtn!=null) Ui.enabled(saveBtn,host().qrLive());
         if(qr!=null) qr.refresh();
 
-        JSONObject result=ContainerService.bindingStatus(activity,bot.id);
+        JSONObject result=RemoteBridge.bindingStatus(activity,bot.id);
         String state=result==null?"":result.optString("state");
-        StringBuilder sb=dashboard?new StringBuilder():new StringBuilder(loginLine).append("\n\n运行端：").append(summary(state));
+        int obPort=result==null?0:result.optInt("onebotPort",0);
+        int agPid=result==null?0:result.optInt("agentPid",0);
+        String runtimeDetail = summary(state);
+        if ("running".equals(state) && (obPort > 0 || agPid > 0)) {
+            runtimeDetail = "运行中（OneBot 端口 " + (obPort > 0 ? obPort : 13800)
+                    + (agPid > 0 ? " · PID " + agPid : "") + "）";
+        }
+        StringBuilder sb=dashboard?new StringBuilder()
+                :new StringBuilder(containerLine).append("\n").append(loginLine).append("\n运行端：").append(runtimeDetail);
         JSONArray rows=result==null?null:result.optJSONArray("bindings");
         for(BotRegistry.Binding v:bot.bindings){
             // ★ 这里是「QQ 的启动页」——bilibili 的绑定状态属于 B 站页面，不该混进来（用户点名问过）。
@@ -277,7 +286,7 @@ final class BoundStartScreen extends Screen {
     static String summary(String state){
         switch(state){
             case "waiting":return "等待账号配置、插件或授权"; case "partial":return "部分绑定已启动（账号连接见下方）";
-            case "running":return "运行中（账号连接见下方）"; case "starting":return "启动中"; case "stopped":return "已停止";
+            case "running":return "运行中（账号连接见下方）"; case "protocol_only":return "仅协议端就绪（点「启动本机器人」拉起运行端）"; case "starting":return "启动中"; case "stopped":return "已停止";
             case "external":return "由自定义运行端管理"; case "failed":return "启动失败，请检查配置"; case "stale":return "状态已过期（运行端未在跑）";
             case "credentials_required":return "缺少本次令牌，请编辑绑定"; case "config_required":return "请先完善账号绑定与运行端配置";
             case "runtime_missing":return "缺少支持多绑定的内置运行端"; case "container_required":return "本地容器尚未就绪"; default:return "暂无可核验状态";

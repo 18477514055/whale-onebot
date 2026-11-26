@@ -1,18 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.whaleonebot"
-    android:versionCode="11800"
-    android:versionName="1.1.8">
+    android:versionCode="12006"
+    android:versionName="1.2.5">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- 厂商省电策略会在后台约十分钟后杀掉进程（2026-11-19 实测 SmartPower died->invisible 638s），
-         只有进了电池白名单才会放过它；这个权限用于弹「加入白名单」的设置页。 -->
+    <!-- 鍘傚晢鐪佺數绛栫暐浼氬湪鍚庡彴绾﹀崄鍒嗛挓鍚庢潃鎺夎繘绋嬶紙2026-11-19 瀹炴祴 SmartPower died->invisible 638s锛夛紝
+         鍙湁杩涗簡鐢垫睜鐧藉悕鍗曟墠浼氭斁杩囧畠锛涜繖涓潈闄愮敤浜庡脊銆屽姞鍏ョ櫧鍚嶅崟銆嶇殑璁剧疆椤点€?-->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 版本管理页「下载并更新」要用系统安装器装 APK（API 26+ 需要声明这个权限，用户还要在系统里允许一次） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
@@ -37,7 +42,7 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 被杀之后自爬：闹钟由系统持有，进程死了也会把它唤醒（见 Watchdog.java 的补偿层声明）。 -->
+        <!-- 琚潃涔嬪悗鑷埇锛氶椆閽熺敱绯荤粺鎸佹湁锛岃繘绋嬫浜嗕篃浼氭妸瀹冨敜閱掞紙瑙?Watchdog.java 鐨勮ˉ鍋垮眰澹版槑锛夈€?-->
         <receiver android:name=".WatchdogReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

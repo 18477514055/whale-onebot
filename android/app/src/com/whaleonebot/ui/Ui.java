@@ -199,6 +199,121 @@ final class Ui {
         return new LinearLayout.LayoutParams(w, h);
     }
 
+    // ------------------------------------------------------------ 统一卡片、胶囊、分割线与格式原语
+    // [layer: shell-android] 按 2026-11-25 问答报告（Q1/Q3/Q8/Q14）补齐外壳层通用视觉原语，
+    // 复用现有 Theme 色盘与 Drawables，确保 6 套主题（含默认浅色晨纸）下卡片、胶囊、输入框与进度一致。
+
+    static final int TONE_NEUTRAL = 0;
+    static final int TONE_OK = 1;
+    static final int TONE_WARN = 2;
+    static final int TONE_DANGER = 3;
+
+    /** 状态胶囊（浅描边 / 信号绿 / 暖黄 / 危险红）。 */
+    static TextView pill(Context c, Theme t, CharSequence label, int tone) {
+        int bg, stroke, fg;
+        if (tone == TONE_OK) {
+            bg = alpha(t.accent, t.dark ? 0.22f : 0.14f);
+            stroke = alpha(t.accent, 0.45f);
+            fg = t.dark ? t.accent : t.toneStrong;
+        } else if (tone == TONE_WARN) {
+            int amber = t.dark ? 0xFFF5B762 : 0xFFB45309;
+            bg = alpha(amber, t.dark ? 0.20f : 0.12f);
+            stroke = alpha(amber, 0.45f);
+            fg = amber;
+        } else if (tone == TONE_DANGER) {
+            int red = t.dark ? 0xFFF87171 : 0xFFB91C1C;
+            bg = alpha(red, t.dark ? 0.20f : 0.12f);
+            stroke = alpha(red, 0.45f);
+            fg = red;
+        } else {
+            bg = t.ghostFill;
+            stroke = t.ghostStroke;
+            fg = t.textSecondary;
+        }
+        TextView v = text(c, label, Theme.T_CAP, fg);
+        v.setTypeface(Typeface.DEFAULT_BOLD);
+        v.setLetterSpacing(0.02f);
+        v.setPadding(dp(c, 9), dp(c, 4), dp(c, 9), dp(c, 4));
+        v.setBackground(Drawables.round(bg, stroke, dp(c, 1), dp(c, Theme.R_PILL)));
+        return v;
+    }
+
+    /** 1dp 卡内淡分割线。 */
+    static View divider(Context c, Theme t) {
+        View line = new View(c);
+        int color = t.dark ? 0x22FFFFFF : 0x1A000000;
+        line.setBackgroundColor(color);
+        LinearLayout.LayoutParams lp = llp(MATCH_PARENT, Math.max(1, dp(c, 1)));
+        lp.topMargin = dp(c, Theme.S2);
+        lp.bottomMargin = dp(c, Theme.S2);
+        line.setLayoutParams(lp);
+        return line;
+    }
+
+    /** 创建标准圆角卡片并挂入父容器，返回内部带标准 S3 内边距的列容器。 */
+    static LinearLayout addCard(LinearLayout parent, Context c, Theme t, int topMarginDp) {
+        FrameLayout card = card(c, t);
+        LinearLayout box = column(c);
+        int p = dp(c, Theme.S3);
+        box.setPadding(p, p, p, p);
+        card.addView(box, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams lp = llp(MATCH_PARENT, WRAP_CONTENT);
+        if (topMarginDp > 0) lp.topMargin = dp(c, topMarginDp);
+        parent.addView(card, lp);
+        return box;
+    }
+
+    /** 统一输入框样式（圆角描边 + 主题字色 + 触控高度）。 */
+    static void styleInput(android.widget.EditText e, Context c, Theme t) {
+        e.setTextColor(t.textPrimary);
+        e.setHintTextColor(t.textTertiary);
+        e.setMinHeight(dp(c, Theme.TOUCH));
+        int hp = dp(c, Theme.S2);
+        e.setPadding(hp, dp(c, 10), hp, dp(c, 10));
+        e.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(c, 1), dp(c, Theme.R_BTN)));
+    }
+
+    /** 字节数转人类可读单位（B / KB / MB / GB）。 */
+    static String formatBytes(long bytes) {
+        if (bytes < 0L) return "未知大小";
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024L * 1024L) return String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1024.0 / 1024.0);
+        return String.format(java.util.Locale.ROOT, "%.2f GB", bytes / 1024.0 / 1024.0 / 1024.0);
+    }
+
+    /** 进度格式化：12.4 MB / 51.2 MB（24%）。 */
+    static String formatProgress(long done, long total) {
+        if (total <= 0L) return done > 0L ? formatBytes(done) : "准备中…";
+        int pct = (int) Math.min(100L, Math.max(0L, (done * 100L) / total));
+        return formatBytes(done) + " / " + formatBytes(total) + "（" + pct + "%）";
+    }
+
+    /** 核心短 ID（去掉 core- 前缀并取前 8 位，避免 41 字符 UUID 撑爆屏幕）。 */
+    static String coreShortId(String id) {
+        if (id == null || id.isEmpty()) return "—";
+        String s = id.startsWith("core-") ? id.substring(5) : id;
+        int dash = s.indexOf('-');
+        if (dash > 0 && dash <= 10) return s.substring(0, dash);
+        return s.length() > 8 ? s.substring(0, 8) : s;
+    }
+
+    /** 友好核心展示标题：突出归属机器人名或「空闲核心」，不以 UUID 开头（问答报告 Q3）。 */
+    static String coreDisplayTitle(CoreInventory.Instance c) {
+        if (c == null) return "未知核心";
+        if (c.ownerId == null || c.ownerId.isEmpty()) return "空闲核心";
+        BotRegistry.Bot b = BotRegistry.get(c.ownerId);
+        return b == null ? c.ownerId : b.name;
+    }
+
+    /** 友好核心副信息：类型 · 版本 · #短ID。 */
+    static String coreMetaLine(CoreInventory.Instance c) {
+        if (c == null) return "";
+        String kind = "builtin".equals(c.kind) ? (c.legacy ? "沿用内置" : "内置核心") : "自定义核心";
+        String ver = (c.version == null || c.version.isEmpty()) ? "未知版本" : c.version;
+        return kind + " · " + ver + " · #" + coreShortId(c.id);
+    }
+
     static LinearLayout.LayoutParams llp(int w, int h, int l, int tp, int r, int b) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
         lp.leftMargin = l;

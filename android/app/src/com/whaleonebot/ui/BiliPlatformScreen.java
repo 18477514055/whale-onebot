@@ -108,12 +108,12 @@ final class BiliPlatformScreen extends Screen {
             card.addView(box);
             col.addView(card, pad());
 
-            JSONObject snap = row.hostedBili() ? ContainerService.biliProtocolStatus(bot.id, row.id) : null;
+            JSONObject snap = row.hostedBili() ? RemoteBridge.biliStatus(bot.id, row.id) : null;
             TextView titleView = Ui.strong(activity, accountTitle(row, snap), Theme.T_CARD, t.textPrimary);
             box.addView(titleView);
             titles.put(row, titleView);
 
-            boolean saved = row.hostedBili() && ContainerService.hasBiliSession(activity, bot.id, row.id);
+            boolean saved = row.hostedBili() && RemoteBridge.hasBiliSession(activity, bot.id, row.id);
             box.addView(Ui.text(activity, saved ? "已保存登录（仅本机）" : "未保存登录", Theme.T_CAP, t.textSecondary), padTight());
             String verifyText = row.hostedBili()
                     ? BiliPlatformState.label(snap == null ? "" : snap.optString("state"), row.accountId, snap == null ? "" : snap.optString("selfId"))
@@ -149,12 +149,17 @@ final class BiliPlatformScreen extends Screen {
                     links.put(row, link);
                     button(box, "停止此账号", false, () -> {
                         loginFeedback.remove(row.id);
-                        ContainerService.stopBiliProtocol(bot.id, row.id);
+                        RemoteBridge.stopBili(bot.id, row.id);
                         new Thread(() -> {
                             try {
-                                ContainerService.stopInstalledBinding(bot.id, row.id);
+                                if (RemoteBridge.isRemote()) {
+                                    RemoteBridge.rpcSync("bots.stopBinding",
+                                            new org.json.JSONObject().put("botId", bot.id).put("bindingId", row.id), 8000);
+                                } else {
+                                    ContainerService.stopInstalledBinding(bot.id, row.id);
+                                }
                                 activity.runOnUiThread(this::refresh);
-                            } catch (RuntimeException ex) {
+                            } catch (Exception ex) {
                                 activity.runOnUiThread(() -> host().toast("未能停止此账号的工作进程"));
                             }
                         }, "stop-bili-binding").start();
@@ -255,7 +260,7 @@ final class BiliPlatformScreen extends Screen {
             }
             new Thread(() -> {
                 try {
-                    ContainerService.startInstalledPlatform(activity, bot.id, BotRegistry.P_BILIBILI);
+                    RemoteBridge.startInstalledPlatform(activity, bot.id, BotRegistry.P_BILIBILI);
                     activity.runOnUiThread(() -> onConnectResult(true, null));
                 } catch (Exception e) {
                     String reason = e.getMessage();
@@ -267,7 +272,7 @@ final class BiliPlatformScreen extends Screen {
         } else {
             new Thread(() -> {
                 try {
-                    ContainerService.startBoundBot(activity, bot.id);
+                    RemoteBridge.startBoundBot(activity, bot.id);
                     activity.runOnUiThread(() -> onConnectResult(true, null));
                 } catch (Exception e) {
                     String reason = e.getMessage();
@@ -295,7 +300,7 @@ final class BiliPlatformScreen extends Screen {
 
     private void buildDashboardCards(LinearLayout col, String bindingId) {
         Map<String, Integer> today = BiliActionLog.todayCounts(activity, bot.id);
-        JSONObject cfg = BiliSettings.get(activity, bot.id, bindingId);
+        JSONObject cfg = RemoteBridge.getBiliSettings(activity, bot.id, bindingId);
 
         // 2) 今日统计卡
         LinearLayout statsBox = addSectionCard(col, "今日统计");
@@ -367,8 +372,8 @@ final class BiliPlatformScreen extends Screen {
     private void renderLogPage() {
         if (logListBox == null) return;
         logListBox.removeAllViews();
-        int total = BiliActionLog.count(activity, bot.id);
-        List<JSONObject> rows = BiliActionLog.page(activity, bot.id, logPage, BiliActionLog.DEFAULT_PAGE_SIZE);
+        List<JSONObject> rows = RemoteBridge.biliActionLogPage(activity, bot.id, logPage, BiliActionLog.DEFAULT_PAGE_SIZE);
+        int total = RemoteBridge.isRemote() ? ((logPage + 1) * BiliActionLog.DEFAULT_PAGE_SIZE + (rows.size() == BiliActionLog.DEFAULT_PAGE_SIZE ? 1 : 0)) : BiliActionLog.count(activity, bot.id);
         if (rows.isEmpty()) {
             logListBox.addView(Ui.text(activity, "还没有动作记录", Theme.T_BODY, t.textSecondary));
         } else {
@@ -394,7 +399,7 @@ final class BiliPlatformScreen extends Screen {
     // ---------------------------------------------------------------- B 站行为配置卡片
 
     private void buildBehaviorSettings(LinearLayout col, final String bindingId) {
-        JSONObject cfg = BiliSettings.get(activity, bot.id, bindingId);
+        JSONObject cfg = RemoteBridge.getBiliSettings(activity, bot.id, bindingId);
 
         col.addView(Ui.strong(activity, "B 站行为", Theme.T_CARD, t.textPrimary), padSection());
 
@@ -572,7 +577,7 @@ final class BiliPlatformScreen extends Screen {
             } catch (JSONException ignored) {
             }
 
-            BiliSettings.put(activity, bot.id, bindingId, next);
+            RemoteBridge.putBiliSettings(activity, bot.id, bindingId, next);
             host().toast("行为设置已保存");
         });
     }
@@ -741,7 +746,7 @@ final class BiliPlatformScreen extends Screen {
                 "停止此账号并清除本机保存的登录。下次启动需重新授权。",
                 "退出并清除", () -> {
                     loginFeedback.remove(row.id);
-                    boolean ok = ContainerService.forgetBiliSession(activity, bot.id, row.id);
+                    boolean ok = RemoteBridge.forgetBili(activity, bot.id, row.id);
                     host().toast(ok ? "已退出此账号" : "未能清除登录，请重试");
                     build();
                 },
@@ -758,25 +763,25 @@ final class BiliPlatformScreen extends Screen {
     }
 
     private void start(BotRegistry.Binding row) {
-        JSONObject record = ContainerService.biliProtocolStatus(bot.id, row.id);
+        JSONObject record = RemoteBridge.biliStatus(bot.id, row.id);
         String state = record == null ? "" : record.optString("state");
-        if (BiliPlatformState.useSaved(ContainerService.hasBiliSession(activity, bot.id, row.id), state)) {
+        if (BiliPlatformState.useSaved(RemoteBridge.hasBiliSession(activity, bot.id, row.id), state)) {
             setRowFeedback(row, "正在准备登录…");
-            ContainerService.startBiliProtocol(activity, bot.id, row.id, row.peerId);
+            RemoteBridge.startBili(activity, bot.id, row.id, row.peerId);
             setRowFeedback(row, "已发起，等待协议端起…");
             refresh();
             return;
         }
         setRowFeedback(row, "需要授权，已弹出授权窗");
         String authMsg = (row.peerId.isEmpty() ? "未授权任何私信对端。" : "仅允许配置的私信对端 UID：" + row.peerId)
-                + "\n\n登录成功后保存到本机，下次可快速登录。";
+                + "\n\n登录成功后保存到目标设备，下次可快速登录。";
         PromptSheet.confirm(
                 activity, t,
                 "授权 UID " + row.accountId,
                 authMsg,
                 "开始授权", () -> {
                     setRowFeedback(row, "正在准备登录…");
-                    ContainerService.reauthorizeBiliProtocol(activity, bot.id, row.id, row.peerId);
+                    RemoteBridge.reauthBili(activity, bot.id, row.id, row.peerId);
                     setRowFeedback(row, "已发起，等待协议端起…");
                     refresh();
                 },
@@ -784,9 +789,9 @@ final class BiliPlatformScreen extends Screen {
     }
 
     private void open(BotRegistry.Binding row) {
-        String url = ContainerService.biliAuthorizationLink(bot.id, row.id);
+        String url = RemoteBridge.biliAuthLink(bot.id, row.id);
         challengeBinding = row.id;
-        challengeDialog = url == null ? null : BiliAuthorizationDialog.show(activity, url, row.accountId, () -> ContainerService.stopBiliProtocol(bot.id, row.id));
+        challengeDialog = (url == null || url.isEmpty()) ? null : BiliAuthorizationDialog.show(activity, url, row.accountId, () -> RemoteBridge.stopBili(bot.id, row.id));
         if (challengeDialog == null) host().toast("本次授权码不可用或已过期");
     }
 
@@ -837,7 +842,7 @@ final class BiliPlatformScreen extends Screen {
                 peer.setError(problem);
                 return;
             }
-            ContainerService.stopBiliProtocol(bot.id, selected.id);
+            RemoteBridge.stopBili(bot.id, selected.id);
             host().toast("B 站账号设置已保存");
             shell.handleBack();
         });
@@ -847,13 +852,14 @@ final class BiliPlatformScreen extends Screen {
     }
 
     void refresh() {
+        super.refresh();
         if (bot == null) return;
-        JSONObject workers = statuses.isEmpty() ? null : ContainerService.bindingStatus(activity, bot.id);
+        JSONObject workers = statuses.isEmpty() ? null : RemoteBridge.bindingStatus(activity, bot.id);
 
         for (Map.Entry<BotRegistry.Binding, TextView> entry : verifyLines.entrySet()) {
             BotRegistry.Binding row = entry.getKey();
             if (!row.hostedBili()) continue;
-            JSONObject s = ContainerService.biliProtocolStatus(bot.id, row.id);
+            JSONObject s = RemoteBridge.biliStatus(bot.id, row.id);
             String state = s == null ? "" : s.optString("state");
             String verify = "最近核验：" + BiliPlatformState.label(state, row.accountId, s == null ? "" : s.optString("selfId"));
             if (!verify.contentEquals(entry.getValue().getText())) {
@@ -877,7 +883,7 @@ final class BiliPlatformScreen extends Screen {
             } else if (!row.hostedBili()) {
                 out = "外部协议端：此页不代其登录。";
             } else {
-                JSONObject s = ContainerService.biliProtocolStatus(bot.id, row.id);
+                JSONObject s = RemoteBridge.biliStatus(bot.id, row.id);
                 String state = s == null ? "" : s.optString("state");
                 String fb = loginFeedback.get(row.id);
                 boolean activeState = !state.isEmpty() && !"stopped".equals(state);

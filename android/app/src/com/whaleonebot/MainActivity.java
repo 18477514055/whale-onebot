@@ -75,6 +75,22 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                     "android.permission.WRITE_EXTERNAL_STORAGE"}, 1);
         }
         com.whaleonebot.ui.BotRegistry.init(getFilesDir());
+        // [layer: shell-android] 启动远程设备管理器与全量远端快照同步钩子
+        final com.whaleonebot.remote.RemoteControlManager remoteMgr = com.whaleonebot.remote.RemoteControlManager.get(this);
+        com.whaleonebot.ui.RemoteHostDispatcher dispatcher = new com.whaleonebot.ui.RemoteHostDispatcher(this);
+        remoteMgr.startServices(dispatcher, dispatcher);
+        remoteMgr.setSnapshotListener((peerId, botsJson, coresJson) -> {
+            com.whaleonebot.ui.BotRegistry.applyRemoteSnapshot(peerId, botsJson);
+        });
+        com.whaleonebot.ui.BotRegistry.setRemotePersistHook(snapshotJson -> {
+            try {
+                org.json.JSONObject res = remoteMgr.callActiveRpc("bots.syncWrite",
+                        new org.json.JSONObject().put("snapshot", snapshotJson), 8000);
+                return res.optBoolean("ok", false);
+            } catch (Throwable t) {
+                return false;
+            }
+        });
         shell = new AppShell(this, this);
         setContentView(shell.getView());
         handler.post(tick);
@@ -101,11 +117,14 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
             if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
             if (getSharedPreferences("whale", MODE_PRIVATE).getBoolean("batteryAsked", false)) return;
             getSharedPreferences("whale", MODE_PRIVATE).edit().putBoolean("batteryAsked", true).apply();
-            new android.app.AlertDialog.Builder(this)
-                    .setTitle("让机器人常驻后台")
-                    .setMessage("系统会在你离开 App 约十分钟后把它杀掉，容器里的 QQ 随之掉线，机器人就不说话了。\n\n"
-                            + "点「去设置」把本应用加入「不限制/允许后台运行」，这是机器人能一直在线的必要条件。")
-                    .setPositiveButton("去设置", (d, w) -> {
+            // [layer: shell-android] 改用统一主题底部面板 PromptSheet，清零全仓最后一处原生 AlertDialog。
+            com.whaleonebot.ui.PromptSheet.showConfirm(
+                    this,
+                    "让机器人常驻后台",
+                    "系统会在你离开 App 约十分钟后把它杀掉，容器里的 QQ 随之掉线，机器人就不说话了。\n\n"
+                            + "点「去设置」把本应用加入「不限制/允许后台运行」，这是机器人能一直在线的必要条件。",
+                    "去设置",
+                    () -> {
                         try {
                             android.content.Intent i = new android.content.Intent(
                                     android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
@@ -118,9 +137,8 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                                         android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
                             } catch (Exception ignored) { }
                         }
-                    })
-                    .setNegativeButton("稍后", null)
-                    .show();
+                    },
+                    "稍后");
             // 这个常量只在有该权限时才有意义；没有也不影响上面的判断与跳转。
             if (pkg.isEmpty()) android.util.Log.d("WhaleOneBot", "battery exemption requested");
         } catch (Exception e) {
@@ -143,6 +161,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
+        if (shell != null) shell.onRequestPermissionsResult(code, perms, results);
         if (code == 1 && !ContainerService.isRunning()) ContainerService.start(this);
     }
 
@@ -154,7 +173,15 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
 
     // ------------------------------------------------------------------ Host
 
-    @Override public boolean containerRunning() { return ContainerService.isRunning(); }
+    private com.whaleonebot.remote.RemoteControlManager remoteOrNull() {
+        com.whaleonebot.remote.RemoteControlManager m = com.whaleonebot.remote.RemoteControlManager.peek();
+        return (m != null && m.isRemote()) ? m : null;
+    }
+
+    @Override public boolean containerRunning() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        return r != null ? r.activeSnapshot().containerRunning : ContainerService.isRunning();
+    }
 
     /**
      * 启动容器 —— 之前若没有 rootfs 就静默起不来（新装的包、或只下过环境包没建过容器）。
@@ -162,6 +189,18 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
      *   铺不出来就把话说明白，而不是让用户对着「没反应」猜。
      */
     @Override public void startContainer() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    r.callActiveRpc("container.start", null, 10000);
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端启动容器失败：" + t.getMessage()));
+                }
+            }, "remote-start-c").start();
+            return;
+        }
         android.util.Log.i("WhaleEnv", "startContainer: 用户点了启动容器");
         new Thread(() -> {
             boolean ok = com.whaleonebot.ui.BundledEnvironment.ensure(this);
@@ -170,11 +209,30 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         }, "prepare-environment").start();
     }
 
-    @Override public void stopContainer() { ContainerService.stop(this); }
+    @Override public void stopContainer() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    r.callActiveRpc("container.stop", null, 10000);
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端停止容器失败：" + t.getMessage()));
+                }
+            }, "remote-stop-c").start();
+            return;
+        }
+        ContainerService.stop(this);
+    }
 
-    @Override public String loginUin() { return identityUin(); }
+    @Override public String loginUin() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        return r != null ? r.activeSnapshot().loginUin : identityUin();
+    }
 
     @Override public boolean qrLive() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) return r.activeSnapshot().qrLive && r.activeSnapshot().qrBitmap != null;
         File f = qrFile();
         if (!f.isFile()) return false;
         long mtime = f.lastModified();
@@ -183,6 +241,8 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     }
 
     @Override public Bitmap qrBitmap() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) return r.activeSnapshot().qrLive ? r.activeSnapshot().qrBitmap : null;
         if (!qrLive()) return null;
         File f = qrFile();
         long mtime = f.lastModified();
@@ -198,6 +258,8 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     }
 
     @Override public long qrLeftSeconds() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) return r.activeSnapshot().qrLive ? r.activeSnapshot().qrLeftSeconds : 0;
         File f = qrFile();
         if (!f.isFile() || !qrLive()) return 0;
         long age = System.currentTimeMillis() - f.lastModified();
@@ -209,6 +271,20 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
      * 否则丢掉旧码、记下时刻，让容器里的登录进程去要一张新的。
      */
     @Override public void requestQr() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject res = r.callActiveRpc("login.requestQr", null, 10000);
+                    final String msg = res.optString("msg", "已请求远端刷新二维码");
+                    runOnUiThread(() -> toast(msg));
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("请求远端二维码失败：" + t.getMessage()));
+                }
+            }, "remote-req-qr").start();
+            return;
+        }
         if (identityUin() != null) {
             toast("已登录 " + identityUin() + "，无需扫码（要重新扫码请先停机器人再点）");
             return;
@@ -218,9 +294,6 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         qrCache = null;
         qrCacheMtime = -1;
         requestAt = System.currentTimeMillis();
-        // ★ 2026-11-24（用户反馈的死循环）：点「QQ 登录」被要求"先打开 QQ"，点「打开 QQ」又被要求"先登录"。
-        //   根因是登录动作只在容器里跑得起来，而容器没起时这里什么都不做/被上层挡回去。
-        //   现在登录前先把容器拉起来（start 幂等），把顺序固定成：起容器 → 要码 → 扫码 → 打开 QQ。
         boolean wasRunning = ContainerService.isRunning();
         if (!wasRunning) {
             ContainerService.start(this);
@@ -232,10 +305,20 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     }
 
     @Override public String loginLog(int lines) {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            String s = r.activeSnapshot().loginLog;
+            return (s == null || s.isEmpty()) ? "（远端暂无登录日志）" : s;
+        }
         return tail(new File(qqStateDir(), "login.log"), lines);
     }
 
     @Override public String containerLog(int lines) {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            String s = r.activeSnapshot().containerLog;
+            return (s == null || s.isEmpty()) ? "（远端暂无容器日志）" : s;
+        }
         return tail(new File(getFilesDir(), "logs/container.log"), lines);
     }
 
@@ -243,10 +326,12 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
 
-    /** 把当前这张有效二维码存进相册（Android 10+ 走 MediaStore，不需要额外权限）。 */
+    /** 把当前这张有效二维码存进相册（本机与远程模式均支持保存当前展示的二维码到手里这台手机相册）。 */
     @Override public void saveQrToAlbum() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        byte[] remotePng = (r != null && r.activeSnapshot().qrLive) ? r.activeSnapshot().qrPngBytes : null;
         File src = qrFile();
-        if (!qrLive() || !src.isFile()) { toast("当前没有有效二维码"); return; }
+        if (remotePng == null && (!qrLive() || !src.isFile())) { toast("当前没有有效二维码"); return; }
         String name = "qq-login-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".png";
         try {
             if (Build.VERSION.SDK_INT >= 29) {
@@ -257,11 +342,16 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                 v.put(MediaStore.Images.Media.IS_PENDING, 1);
                 Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
                 if (uri != null) {
-                    try (OutputStream out = getContentResolver().openOutputStream(uri);
-                         InputStream in = new FileInputStream(src)) {
-                        byte[] buf = new byte[65536];
-                        int n;
-                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        if (remotePng != null) {
+                            out.write(remotePng);
+                        } else {
+                            try (InputStream in = new FileInputStream(src)) {
+                                byte[] buf = new byte[65536];
+                                int n;
+                                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                            }
+                        }
                     }
                     v.clear();
                     v.put(MediaStore.Images.Media.IS_PENDING, 0);
@@ -274,11 +364,16 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                     Environment.DIRECTORY_PICTURES), "WhaleOneBot");
             if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("无法创建相册目录");
             File dst = new File(dir, name);
-            try (OutputStream out = new FileOutputStream(dst);
-                 InputStream in = new FileInputStream(src)) {
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            try (OutputStream out = new FileOutputStream(dst)) {
+                if (remotePng != null) {
+                    out.write(remotePng);
+                } else {
+                    try (InputStream in = new FileInputStream(src)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
+                }
             }
             sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(dst)));
             toast("已保存到相册 " + dst.getAbsolutePath());
@@ -362,8 +457,57 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         return use.equals("whale-1") && BindingControl.legacy(getFilesDir(),false);
     }
 
+    private final java.util.concurrent.ConcurrentHashMap<String, String> remoteConfigCache =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> remoteConfigAt =
+            new java.util.concurrent.ConcurrentHashMap<String, Long>();
+
     @Override public String loadConfigJson() {
-        String bot = configScope();
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        final String bot = configScope();
+        if (r != null) {
+            final String peerId = r.activePeerId();
+            final String cacheKey = (peerId == null ? "" : peerId) + "|" + bot;
+            final String cached = remoteConfigCache.get(cacheKey);
+            final long prevAt = remoteConfigAt.containsKey(cacheKey) ? remoteConfigAt.get(cacheKey) : 0L;
+            final long ttl = r.isCurrentChannelFast() ? 4000L : 15_000L;
+            // 方案 A：命中远端配置缓存时 0ms 秒开配置页，同时在后台静默拉取最新版覆盖缓存
+            if (cached != null) {
+                if (System.currentTimeMillis() - prevAt >= ttl) {
+                    new Thread(() -> {
+                        try {
+                            org.json.JSONObject res = r.callActiveRpc("config.load",
+                                    new org.json.JSONObject().put("botId", bot), 8000);
+                            String fresh = res.optString("json", null);
+                            if (fresh != null && peerId != null && peerId.equals(r.activePeerId())) {
+                                remoteConfigCache.put(cacheKey, fresh);
+                                remoteConfigAt.put(cacheKey, System.currentTimeMillis());
+                            }
+                        } catch (Throwable ignored) {}
+                    }, "remote-cfg-swr").start();
+                }
+                return cached;
+            }
+            final String[] holder = new String[1];
+            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject res = r.callActiveRpc("config.load",
+                            new org.json.JSONObject().put("botId", bot), 8000);
+                    holder[0] = res.optString("json", "{}");
+                } catch (Throwable ignored) {
+                    holder[0] = null;
+                } finally {
+                    latch.countDown();
+                }
+            }, "remote-cfg-load").start();
+            try { latch.await(8500, java.util.concurrent.TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+            if (holder[0] != null) {
+                remoteConfigCache.put(cacheKey, holder[0]);
+                remoteConfigAt.put(cacheKey, System.currentTimeMillis());
+            }
+            return holder[0];
+        }
         if (isLiveBot(bot)) return readUtf8(liveConfigFile());
         File f = botConfigFile(bot);
         if (!f.isFile()) {
@@ -373,9 +517,37 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         return readUtf8(f);
     }
 
-    @Override public boolean saveConfigJson(String json) {
+    @Override public boolean saveConfigJson(final String json) {
         if (json == null || json.isEmpty()) return false;
-        String bot = configScope();
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        final String bot = configScope();
+        if (r != null) {
+            final String peerId = r.activePeerId();
+            final String cacheKey = (peerId == null ? "" : peerId) + "|" + bot;
+            final boolean[] ok = new boolean[1];
+            final boolean[] reloaded = new boolean[1];
+            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject res = r.callActiveRpc("config.save",
+                            new org.json.JSONObject().put("botId", bot).put("json", json), 15000);
+                    ok[0] = res.optBoolean("ok", false);
+                    reloaded[0] = res.optBoolean("reloaded", false);
+                } catch (Throwable ignored) {
+                } finally {
+                    latch.countDown();
+                }
+            }, "remote-cfg-save").start();
+            try { latch.await(15500, java.util.concurrent.TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+            if (ok[0]) {
+                remoteConfigCache.put(cacheKey, json);
+                remoteConfigAt.put(cacheKey, System.currentTimeMillis());
+                toast(reloaded[0] ? "已保存到远端并热重载生效" : "已保存到远端设备");
+            } else {
+                toast("保存到远端失败，请检查远程连接");
+            }
+            return ok[0];
+        }
         if (!isLiveBot(bot)) {
             // 不是当前运行的机器人：只写它自己那份，不重载（活配置里没有它）
             File own = botConfigFile(bot);
@@ -460,7 +632,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
      * 重载失败不改返回值（保存本身是成功的），只用 toast 如实说明「已保存但没热生效」。
      */
     private void requestAgentConfigReload(final String savedJson) {
-        if (!ContainerService.botRunning()) return; // 没在跑就没有内存态可重载，下次启动自然读到新配置
+        if (!ContainerService.botRunning(this)) return; // 没在跑就没有内存态可重载，下次启动自然读到新配置
         final int port = agentConsolePort(savedJson);
         new Thread(new Runnable() {
             @Override public void run() {
@@ -538,7 +710,10 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         return 41907;
     }
 
-    @Override public boolean botRunning() { return ContainerService.botRunning(); }
+    @Override public boolean botRunning() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        return r != null ? r.activeSnapshot().botRunning : ContainerService.botRunning(this);
+    }
 
     // ------------------------------------------------------------------ 工具
 

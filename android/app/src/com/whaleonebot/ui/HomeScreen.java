@@ -26,6 +26,11 @@ final class HomeScreen extends Screen {
     private LinearLayout col;
     private final java.util.Map<String,TextView> platformCounts = new java.util.LinkedHashMap<>();
     private View fab;
+    private LinearLayout devicePill;
+    private View deviceDot;
+    private TextView devicePillText;
+    private TextView headerSub;
+    private TextView footView;
 
     HomeScreen(AppShell shell) {
         super(shell);
@@ -34,8 +39,35 @@ final class HomeScreen extends Screen {
     @Override
     void build() {
         col = Ui.column(activity);
-        col.setPadding(dp(Theme.S4), dp(Theme.S3), dp(Theme.S4), dp(Theme.S4));
+        col.setPadding(dp(Theme.S4), dp(Theme.S2), dp(Theme.S4), dp(Theme.S4));
         root.addView(col, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+        // ---------- 界面顶端居中设备切换条形框（仅首页显示，对齐 Q5/Q6/Q7） ----------
+        LinearLayout barWrap = Ui.row(activity);
+        barWrap.setGravity(Gravity.CENTER);
+        devicePill = Ui.row(activity);
+        devicePill.setGravity(Gravity.CENTER_VERTICAL);
+        devicePill.setPadding(dp(14), dp(7), dp(14), dp(7));
+        devicePill.setClickable(true);
+        devicePill.setFocusable(true);
+        Ui.press(devicePill, 0.96f);
+
+        deviceDot = new View(activity);
+        LinearLayout.LayoutParams dotLp = Ui.llp(dp(8), dp(8));
+        dotLp.rightMargin = dp(8);
+        devicePill.addView(deviceDot, dotLp);
+
+        devicePillText = Ui.strong(activity, "本机 ▾", Theme.T_CAP, t.textPrimary);
+        devicePillText.setSingleLine(true);
+        devicePillText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        devicePillText.setMaxWidth(dp(260));
+        devicePill.addView(devicePillText, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        devicePill.setOnClickListener(v -> showDeviceSwitcher());
+
+        barWrap.addView(devicePill, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams bwlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        bwlp.bottomMargin = dp(Theme.S2);
+        col.addView(barWrap, bwlp);
 
         // ---------- 页头（左边 80dp 让给 FAB） ----------
         LinearLayout head = Ui.row(activity);
@@ -50,10 +82,10 @@ final class HomeScreen extends Screen {
         title.setAutoSizeTextTypeUniformWithConfiguration(
                 15, Theme.T_TITLE, 1, TypedValue.COMPLEX_UNIT_SP);
         titleBox.addView(title);
-        TextView sub = Ui.text(activity, "本地容器 · 机器人控制台", Theme.T_CAP, t.textSecondary);
+        headerSub = Ui.text(activity, "本地容器 · 机器人控制台", Theme.T_CAP, t.textSecondary);
         LinearLayout.LayoutParams slp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
         slp.topMargin = dp(4);
-        titleBox.addView(sub, slp);
+        titleBox.addView(headerSub, slp);
         // 权重 1：标题块拿到「剩余的全部宽度」，宽度确定后 autosize 才能生效
         LinearLayout.LayoutParams boxLp = Ui.llp(0, WRAP_CONTENT);
         boxLp.weight = 1f;
@@ -61,9 +93,9 @@ final class HomeScreen extends Screen {
         col.addView(head, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         // ---------- 固定间距（不再用顶部弹性留白，卡片组贴着页头往下排） ----------
-        col.addView(new View(activity), Ui.llp(MATCH_PARENT, dp(Theme.S4)));
+        col.addView(new View(activity), Ui.llp(MATCH_PARENT, dp(Theme.S3)));
 
-        // ---------- 新手指引（第一次用才出现，点「知道了」永久收起） ----------
+        // ---------- 新手指引（第一次用才出现，点「知道了」或仅遥控模式可收起） ----------
         if (!Onboarding.seen(activity)) addGuide(col);
 
         // ---------- 分区标签 ----------
@@ -87,16 +119,16 @@ final class HomeScreen extends Screen {
         // ---------- 余量全部放到卡片组下方，页脚仍然贴在底部 ----------
         col.addView(new View(activity), new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
-        TextView foot = Ui.text(activity, "所有数据都留在本机", Theme.T_CAP, t.textTertiary);
-        foot.setGravity(Gravity.CENTER);
-        col.addView(foot, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        footView = Ui.text(activity, "所有数据都留在本机", Theme.T_CAP, t.textTertiary);
+        footView.setGravity(Gravity.CENTER);
+        col.addView(footView, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // ---------- FAB ----------
+        // ---------- FAB（下移避开顶端居中条形框，与 WhaleOneBot 标题对齐） ----------
         fab = new Fab(activity, t);
         FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(56), dp(56),
                 Gravity.TOP | Gravity.START);
         flp.leftMargin = dp(Theme.S4);
-        flp.topMargin = dp(Theme.S3);
+        flp.topMargin = dp(52);
         fab.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -104,6 +136,7 @@ final class HomeScreen extends Screen {
             }
         });
         root.addView(fab, flp);
+        updateDevicePill();
     }
 
     /** 一张平台卡：图标块 + 标题/副标题 + 尾部（箭头或「敬请期待」角标）。 */
@@ -200,7 +233,14 @@ final class HomeScreen extends Screen {
      * 按钮直接指向「下一件要做的事」。三步全做完就不再出现 —— 不必让人点「知道了」才能清屏。
      */
     private void addGuide(LinearLayout parent) {
-        SetupState.Steps st = SetupState.read(activity.getFilesDir());
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        SetupState.Steps st;
+        if (rm != null && rm.isRemote()) {
+            com.whaleonebot.remote.RemoteControlManager.RemoteSnapshot snap = rm.activeSnapshot();
+            st = new SetupState.Steps(snap.setupEnv, snap.setupQq, snap.setupBot);
+        } else {
+            st = SetupState.read(activity.getFilesDir());
+        }
         if (st.all()) return;
 
         LinearLayout card = Ui.column(activity);
@@ -224,7 +264,6 @@ final class HomeScreen extends Screen {
         steps.addView(stepLine("3", "新建 QQ 机器人 → 启动它 → 连接", st.bot));
 
         LinearLayout actions = Ui.row(activity);
-        // 环境与 QQ 都在「环境配置」页里做；这两步都过了才轮到新建机器人。
         boolean envFirst = !st.env || !st.qq;
         TextView go = Ui.button(activity, t, envFirst ? "去环境配置" : "新建机器人", true);
         go.setOnClickListener(v -> {
@@ -234,9 +273,6 @@ final class HomeScreen extends Screen {
         TextView ok = Ui.button(activity, t, "知道了", false);
         ok.setOnClickListener(v -> {
             Onboarding.markSeen(activity);
-            // ★ 不能直接 build()：build() 会再往 root 里 addView 一列，旧列没被移除 ⇒
-            //   两层界面叠着画，文字互相压印（2026-11-25 主力机截图就是这现象）。
-            //   重建前先清空：root 的全部子 View、平台计数表、卡片引用。
             root.removeAllViews();
             cards.clear();
             platformCounts.clear();
@@ -253,9 +289,167 @@ final class HomeScreen extends Screen {
         alp.topMargin = dp(Theme.S2);
         card.addView(actions, alp);
 
+        // Q3 纯遥控模式：主力机不装本机容器/QQ，一键扫码直连远端备用机
+        if (rm == null || !rm.isRemote()) {
+            TextView remoteOnly = Ui.button(activity, t, "仅当遥控器 · 扫码控制其他设备", false);
+            remoteOnly.setOnClickListener(v -> {
+                Onboarding.markSeen(activity);
+                shell.pushQrScan();
+            });
+            LinearLayout.LayoutParams rlp = Ui.llp(MATCH_PARENT, dp(Theme.TOUCH));
+            rlp.topMargin = dp(Theme.S2);
+            card.addView(remoteOnly, rlp);
+        }
+
         LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         lp.bottomMargin = dp(Theme.S3);
         parent.addView(card, lp);
+    }
+
+    /** 刷新顶部居中条形框视觉（对齐 Q6：本机绿点白胶囊；远程带主题色细描边高亮防误操作）。 */
+    private void updateDevicePill() {
+        if (devicePill == null || deviceDot == null || devicePillText == null) return;
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm == null || !rm.isRemote()) {
+            int okGreen = t.dark ? 0xFF34D399 : 0xFF16A34A;
+            devicePill.setBackground(Drawables.round(t.cardFill, t.cardStroke, dp(1), dp(Theme.R_PILL)));
+            deviceDot.setBackground(Drawables.circle(okGreen, 0, 0));
+            String label = "本机 ▾";
+            if (!label.contentEquals(devicePillText.getText())) devicePillText.setText(label);
+            devicePillText.setTextColor(t.textPrimary);
+            if (headerSub != null) headerSub.setText("本地容器 · 机器人控制台");
+            if (footView != null) footView.setText("所有数据都留在本机");
+            return;
+        }
+        com.whaleonebot.remote.RemoteStore.PairedPeer peer = rm.activePeer();
+        com.whaleonebot.remote.RemoteControlManager.PeerStatus st = rm.statusOf(rm.activePeerId());
+        String name = peer == null ? "远端设备" : peer.displayName();
+        boolean connected = st != null && st.state == com.whaleonebot.remote.RemoteControlManager.ConnState.CONNECTED;
+        String ch = (st != null && !st.channelLabel.isEmpty()) ? st.channelLabel : "P2P";
+        String pillLabel = connected
+                ? ("远程：" + name + "（" + ch + "）▾")
+                : ("远程：" + name + "（重连中…）▾");
+        int warnColor = t.dark ? 0xFFF5B762 : 0xFFB45309;
+        int stroke = connected ? t.accent : warnColor;
+        devicePill.setBackground(Drawables.round(t.cardFill, stroke, dp(1.5f), dp(Theme.R_PILL)));
+        deviceDot.setBackground(Drawables.circle(connected ? t.accent : warnColor, 0, 0));
+        if (!pillLabel.contentEquals(devicePillText.getText())) devicePillText.setText(pillLabel);
+        devicePillText.setTextColor(connected ? t.toneStrong : warnColor);
+        if (headerSub != null) {
+            headerSub.setText("远程完全控制 · " + (st == null ? "连接中…" : st.summaryText()));
+        }
+        if (footView != null) {
+            footView.setText("端到端加密连接 · 所有操作将执行在「" + name + "」上");
+        }
+    }
+
+    /** 点击顶部条形框弹出统一 PromptSheet 设备切换与配对面板（对齐 Q7）。 */
+    private void showDeviceSwitcher() {
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.get(activity);
+        final java.util.List<com.whaleonebot.remote.RemoteStore.PairedPeer> peers = rm.store().listPeers();
+        String activeId = rm.activePeerId();
+
+        LinearLayout box = Ui.column(activity);
+
+        // 本机项
+        boolean localActive = (activeId == null);
+        int okGreen = t.dark ? 0xFF34D399 : 0xFF16A34A;
+        int warnColor = t.dark ? 0xFFF5B762 : 0xFFB45309;
+        LinearLayout localRow = buildDeviceRow(
+                "本机（" + rm.store().identity().deviceName + "）",
+                "本地容器与数据",
+                okGreen,
+                localActive,
+                null
+        );
+        box.addView(localRow, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        final android.app.Dialog[] holder = new android.app.Dialog[1];
+        localRow.setOnClickListener(v -> {
+            if (holder[0] != null) holder[0].dismiss();
+            if (!localActive) shell.switchTargetDevice(null);
+        });
+
+        for (final com.whaleonebot.remote.RemoteStore.PairedPeer peer : peers) {
+            box.addView(Ui.divider(activity, t));
+            com.whaleonebot.remote.RemoteControlManager.PeerStatus st = rm.statusOf(peer.deviceId);
+            boolean online = st != null && st.state == com.whaleonebot.remote.RemoteControlManager.ConnState.CONNECTED;
+            boolean active = peer.deviceId.equals(activeId);
+            LinearLayout r = buildDeviceRow(
+                    peer.displayName(),
+                    st == null ? "探测中…" : st.summaryText(),
+                    online ? t.accent : warnColor,
+                    active,
+                    v -> {
+                        if (holder[0] != null) holder[0].dismiss();
+                        shell.pushRemoteDevices(false);
+                    }
+            );
+            r.setOnClickListener(v -> {
+                if (holder[0] != null) holder[0].dismiss();
+                if (!active) shell.switchTargetDevice(peer.deviceId);
+                else if (!online) {
+                    rm.reconnectNow(peer.deviceId);
+                    host().toast("正在重连 " + peer.displayName());
+                }
+            });
+            box.addView(r, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        }
+
+        if (peers.isEmpty()) {
+            TextView empty = Ui.text(activity, "尚未配对远端设备，扫另一台手机的配对码即可无服务器直连。",
+                    Theme.T_CAP, t.textTertiary);
+            LinearLayout.LayoutParams elp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+            elp.topMargin = dp(Theme.S2);
+            box.addView(empty, elp);
+        }
+
+        holder[0] = PromptSheet.custom(
+                activity, t, "选择控制设备", box,
+                "扫码配对新设备", (d, btn) -> {
+                    d.dismiss();
+                    shell.pushQrScan();
+                },
+                "让别的设备控制本机（配对码）", (d, btn) -> {
+                    d.dismiss();
+                    shell.pushRemoteDevices(true);
+                },
+                "取消", (d, btn) -> d.dismiss(),
+                false, false, null, null
+        );
+    }
+
+    private LinearLayout buildDeviceRow(String title, String sub, int dotColor, boolean active,
+                                        View.OnClickListener manageClick) {
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(dp(Theme.S2), dp(10), dp(Theme.S2), dp(10));
+        row.setClickable(true);
+        row.setFocusable(true);
+        if (active) {
+            row.setBackground(Drawables.round(Ui.alpha(t.accent, 0.12f), t.accent, dp(1), dp(Theme.R_BTN)));
+        }
+        View dot = new View(activity);
+        dot.setBackground(Drawables.circle(dotColor, 0, 0));
+        LinearLayout.LayoutParams dlp = Ui.llp(dp(10), dp(10));
+        dlp.rightMargin = dp(10);
+        row.addView(dot, dlp);
+
+        LinearLayout textCol = Ui.column(activity);
+        textCol.addView(Ui.strong(activity, title, Theme.T_BODY, t.textPrimary));
+        textCol.addView(Ui.text(activity, sub, Theme.T_CAP, t.textSecondary));
+        LinearLayout.LayoutParams tclp = Ui.llp(0, WRAP_CONTENT);
+        tclp.weight = 1f;
+        row.addView(textCol, tclp);
+
+        if (active) {
+            row.addView(Ui.pill(activity, t, "当前", Ui.TONE_OK), Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        } else if (manageClick != null) {
+            TextView m = Ui.pill(activity, t, "管理", Ui.TONE_NEUTRAL);
+            m.setClickable(true);
+            m.setOnClickListener(manageClick);
+            row.addView(m, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        }
+        return row;
     }
 
     /** 一行分步：做完的打勾并变淡，没做的用正文色 —— 一眼看得出「下一步在哪」。 */
@@ -278,6 +472,7 @@ final class HomeScreen extends Screen {
 
     @Override
     void refresh() {
+        updateDevicePill();
         for (java.util.Map.Entry<String,TextView> entry : platformCounts.entrySet()) {
             String sub = BotRegistry.forPlatform(entry.getKey()).size() + " 台机器人";
             if (!sub.contentEquals(entry.getValue().getText())) entry.getValue().setText(sub);

@@ -73,4 +73,44 @@ public final class CoreBackupSaf {
         }
     }
     public static void deleteBackup(Context ctx,Uri uri)throws Exception{document(ctx,uri);try(InputStream in=ctx.getContentResolver().openInputStream(uri)){CoreArchive.read(in,null);}CoreArchive.check(DocumentsContract.deleteDocument(ctx.getContentResolver(),uri));}
+
+    /** [layer: shell-android] 供远程端到端加密流式导出备份（复用完全相同的暂停、校验与事务投影逻辑）。 */
+    public static void exportToFile(Context ctx,String id,String owner,File targetFile,boolean release)throws Exception{
+        CoreArchive.check(owner!=null&&!owner.isEmpty());
+        core(id,owner);
+        try(Closeable ignored=ContainerService.pauseForMaintenance(ctx,owner)){
+            CoreArchive.check(ignored!=null);
+            synchronized(BotRegistry.class){
+                CoreInventory.Instance c=core(id,owner);
+                BotRegistry.Bot bot=BotRegistry.get(owner);
+                CoreArchive.check(bot!=null&&id.equals(bot.coreInstanceId));
+                CoreDataTransaction fs=transaction(ctx,id,!release);fs.recover(owner);
+                CoreArchive.check(CoreInstaller.acceptsPortableV1(ctx.getFilesDir(),id));
+                CoreArchive data=new CoreArchive(c.version,bot.name,bot.persona,bot.platforms);
+                for(BotRegistry.Binding binding:bot.bindings)data.add("slot",binding.id,binding.platform,binding.memoryMode);
+                CoreBackupProjection.capture(fs.live(),owner,data,new AndroidBackupDatabase());
+                BackupDocument.publish(data,new BackupDocument.Target(){
+                    public InputStream read()throws IOException{return new FileInputStream(targetFile);}
+                    public OutputStream write()throws IOException{return new FileOutputStream(targetFile);}
+                    public void discard()throws IOException{if(targetFile.exists()&&!targetFile.delete())throw new IOException("discard failed");}
+                });
+                if(release)fs.release(owner,()->CoreInstaller.reset(ctx.getFilesDir(),id,()->{if(!BotRegistry.releaseOwner(id,owner))throw new IllegalStateException("无法保存释放状态");}));
+            }
+        }
+    }
+
+    /** [layer: shell-android] 供远程端到端加密流式恢复备份（输入流经 CoreArchive 完整校验后再落盘）。 */
+    public static void restoreFromFile(Context ctx,String id,File sourceFile)throws Exception{
+        CoreArchive data;
+        try(InputStream in=new FileInputStream(sourceFile)){data=CoreArchive.read(in,null);}
+        synchronized(BotRegistry.class){
+            CoreInventory.Instance c=core(id,"");
+            CoreArchive.check(CoreInstaller.acceptsPortableV1(ctx.getFilesDir(),id)&&c.platforms.containsAll(data.platforms));
+            CoreDataTransaction fs=transaction(ctx,id);fs.recover("");
+            BotRegistry.BeforeCreate prepare=newId->{try{fs.stageRestore(newId,stage->CoreBackupProjection.restore(stage,newId,data,new AndroidBackupDatabase()));}catch(Exception e){throw new IOException("无法准备实例资料",e);}};
+            BotRegistry.Bot bot=data.slots.isEmpty()?BotRegistry.createOnCore(id,data.name,data.persona,data.platforms,prepare):BotRegistry.restoreOnCore(id,data.name,data.persona,data.platforms,new java.util.ArrayList<>(data.slots.values()),prepare);
+            if(bot==null){fs.recover("");throw new IOException("无法恢复，目标核心未被分配");}
+            fs.recover(bot.id);
+        }
+    }
 }

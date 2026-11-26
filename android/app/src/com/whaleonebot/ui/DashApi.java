@@ -27,6 +27,25 @@ final class DashApi {
     /** 默认端口（容器里 {@code server.port} 的既定值）。 */
     private static final int DEFAULT_PORT = 41907;
 
+    private static final class RemoteDashCacheEntry {
+        final String body;
+        final long fetchedAt;
+        RemoteDashCacheEntry(String body, long fetchedAt) {
+            this.body = body;
+            this.fetchedAt = fetchedAt;
+        }
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, RemoteDashCacheEntry> REMOTE_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<String, RemoteDashCacheEntry>();
+    private static final java.util.Set<String> REMOTE_IN_FLIGHT =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+
+    static void clearRemoteCache() {
+        REMOTE_CACHE.clear();
+        REMOTE_IN_FLIGHT.clear();
+    }
+
     private DashApi() {
     }
 
@@ -37,6 +56,12 @@ final class DashApi {
 
     /** 控制台端口：读 {@code server.port}，读不到退回 41907。 */
     static int port(Context c) {
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm != null && rm.isRemote()) return DEFAULT_PORT;
+        return localPort(c);
+    }
+
+    static int localPort(Context c) {
         String text = readText(configFile(c));
         if (text == null) return DEFAULT_PORT;
         int p = ModelsScreen.U.consolePortOf(text);
@@ -69,8 +94,64 @@ final class DashApi {
         return get(port, path, timeoutMs);
     }
 
-    /** 指定端口的 GET（调用方已经知道端口时用，省一次读文件）。 */
-    static String get(int port, String path, int timeoutMs) {
+    /** 指定端口的 GET（远程模式下自动经 P2P 加密隧道代理到远端回环控制台，带自适应 SWR 本地缓存实现 0ms 秒开）。 */
+    static String get(int port, final String path, final int timeoutMs) {
+        final com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm != null && rm.isRemote()) {
+            final String peerId = rm.activePeerId();
+            final String cacheKey = (peerId == null ? "" : peerId) + "|" + path;
+            final RemoteDashCacheEntry hit = REMOTE_CACHE.get(cacheKey);
+            final long now = System.currentTimeMillis();
+            final long freshTtl = rm.isCurrentChannelFast() ? 3000L : 12_000L;
+            if (hit != null && now - hit.fetchedAt < freshTtl) {
+                return hit.body;
+            }
+            if (hit != null && now - hit.fetchedAt < 120_000L) {
+                // 缓存略旧但仍可用：0ms 立即返回旧数据，同时后台静默单飞刷新
+                if (REMOTE_IN_FLIGHT.add(cacheKey)) {
+                    Thread t = new Thread(() -> {
+                        try {
+                            String body = fetchRemoteDashRaw(rm, path, timeoutMs);
+                            if (body != null && peerId != null && peerId.equals(rm.activePeerId())) {
+                                putRemoteCache(cacheKey, body);
+                            }
+                        } finally {
+                            REMOTE_IN_FLIGHT.remove(cacheKey);
+                        }
+                    }, "dash-swr");
+                    t.setDaemon(true);
+                    t.start();
+                }
+                return hit.body;
+            }
+            String body = fetchRemoteDashRaw(rm, path, timeoutMs);
+            if (body != null) {
+                putRemoteCache(cacheKey, body);
+                return body;
+            }
+            return hit == null ? null : hit.body;
+        }
+        return getLocal(port, path, timeoutMs);
+    }
+
+    private static void putRemoteCache(String key, String body) {
+        if (REMOTE_CACHE.size() > 64) REMOTE_CACHE.clear();
+        REMOTE_CACHE.put(key, new RemoteDashCacheEntry(body, System.currentTimeMillis()));
+    }
+
+    private static String fetchRemoteDashRaw(com.whaleonebot.remote.RemoteControlManager rm, String path, int timeoutMs) {
+        try {
+            org.json.JSONObject req = new org.json.JSONObject()
+                    .put("path", path)
+                    .put("timeoutMs", timeoutMs);
+            org.json.JSONObject res = rm.callActiveRpc("dash.get", req, Math.max(8000, timeoutMs + 3000));
+            return res.optBoolean("ok", false) ? res.optString("body", null) : null;
+        } catch (Throwable th) {
+            return null;
+        }
+    }
+
+    static String getLocal(int port, String path, int timeoutMs) {
         if (port <= 0) return null;
         HttpURLConnection c = null;
         try {
@@ -146,6 +227,24 @@ final class DashApi {
      * 非 200 也会把错因读回来，方便页面如实显示「409 需要确认」这类话。
      */
     static Resp post(int port, String path, String jsonBody, int timeoutMs) {
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm != null && rm.isRemote()) {
+            try {
+                org.json.JSONObject req = new org.json.JSONObject()
+                        .put("path", path)
+                        .put("body", jsonBody == null ? "{}" : jsonBody)
+                        .put("timeoutMs", timeoutMs);
+                org.json.JSONObject res = rm.callActiveRpc("dash.post", req, Math.max(8000, timeoutMs + 3000));
+                REMOTE_CACHE.clear();
+                return new Resp(res.optInt("code", -1), res.optString("body", ""));
+            } catch (Throwable th) {
+                return new Resp(-1, String.valueOf(th.getMessage()));
+            }
+        }
+        return postLocal(port, path, jsonBody, timeoutMs);
+    }
+
+    static Resp postLocal(int port, String path, String jsonBody, int timeoutMs) {
         if (port <= 0) return new Resp(-1, "");
         HttpURLConnection c = null;
         try {

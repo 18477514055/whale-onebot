@@ -53,10 +53,43 @@ final class BotListScreen extends Screen {
         clp.topMargin = dp(Theme.S1);
         col.addView(crumb, clp);
 
-        java.util.List<CoreInventory.Instance> cores=BotRegistry.cores();int free=0;for(CoreInventory.Instance c:cores)if(c.ownerId.isEmpty())free++;
-        col.addView(sectionLabel("本机核心 · "+cores.size()+" 份  /  空闲 "+free),labelLp(Theme.S3));
-        for(CoreInventory.Instance c:cores){TextView row=Ui.text(activity,CoreManagerScreen.title(c)+"\n"+CoreManagerScreen.occupant(c),Theme.T_BODY,t.textPrimary);row.setPadding(dp(Theme.S3),dp(Theme.S2),dp(Theme.S3),dp(Theme.S2));row.setMinimumHeight(dp(Theme.TOUCH));row.setFocusable(true);row.setOnClickListener(v->shell.corePage("instance",c.id));col.addView(row);}
-        control(col,"接入自定义核心",false,()->shell.corePage("custom",null));control(col,"新建机器人",false,()->shell.pushNewBot());
+        // [layer: shell-android] 本机核心库存统一收纳进白色圆角卡片（问答报告 Q1/Q3/Q11）：
+        // 顶部总数/空闲胶囊 + 逐行友好短名/占用者/状态胶囊/右箭头 + 底部下载与自定义接入入口。
+        java.util.List<CoreInventory.Instance> cores = BotRegistry.cores();
+        int free = 0;
+        for (CoreInventory.Instance c : cores) if (c.ownerId.isEmpty()) free++;
+
+        col.addView(sectionLabel("本机核心库存"), labelLp(Theme.S3));
+        LinearLayout coreCard = Ui.addCard(col, activity, t, 0);
+        LinearLayout coreHead = Ui.row(activity);
+        coreHead.addView(Ui.strong(activity, "已安装核心 · " + cores.size() + " 份", Theme.T_CARD, t.textPrimary),
+                new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        coreHead.addView(Ui.pill(activity, t, "空闲 " + free + " 份", free > 0 ? Ui.TONE_OK : Ui.TONE_WARN));
+        coreCard.addView(coreHead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (cores.isEmpty()) {
+            coreCard.addView(Ui.text(activity, "当前还没有核心，请先下载内置核心或接入自定义核心。",
+                    Theme.T_BODY, t.textSecondary), marginTop(Theme.S2));
+        } else {
+            for (int i = 0; i < cores.size(); i++) {
+                coreCard.addView(Ui.divider(activity, t));
+                coreCard.addView(coreRow(cores.get(i)), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            }
+        }
+        coreCard.addView(Ui.divider(activity, t));
+        LinearLayout coreActions = Ui.row(activity);
+        TextView dlBtn = Ui.button(activity, t, "下载新核心", false);
+        dlBtn.setOnClickListener(v -> shell.corePage("download", null));
+        TextView customBtn = Ui.button(activity, t, "接入自定义核心", false);
+        customBtn.setOnClickListener(v -> shell.corePage("custom", null));
+        LinearLayout.LayoutParams a1 = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        LinearLayout.LayoutParams a2 = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        a2.leftMargin = dp(Theme.S2);
+        coreActions.addView(dlBtn, a1);
+        coreActions.addView(customBtn, a2);
+        coreCard.addView(coreActions, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        control(col, "新建机器人", true, () -> shell.pushNewBot());
         // 每次进页都重新读注册表：新建/删除之后回来看到的就是最新状态。
         List<BotRegistry.Bot> bots = BotRegistry.list();
         if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
@@ -87,6 +120,50 @@ final class BotListScreen extends Screen {
     }
 
     private void control(LinearLayout col,String label,boolean primary,Runnable run){TextView b=Ui.button(activity,t,label,primary);b.setMinimumHeight(dp(Theme.TOUCH));b.setOnClickListener(v->run.run());col.addView(b,marginTop(Theme.S2));}
+
+    /** 本机核心列表行：主标题=归属机器人名或「空闲核心」，次行=类型·版本·短ID，下方直出平台插件状态胶囊。 */
+    private View coreRow(final CoreInventory.Instance c) {
+        boolean isFree = c.ownerId == null || c.ownerId.isEmpty();
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(0, dp(Theme.S1), 0, dp(Theme.S1));
+        row.setMinimumHeight(dp(Theme.TOUCH));
+
+        LinearLayout left = Ui.column(activity);
+        LinearLayout head = Ui.row(activity);
+        head.addView(Ui.strong(activity, Ui.coreDisplayTitle(c), Theme.T_BODY, t.textPrimary));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        badgeLp.leftMargin = dp(Theme.S1);
+        head.addView(Ui.pill(activity, t, isFree ? "空闲" : "使用中", isFree ? Ui.TONE_NEUTRAL : Ui.TONE_OK), badgeLp);
+        left.addView(head, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        left.addView(Ui.text(activity, Ui.coreMetaLine(c), Theme.T_CAP, t.textSecondary), marginTop(4));
+
+        List<String> ps = CoreManagerScreen.platforms(c);
+        if (!ps.isEmpty() && CoreManagerScreen.managed(c)) {
+            LinearLayout chips = Ui.row(activity);
+            java.io.File active = null;
+            try { active = com.whaleonebot.install.CoreInstaller.active(activity.getFilesDir(), c.id); }
+            catch (Exception ignored) { }
+            for (int i = 0; i < ps.size(); i++) {
+                String plat = ps.get(i);
+                boolean ok = active != null && new java.io.File(active, "src/platform-modules/" + plat + "/.bot-module.json").isFile();
+                TextView chip = Ui.pill(activity, t,
+                        BotRegistry.PLATFORM_LABEL(plat) + (ok ? " 已装" : " 待装"),
+                        ok ? Ui.TONE_OK : Ui.TONE_WARN);
+                LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+                if (i > 0) clp.leftMargin = dp(6);
+                chips.addView(chip, clp);
+            }
+            left.addView(chips, marginTop(6));
+        }
+
+        row.addView(left, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        row.addView(new IconView(activity, IconView.CHEV_R, t.textTertiary), Ui.llp(dp(18), dp(18)));
+        row.setClickable(true);
+        row.setFocusable(true);
+        Ui.press(row, 0.985f);
+        row.setOnClickListener(v -> shell.corePage("instance", c.id));
+        return row;
+    }
 
     // ------------------------------------------------------------------ 一行机器人
 

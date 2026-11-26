@@ -458,7 +458,7 @@ final class WhitelistPicker {
     /**
      * 一行：勾选圈 + 标题 + 右侧小字。整行可点。
      *
-     * <p>群聊且拿到了群名时：标题用<b>群名</b>，右侧补「群 200000006 · 收到 N 条」；
+     * <p>群聊且拿到了群名时：标题用<b>群名</b>，右侧补「群 871721981 · 收到 N 条」；
      * 没名字的群（以及私聊）保持原样：标题是号码（等宽），右侧是备注名 / 条数。
      */
     private static View checkRow(Activity a, final Theme t, final Model.Chat c,
@@ -752,7 +752,7 @@ final class WhitelistPicker {
         }
 
         /**
-         * 构造 {@code get_chat_names} 的请求体：{@code {"groups":["200000006",...]}}。
+         * 构造 {@code get_chat_names} 的请求体：{@code {"groups":["871721981",...]}}。
          *
          * <p>只收 5-15 位纯数字（与协议端的校验一致）：不合规的号码不发过去，
          * 免得一个坏行把整批请求打成 1400。最多 {@link #MAX_NAME_QUERIES} 个 ——

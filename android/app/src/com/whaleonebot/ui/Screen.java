@@ -22,6 +22,10 @@ abstract class Screen {
     final Theme t;
     final FrameLayout root;
 
+    /** 子页标题下的远端设备状态小字（对齐 Q5/Q16：仅远程模式下显示）。 */
+    private TextView remoteHeaderLabel;
+    private LinearLayout remoteOfflineActions;
+
     Screen(AppShell shell) {
         this.shell = shell;
         this.activity = shell.activity;
@@ -36,6 +40,12 @@ abstract class Screen {
 
     /** 宿主每秒调一次；实现方必须逐项比对，值没变就别碰 View。 */
     void refresh() {
+        refreshRemoteHeaderBadge();
+    }
+
+    /** 供切设备时拦截未保存表单（对齐 Q8）。 */
+    boolean hasUnsavedChanges() {
+        return false;
     }
 
     /** 挂上来时调一次（入场动画等）。 */
@@ -62,9 +72,11 @@ abstract class Screen {
 
     /**
      * 子页通用页头：左侧圆形返回钮 + 22sp 标题。
-     * 返回钮触控区 48dp，图标 24dp，符合 Android 最小触控边长。
+     * 控制远端设备时，在标题下方自动以小字标明当前远端设备名与连接状态（断线时附「立即重连 / 切回本机」快捷按钮）。
      */
     LinearLayout header(String title) {
+        LinearLayout wrap = Ui.column(activity);
+
         LinearLayout row = Ui.row(activity);
 
         FrameLayout back = new FrameLayout(activity);
@@ -84,13 +96,74 @@ abstract class Screen {
         LinearLayout.LayoutParams blp = Ui.llp(dp(Theme.TOUCH), dp(Theme.TOUCH));
         row.addView(back, blp);
 
+        LinearLayout titleCol = Ui.column(activity);
         TextView tv = Ui.strong(activity, title, Theme.T_TITLE, t.textPrimary);
-        LinearLayout.LayoutParams tlp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
-        tlp.leftMargin = dp(Theme.S3);
-        row.addView(tv, tlp);
+        titleCol.addView(tv, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
 
-        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
-        row.setLayoutParams(rlp);
-        return row;
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm != null && rm.isRemote() && !(this instanceof RemoteDevicesScreen) && !(this instanceof QrScanScreen)) {
+            remoteHeaderLabel = Ui.text(activity, "", Theme.T_CAP, t.accent);
+            LinearLayout.LayoutParams rlp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            rlp.topMargin = dp(2);
+            titleCol.addView(remoteHeaderLabel, rlp);
+        } else {
+            remoteHeaderLabel = null;
+        }
+
+        LinearLayout.LayoutParams tlp = Ui.llp(0, WRAP_CONTENT);
+        tlp.weight = 1f;
+        tlp.leftMargin = dp(Theme.S3);
+        row.addView(titleCol, tlp);
+
+        wrap.addView(row, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (remoteHeaderLabel != null) {
+            remoteOfflineActions = Ui.row(activity);
+            remoteOfflineActions.setPadding(dp(Theme.TOUCH + Theme.S3), dp(6), 0, 0);
+            TextView retry = Ui.pill(activity, t, "立即重连", Ui.TONE_OK);
+            retry.setClickable(true);
+            retry.setOnClickListener(v -> {
+                com.whaleonebot.remote.RemoteControlManager m = com.whaleonebot.remote.RemoteControlManager.peek();
+                if (m != null && m.isRemote()) {
+                    m.reconnectNow(m.activePeerId());
+                    host().toast("正在重连远端设备…");
+                }
+            });
+            TextView backLocal = Ui.pill(activity, t, "切回本机", Ui.TONE_NEUTRAL);
+            backLocal.setClickable(true);
+            backLocal.setOnClickListener(v -> shell.switchTargetDevice(null));
+            LinearLayout.LayoutParams bl2 = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            bl2.leftMargin = dp(8);
+            remoteOfflineActions.addView(retry, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+            remoteOfflineActions.addView(backLocal, bl2);
+            remoteOfflineActions.setVisibility(android.view.View.GONE);
+            wrap.addView(remoteOfflineActions, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            refreshRemoteHeaderBadge();
+        } else {
+            remoteOfflineActions = null;
+        }
+
+        wrap.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        return wrap;
+    }
+
+    final void refreshRemoteHeaderBadge() {
+        if (remoteHeaderLabel == null) return;
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm == null || !rm.isRemote()) return;
+        com.whaleonebot.remote.RemoteStore.PairedPeer peer = rm.activePeer();
+        com.whaleonebot.remote.RemoteControlManager.PeerStatus st = rm.statusOf(rm.activePeerId());
+        String name = peer == null ? "远端设备" : peer.displayName();
+        boolean connected = st != null && st.state == com.whaleonebot.remote.RemoteControlManager.ConnState.CONNECTED;
+        String txt = "远端：" + name + " · " + (st == null ? "连接中…" : st.summaryText());
+        int warnColor = t.dark ? 0xFFF5B762 : 0xFFB45309;
+        if (!txt.contentEquals(remoteHeaderLabel.getText())) {
+            remoteHeaderLabel.setText(txt);
+            remoteHeaderLabel.setTextColor(connected ? t.accent : warnColor);
+        }
+        if (remoteOfflineActions != null) {
+            int want = connected ? android.view.View.GONE : android.view.View.VISIBLE;
+            if (remoteOfflineActions.getVisibility() != want) remoteOfflineActions.setVisibility(want);
+        }
     }
 }

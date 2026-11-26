@@ -129,7 +129,104 @@ public class ContainerService extends Service {
     public static java.io.Closeable pauseForMaintenance(Context c,String bot)throws java.io.IOException{return InstalledRuntimeHost.pause(c,bot);}
     public static org.json.JSONObject bindingStatus(Context c,String bot){return InstalledRuntimeHost.core(c.getFilesDir(),bot)!=null?InstalledRuntimeHost.status(c,bot):BindingControl.status(c,bot); }
 
+    /** [layer: shell-android] 供远程宿主定位受管核心的实例 config.json（与 MainActivity.botConfigFile 同源）。 */
+    public static File managedConfigFile(File files, String botId) {
+        String core = InstalledRuntimeHost.core(files, botId);
+        return core == null ? null : new File(InstalledRuntimeHost.data(files, core), "config.json");
+    }
+
     public static boolean botRunning() { return botProc != null && botProc.isAlive(); }
+
+    /** [layer: shell-android] 真实活体探针结果（替代陈旧内存态，解决「运行端在跑但 UI 显示已停止」）。 */
+    public static final class LiveRuntimeProbe {
+        public final boolean agentAlive;
+        public final boolean onebotAlive;
+        public final int onebotPort;
+        public final int agentPid;
+        public final String phase;
+        public final String uin;
+
+        LiveRuntimeProbe(boolean agentAlive, boolean onebotAlive, int onebotPort, int agentPid, String phase, String uin) {
+            this.agentAlive = agentAlive;
+            this.onebotAlive = onebotAlive;
+            this.onebotPort = onebotPort;
+            this.agentPid = agentPid;
+            this.phase = phase == null ? "" : phase;
+            this.uin = uin == null ? "" : uin;
+        }
+    }
+
+    private static volatile LiveRuntimeProbe cachedLiveProbe;
+    private static volatile long cachedLiveProbeAt = 0L;
+
+    /**
+     * 活体探针（800ms 缓存，零阻塞）：核对 bot.json 阶段、/proc/<agent.pid> 存活与 13800/onebot 端口 LISTEN。
+     */
+    public static LiveRuntimeProbe probeLiveRuntime(File files) {
+        long now = System.currentTimeMillis();
+        LiveRuntimeProbe prev = cachedLiveProbe;
+        if (prev != null && now - cachedLiveProbeAt < 800L) return prev;
+        LiveRuntimeProbe fresh = computeLiveProbe(files, now);
+        cachedLiveProbe = fresh;
+        cachedLiveProbeAt = now;
+        return fresh;
+    }
+
+    public static boolean botRunning(Context c) {
+        if (botRunning()) return true;
+        if (c == null) return false;
+        LiveRuntimeProbe p = probeLiveRuntime(c.getFilesDir());
+        return p.agentAlive || p.onebotAlive;
+    }
+
+    private static LiveRuntimeProbe computeLiveProbe(File files, long now) {
+        if (files == null) return new LiveRuntimeProbe(false, false, 0, 0, "", "");
+        File botJson = new File(files, "rootfs/opt/whale/qq-state/bot.json");
+        if (!botJson.isFile() || botJson.length() <= 0 || botJson.length() > 262144) {
+            return new LiveRuntimeProbe(false, false, 0, 0, "", "");
+        }
+        try {
+            byte[] raw = java.nio.file.Files.readAllBytes(botJson.toPath());
+            org.json.JSONObject obj = new org.json.JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+            String phase = obj.optString("phase", "");
+            String uin = obj.optString("uin", "");
+            org.json.JSONObject ob = obj.optJSONObject("onebot");
+            int obPort = ob == null ? 0 : ob.optInt("port", 0);
+            org.json.JSONObject ag = obj.optJSONObject("agent");
+            int agentPid = ag == null ? 0 : ag.optInt("pid", 0);
+
+            boolean freshFile = (now - botJson.lastModified()) < 90_000L;
+            boolean pidAlive = agentPid > 1 && new File("/proc/" + agentPid).isDirectory();
+            boolean portListening = obPort > 0 && isTcpPortListening(obPort);
+            boolean botProcessAlive = botProc != null && botProc.isAlive();
+
+            boolean onebotAlive = (obPort > 0) && (portListening || (freshFile && ("onebot-ready".equals(phase) || "agent-running".equals(phase))));
+            boolean agentAlive = "agent-running".equals(phase) && (pidAlive || portListening || (freshFile && (running || botProcessAlive)));
+            return new LiveRuntimeProbe(agentAlive, onebotAlive, obPort, agentPid, phase, uin);
+        } catch (Throwable ignored) {
+            return new LiveRuntimeProbe(false, false, 0, 0, "", "");
+        }
+    }
+
+    private static boolean isTcpPortListening(int port) {
+        if (port <= 0 || port > 65535) return false;
+        String hex = String.format(Locale.US, "%04X", port);
+        for (String path : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+            File f = new File(path);
+            if (!f.canRead()) continue;
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(new java.io.FileInputStream(f)))) {
+                String line = br.readLine(); // skip header
+                while ((line = br.readLine()) != null) {
+                    String[] cols = line.trim().split("\\s+");
+                    if (cols.length < 4 || !"0A".equalsIgnoreCase(cols[3])) continue;
+                    int colon = cols[1].lastIndexOf(':');
+                    if (colon > 0 && hex.equalsIgnoreCase(cols[1].substring(colon + 1))) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
 
     /** 停掉机器人进程（不杀容器本身）。 */
     public static void stopBot() {
@@ -156,6 +253,13 @@ public class ContainerService extends Service {
             android.util.Log.e("WhaleOneBot", "startForeground failed", t);
         }
         if (logFile != null) log("service onCreate");
+        // [layer: shell-android] 原生远程被控宿主挂在 ContainerService（独立于 proot 容器生命周期，容器停机也能连）。
+        try {
+            com.whaleonebot.ui.RemoteHostDispatcher dispatcher = new com.whaleonebot.ui.RemoteHostDispatcher(this);
+            com.whaleonebot.remote.RemoteControlManager.get(this).startServices(dispatcher, dispatcher);
+        } catch (Throwable t) {
+            android.util.Log.w("WhaleOneBot", "remote host bootstrap failed", t);
+        }
         // Managed workers use their own endpoints; only the legacy container needs its HTTP server.
     }
 
@@ -354,6 +458,16 @@ public class ContainerService extends Service {
             extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
             extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
             extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
+            // ★ 2026-11-26 [layer: shell-android] 协议端胶水的**分发通路**补上（原缺口）：
+            //   container-bot.mjs 会 import /qq-onebot/src/bridge/native-bridge.mjs（原生收发/看图/看视频/戳一戳全在这），
+            //   但 src/ 这棵树**从来不在任何发布产物里** —— core.zip 只有 payload/src（核心层），APK assets 只有扁平的
+            //   container-*.mjs，真机上那份 src/bridge/native-bridge.mjs 是 11-23 手工塞进 rootfs 的（290848 B）。
+            //   于是「改了 native-bridge 却发不出去」：用户装新包也还是旧桥。这里随 APK 无条件释放，让它跟着版本走。
+            File bridgeDir = new File(new File(rootfs, "qq-onebot/src"), "bridge");
+            mkdirs(bridgeDir);
+            for(String n:new String[]{"error.mjs","native-bridge.mjs","qq-profile.mjs","rkey.mjs"}){
+                extractAssetAlways("bridge/"+n,new File(bridgeDir,n),0644);
+            }
             // ★ 2026-11-24 修正：native 桥与那 525 个图形库**只在「内置环境」这条路上释放**。
             //   legacy（debug 的老 Debian rootfs）本来就有这些，且版本更新；无条件覆盖会把它换成旧库，
             //   真机后果是 QQ 内核每收一条消息都打 `dlsym failed NodeContextifyContextMetrics1`，

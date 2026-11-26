@@ -86,6 +86,10 @@ public class AppShell {
     static final int P_ENV = 60;
     /** 版本管理：App、内置核心与平台插件的唯一版本入口。 */
     static final int P_VERSION = 61;
+    /** 扫码配对远端设备（Camera2 + 纯 Java QR 解码 + 相册选图 + 口令粘贴）。 */
+    static final int P_QR_SCAN = 62;
+    /** 远程设备与本机配对码管理页（永远作用在本机 App）。 */
+    static final int P_REMOTE_DEVICES = 63;
     static final int P_QQ = 3;
     /** 平台运行端配置面板：14 组 / 141 项，读写 /agent/data/config.json。 */
     static final int P_BOTCONFIG = 4;
@@ -244,7 +248,24 @@ public class AppShell {
 
     /** 选图返回。返回 true 表示这个 requestCode 归本类处理。 */
     public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
-        if(requestCode==CoreManagerScreen.FILE_REQUEST){if(current instanceof CoreManagerScreen)((CoreManagerScreen)current).picked(resultCode==Activity.RESULT_OK && data!=null?data.getData():null);return true;}
+        if (requestCode == CoreManagerScreen.FILE_REQUEST) {
+            if (current instanceof CoreManagerScreen) {
+                ((CoreManagerScreen) current).picked(resultCode == Activity.RESULT_OK && data != null ? data.getData() : null);
+            }
+            return true;
+        }
+        if (requestCode == QrScanScreen.REQ_PICK_QR_IMAGE) {
+            if (current instanceof QrScanScreen && resultCode == Activity.RESULT_OK && data != null) {
+                ((QrScanScreen) current).onImagePicked(data.getData());
+            }
+            return true;
+        }
+        if (requestCode == EnvConfigScreen.REQ_PICK_REMOTE_QQ_DEB) {
+            if (current instanceof EnvConfigScreen && resultCode == Activity.RESULT_OK && data != null) {
+                ((EnvConfigScreen) current).onRemoteDebPicked(data.getData());
+            }
+            return true;
+        }
         if (requestCode != REQ_PICK_IMAGE) return false;
         if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
             host.toast("已取消选择");
@@ -345,6 +366,64 @@ public class AppShell {
 
     void pushVersion() {
         push(P_VERSION, null);
+    }
+
+    void pushQrScan() {
+        push(P_QR_SCAN, null);
+    }
+
+    void pushRemoteDevices(boolean openPairing) {
+        push(P_REMOTE_DEVICES, openPairing ? "pair" : "");
+    }
+
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == QrScanScreen.REQ_CAMERA && current instanceof QrScanScreen) {
+            if (grantResults != null && grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                ((QrScanScreen) current).onCameraPermissionGranted();
+            } else {
+                host.toast("未授予相机权限，可使用相册选图或粘贴配对口令");
+            }
+        }
+    }
+
+    /**
+     * 切换当前控制目标设备（null = 本机，非 null = 远端 deviceId）。
+     * 对齐 Q8：若当前页有未保存修改先弹窗提醒；确认后清空页面栈并回到目标设备的首页防串台。
+     */
+    void switchTargetDevice(final String peerIdOrNull) {
+        Runnable apply = new Runnable() {
+            @Override
+            public void run() {
+                com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.get(activity);
+                RemoteBridge.clearCache();
+                DashApi.clearRemoteCache();
+                if (peerIdOrNull == null || peerIdOrNull.isEmpty()) {
+                    rm.selectLocal();
+                    BotRegistry.exitRemoteMode();
+                    host.toast("已切回控制本机");
+                } else {
+                    rm.selectRemote(peerIdOrNull);
+                    BotRegistry.enterRemoteMode(peerIdOrNull);
+                    com.whaleonebot.remote.RemoteStore.PairedPeer p = rm.store().getPeer(peerIdOrNull);
+                    host.toast("已切换到远程设备：" + (p == null ? peerIdOrNull : p.displayName()));
+                }
+                BotRegistry.Bot first = BotRegistry.primary();
+                botId = first == null ? "" : first.id;
+                screenCache.clear();
+                stack.clear();
+                Entry home = new Entry(P_HOME, null);
+                stack.add(home);
+                showScreen(create(home), MOTION_FADE);
+            }
+        };
+        if (current != null && current.hasUnsavedChanges()) {
+            PromptSheet.confirm(activity, theme, "切换控制设备",
+                    "当前页面有尚未保存的修改，切换设备后将放弃修改并回到目标设备首页。确定继续吗？",
+                    "放弃并切换", apply, null, null, "留在本页");
+            return;
+        }
+        apply.run();
     }
 
     void pushModels() {
@@ -532,7 +611,7 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
-        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
             BotRegistry.Bot owner=BotRegistry.get(currentBotId());
             CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
             if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
@@ -560,6 +639,12 @@ public class AppShell {
                     break;
                 case P_VERSION:
                     s = new VersionScreen(this);
+                    break;
+                case P_QR_SCAN:
+                    s = new QrScanScreen(this);
+                    break;
+                case P_REMOTE_DEVICES:
+                    s = new RemoteDevicesScreen(this, "pair".equals(arg));
                     break;
                 case P_THEME:
                     s = new ThemeScreen(this);

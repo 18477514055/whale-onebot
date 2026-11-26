@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { normalizeMessage, toCQ } from '../segments.mjs';
 import { isGroupFileId, isGroupFolderId, normalizeHistoryParams, validateParams } from '../actions.mjs';
@@ -551,12 +551,11 @@ function findMessageReadback(response, peer, msgId) {
 }
 
 const mediaReadbackFields = {
-  2: ['picElement', ['fileName', 'md5HexStr', 'picUrl', 'originImageUrl', 'summary']],
+  2: ['picElement', ['fileName', 'md5HexStr', 'picUrl', 'originImageUrl', 'summary', 'sourcePath']],
   3: ['fileElement', ['fileName', 'fileSize', 'fileUuid']],
   4: ['pttElement', ['fileName']],
-  // 视频（elementType 5）：只投影文件名。地址一律不采信 —— QQ 的视频 url 带 rkey 会过期，
-  // 视频只能走原生传输落到本地（get_message_videos）。
-  5: ['videoElement', ['fileName']],
+  // 视频（elementType 5）：投影文件名与已落盘本地路径（不采信过期 url）。
+  5: ['videoElement', ['fileName', 'filePath']],
 };
 
 function projectMediaReadback(message, requestedType) {
@@ -2418,8 +2417,8 @@ export class NativeBridge extends EventEmitter {
       /**
        * 群名补充（我们自己的只读扩展，不是 OneBot 标准动作）。
        *
-       * <p>入参 `{ groups: ["200000006", ...] }`（≤ 50 个，actions.mjs 已校验）。
-       * 出参 `{ names: { "200000006": "群名" }, failed: ["..."] }`：
+       * <p>入参 `{ groups: ["871721981", ...] }`（≤ 50 个，actions.mjs 已校验）。
+       * 出参 `{ names: { "871721981": "群名" }, failed: ["..."] }`：
        * **拿不到名字的群只进 failed，不让整批失败**。
        */
       case 'get_chat_names': {
@@ -2609,15 +2608,38 @@ export class NativeBridge extends EventEmitter {
     const result = new Map();
     const elements = Array.isArray(message?.elements) ? message.elements : [];
     const targets = [];
-    for (let index = 0; index < elements.length && targets.length < 4; index++) {
+    let total = 0;
+    const isAbsPath = (p) => typeof p === 'string' && p.length > 0 && p.length <= 4096 && /^([/\\]|[A-Za-z]:[\\/])/.test(p);
+
+    for (let index = 0; index < elements.length && targets.length + result.size < 4; index++) {
       const element = elements[index];
       if (!element || element.elementType !== 2 || !element.picElement) continue;
-      const { picUrl, originImageUrl } = element.picElement;
+      const { picUrl, originImageUrl, sourcePath, thumbPath } = element.picElement;
       if (qqMediaUrl(picUrl) !== undefined) continue;
       if (qqImageOrigin(originImageUrl) !== undefined) continue;
-      targets.push({ index, element });
+      // 优先读取本地已落盘的缓存文件（sourcePath / thumbPath），0ms 命中避免走下载竞态
+      const localCandidates = [];
+      if (isAbsPath(sourcePath)) localCandidates.push(sourcePath);
+      if (thumbPath && typeof thumbPath === 'object') {
+        const vals = thumbPath instanceof Map ? [...thumbPath.values()] : Object.values(thumbPath);
+        for (const p of vals) if (isAbsPath(p) && !localCandidates.includes(p)) localCandidates.push(p);
+      }
+      let hitLocal = false;
+      for (const p of localCandidates) {
+        const bytes = await readFile(p).catch(() => null);
+        if (bytes?.length && bytes.length <= PICTURE_INLINE_MAX_BYTES && total + bytes.length <= PICTURE_INLINE_TOTAL_BYTES) {
+          total += bytes.length;
+          result.set(index, 'base64://' + bytes.toString('base64'));
+          hitLocal = true;
+          break;
+        }
+      }
+      if (!hitLocal) targets.push({ index, element });
     }
-    if (!targets.length) return result;
+    if (!targets.length) {
+      if (result.size) { mediaDiagnostics.inlineAttempts++; mediaDiagnostics.inlineSucceeded++; }
+      return result;
+    }
     if (!PICTURE_INLINE_SUPPORTED) return result;
     if (typeof this.msg?.downloadRichMedia !== 'function') {
       mediaDiagnostics.inlineNoMethod++;
@@ -2626,12 +2648,15 @@ export class NativeBridge extends EventEmitter {
     mediaDiagnostics.inlineAttempts++;
     const interval = Math.max(5, Math.min(PICTURE_DOWNLOAD_INTERVAL_MS,
       Math.floor(this.timeoutMs / (PICTURE_DOWNLOAD_POLLS + 2))));
-    // Await the onRichMediaDownloadComplete listener (NapCat contract) instead of
-    // re-reading the element, which never exposes filePath.
+    // ★ 2026-11-26 真机实测根治（31/32 失败真因）：
+    //   旧版把 completions.delete(key) 写在 await downloadRichMedia(...) 之后！
+    //   当缓存命中或快速下完时，onRichMediaDownloadComplete 会在 await 期间写入 completions，
+    //   随后立刻被 delete 抹掉 ⇒ 轮询白等 10s 超时！必须先清旧键再调用 downloadRichMedia。
     const completions = this.richMediaCompletions;
     for (const { element } of targets) {
       const elementId = element.elementId ?? '';
       const key = `${message.msgId}:${String(elementId)}`;
+      completions.delete(key);
       try {
         await this.msg.downloadRichMedia({
           fileModelId: '0',
@@ -2647,35 +2672,40 @@ export class NativeBridge extends EventEmitter {
           filePath: '',
         });
       } catch { mediaDiagnostics.inlineTransferError++; }
-      completions.delete(key);
     }
-    let total = 0;
-    const deadline = Date.now() + this.timeoutMs;
+    const deadline = Date.now() + Math.max(this.timeoutMs, 15000);
     while (targets.some(t => !result.has(t.index)) && Date.now() < deadline) {
       if (options?.signal?.aborted) break;
       for (const { index, element } of targets) {
         if (result.has(index)) continue;
         const elementId = element.elementId ?? '';
         const key = `${message.msgId}:${String(elementId)}`;
-        const done = completions.get(key);
+        let matchKey = key;
+        let done = completions.get(key);
+        // 兜底匹配：部分内核版本回调里的 msgElementId 与读取时不一致（如空串 vs 数字串）
+        if (!done && targets.length === 1) {
+          const prefix = `${message.msgId}:`;
+          for (const [k, v] of completions.entries()) {
+            if (k.startsWith(prefix)) { matchKey = k; done = v; break; }
+          }
+        }
         if (!done || typeof done.filePath !== 'string') continue;
         const path = done.filePath;
-        if (!path || !/^([/\\]|[A-Za-z]:[\\/])/.test(path) || path.length > 4096) continue;
+        if (!isAbsPath(path)) continue;
         const bytes = await readFile(path).catch(() => { mediaDiagnostics.inlineReadError++; return null; });
         if (!bytes?.length) continue;
         if (bytes.length > PICTURE_INLINE_MAX_BYTES || total + bytes.length > PICTURE_INLINE_TOTAL_BYTES) {
           mediaDiagnostics.inlineTooLarge++;
-          completions.delete(key);
+          completions.delete(matchKey);
           continue; // do not retry this element; other targets keep polling
         }
         total += bytes.length;
         result.set(index, 'base64://' + bytes.toString('base64'));
-        completions.delete(key);
+        completions.delete(matchKey);
       }
       if (targets.some(t => !result.has(t.index))) await delay(interval, undefined, { signal: options?.signal }).catch(() => {});
     }
-    let succeeded = 0;
-    for (const t of targets) if (typeof result.get(t.index) === 'string') succeeded++;
+    let succeeded = result.size;
     if (succeeded) mediaDiagnostics.inlineSucceeded++; else mediaDiagnostics.inlineFailed++;
     return result;
   }
@@ -2788,29 +2818,59 @@ export class NativeBridge extends EventEmitter {
     const msgId = known.msgId;
     const completions = this.richMediaCompletions;
     const videos = [];
+    const isAbsPath = (p) => typeof p === 'string' && p.length > 0 && p.length <= 4096 && /^([/\\]|[A-Za-z]:[\\/])/.test(p);
+    // 视频体积远大于图片，放宽下载等待窗口到 40s（与运行端 60s RPC 超时匹配）
+    const videoTimeoutMs = Math.max(this.timeoutMs, 40_000);
     for (const element of elements.slice(0, VIDEO_PAGE_LIMIT)) {
+      const name = element.videoElement?.fileName;
+      const existingPath = element.videoElement?.filePath;
+      if (isAbsPath(existingPath)) {
+        const st = await stat(existingPath).catch(() => null);
+        if (st?.isFile() && st.size > 0) {
+          videos.push({ file: typeof name === 'string' && name ? name : '', path: existingPath });
+          continue;
+        }
+      }
       const elementId = element.elementId ?? '';
       const key = `${msgId}:${String(elementId)}`;
-      completions.delete(key);
-      try {
-        await this.msg.downloadRichMedia({
-          fileModelId: '0', downSourceType: 0, downloadSourceType: 0, triggerType: 1,
-          msgId, chatType: peer.chatType, peerUid: peer.peerUid,
-          elementId, thumbSize: 0, downloadType: PICTURE_DOWNLOAD_TYPE, filePath: '',
-        });
-      } catch { continue; }
-      const deadline = Date.now() + this.timeoutMs;
-      while (Date.now() < deadline) {
-        if (options?.signal?.aborted) break;
-        const done = completions.get(key);
-        if (!done) { await delay(RECORD_DOWNLOAD_POLL_MS, undefined, { signal: options?.signal }).catch(() => {}); continue; }
+      let resolvedPath = null;
+      // NTQQ 原生视频优先 downloadType=2（原文件），若无响应再退 downloadType=1
+      for (const dlType of [2, PICTURE_DOWNLOAD_TYPE]) {
+        if (resolvedPath || options?.signal?.aborted) break;
         completions.delete(key);
-        const path = done.filePath;
-        if (typeof path === 'string' && path && path.length <= 4096 && /^([/\\]|[A-Za-z]:[\\/])/.test(path)) {
-          const name = element.videoElement?.fileName;
-          videos.push({ file: typeof name === 'string' && name ? name : '', path });
+        try {
+          await this.msg.downloadRichMedia({
+            fileModelId: '0', downSourceType: 0, downloadSourceType: 0, triggerType: 1,
+            msgId, chatType: peer.chatType, peerUid: peer.peerUid,
+            elementId, thumbSize: 0, downloadType: dlType, filePath: '',
+          });
+        } catch { continue; }
+        const stepDeadline = Date.now() + (dlType === 2 ? Math.floor(videoTimeoutMs * 0.65) : Math.floor(videoTimeoutMs * 0.35));
+        while (Date.now() < stepDeadline) {
+          if (options?.signal?.aborted) break;
+          let matchKey = key;
+          let done = completions.get(key);
+          if (!done && elements.length === 1) {
+            const prefix = `${msgId}:`;
+            for (const [k, v] of completions.entries()) {
+              if (k.startsWith(prefix)) { matchKey = k; done = v; break; }
+            }
+          }
+          if (!done) { await delay(RECORD_DOWNLOAD_POLL_MS, undefined, { signal: options?.signal }).catch(() => {}); continue; }
+          completions.delete(matchKey);
+          const p = done.filePath;
+          if (isAbsPath(p)) {
+            const st = await stat(p).catch(() => null);
+            if (st?.isFile() && st.size > 0) {
+              resolvedPath = p;
+              break;
+            }
+          }
+          break;
         }
-        break;
+      }
+      if (resolvedPath) {
+        videos.push({ file: typeof name === 'string' && name ? name : '', path: resolvedPath });
       }
     }
     return { videos, total: videos.length };
@@ -4663,11 +4723,19 @@ export class NativeBridge extends EventEmitter {
       const groupId = isGroup ? Number(raw.peerUid) : undefined;
       // ★ 去重键**只在真正要发之前**才占用：先换算 uid，换算不出来就丢弃，
       //   不能因为一次换算失败把这条消息永久标记成"已处理"（否则同一条永远发不出来）。
-      // 1061 = 拍一拍：items 里两个带 uid 的元素 = [发起者, 被拍者]（NapCat 的判据，照抄不猜）。
-      if (busiId === '1061') {
-        if (uids.length !== 2) { this.stats.noticeDroppedMalformed++; return; }
-        const from = await this.noticeUin(uids[0], raw);
-        const to = await this.noticeUin(uids[1], raw);
+      // 1061 / 1068 / 2401 = 拍一拍（群拍 / 好友拍）：
+      // 兼容 uid、uin、jp 三种字段形态，不再因 items 里出现 3 个元素或带 uin 而静默丢弃。
+      if (busiId === '1061' || busiId === '1068' || busiId === '2401') {
+        const actors = [];
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          if (typeof item.uid === 'string' && item.uid) actors.push({ uid: item.uid });
+          else if ((typeof item.uin === 'string' || typeof item.uin === 'number') && /^\d{4,15}$/.test(String(item.uin))) actors.push({ uin: Number(item.uin) });
+          else if (typeof item.jp === 'string' && /^\d{4,15}$/.test(item.jp)) actors.push({ uin: Number(item.jp) });
+        }
+        if (actors.length < 2) { this.stats.noticeDroppedMalformed++; return; }
+        const from = actors[0].uin ?? await this.noticeUin(actors[0].uid, raw);
+        const to = actors[1].uin ?? await this.noticeUin(actors[1].uid, raw);
         if (from === undefined || to === undefined) { this.stats.noticeDroppedNoUid++; return; }
         if (!this.noticeOnce(this.noticeKey('tip:' + busiId, raw.peerUid, raw.msgId))) return;
         const fields = { post_type: 'notice', notice_type: 'notify', sub_type: 'poke',
@@ -4711,24 +4779,80 @@ export class NativeBridge extends EventEmitter {
     } catch { this.stats.noticeDroppedMalformed++; }
   }
 
+  /** 解析 XML 形态的灰条拍一拍（NTQQ 3.2.x 大量戳一戳落在 xmlElement.content 而非 jsonGrayTipElement）。 */
+  async noticeXmlGrayTip(raw, xmlEl) {
+    try {
+      const busiId = xmlEl?.busiId !== undefined && xmlEl?.busiId !== null ? String(xmlEl.busiId) : '';
+      const content = typeof xmlEl?.content === 'string' ? xmlEl.content : '';
+      const isPoke = busiId === '1061' || busiId === '1068' || busiId === '2401'
+        || /拍了拍|戳了戳|poke|nudge/i.test(content);
+      if (!isPoke || !content) return;
+      const actors = [];
+      // 匹配 <qq uin="..." col="..." jp="..."/> 或 uid="u_..."
+      const tagRe = /<(?:qq|nor)\b[^>]*>/gi;
+      let m;
+      while ((m = tagRe.exec(content)) !== null) {
+        const tag = m[0];
+        const uinM = /\b(?:uin|jp)=["'](\d{4,15})["']/i.exec(tag);
+        const uidM = /\b(?:uid|jp)=["'](u_[A-Za-z0-9_-]{4,125})["']/i.exec(tag);
+        if (uinM) actors.push({ uin: Number(uinM[1]) });
+        else if (uidM) actors.push({ uid: uidM[1] });
+      }
+      if (actors.length < 2) {
+        // 兜底：从整段 XML 中直接抓所有 uin / uid
+        for (const mm of content.matchAll(/\b(?:uin|jp)=["'](\d{4,15})["']/gi)) {
+          actors.push({ uin: Number(mm[1]) });
+        }
+        if (actors.length < 2) {
+          for (const mm of content.matchAll(/\b(?:uid|jp)=["'](u_[A-Za-z0-9_-]{4,125})["']/gi)) {
+            actors.push({ uid: mm[1] });
+          }
+        }
+      }
+      // 私聊单方提及兜底：只给了一个对象时结合发送者与机器人自身补全
+      let from = actors[0] ? (actors[0].uin ?? await this.noticeUin(actors[0].uid, raw)) : undefined;
+      let to = actors[1] ? (actors[1].uin ?? await this.noticeUin(actors[1].uid, raw)) : undefined;
+      if (from === undefined && raw?.senderUin !== undefined) from = Number(raw.senderUin);
+      if (to === undefined && raw?.chatType === 1 && from !== undefined) {
+        to = String(from) === String(BOT) ? Number(raw.peerUin ?? 0) : Number(BOT);
+      }
+      if (!from || !to) { this.stats.noticeDroppedNoUid++; return; }
+      const dedupKind = 'xml:' + (busiId || 'poke');
+      if (!this.noticeOnce(this.noticeKey(dedupKind, raw.peerUid, raw.msgId))) return;
+      const fields = {
+        post_type: 'notice', notice_type: 'notify', sub_type: 'poke',
+        user_id: from, target_id: to,
+      };
+      if (raw.chatType === 2) fields.group_id = Number(raw.peerUid);
+      this.emitNotice(fields);
+    } catch { this.stats.noticeDroppedMalformed++; }
+  }
+
   /** 扫描一条原生消息里的灰条元素并分派。只读，不改消息。 */
   scanGrayTips(raw) {
     const elements = raw?.elements;
     if (!Array.isArray(elements)) return false;
     let onlyGray = elements.length > 0;
+    const recordKind = (key) => {
+      const kinds = this.stats.grayTipKinds;
+      if (kinds[key] !== undefined || Object.keys(kinds).length < 32) kinds[key] = (kinds[key] ?? 0) + 1;
+    };
     for (const element of elements) {
       if (element?.elementType !== 8) { onlyGray = false; continue; }
       this.stats.grayTipsSeen++;
       const tip = element.grayTipElement;
       const json = tip?.jsonGrayTipElement;
-      // 按 busiId 记种类（最多 32 种）：回答"这些群里到底出现哪些灰条"，不用猜。
+      const xml = tip?.xmlElement;
       if (json && json.busiId !== undefined && json.busiId !== null) {
-        const kinds = this.stats.grayTipKinds;
         const kindKey = String(json.busiId);
-        if (kinds[kindKey] !== undefined || Object.keys(kinds).length < 32) kinds[kindKey] = (kinds[kindKey] ?? 0) + 1;
-      }
-      if (json && (json.busiId !== undefined && json.busiId !== null)) {
-        void this.noticeGrayTip(raw, String(json.busiId), json.jsonStr, element);
+        recordKind(kindKey);
+        void this.noticeGrayTip(raw, kindKey, json.jsonStr, element);
+      } else if (xml) {
+        const xmlKey = 'xml:' + String(xml.busiId ?? tip?.subElementType ?? 'unknown');
+        recordKind(xmlKey);
+        void this.noticeXmlGrayTip(raw, xml);
+      } else if (tip) {
+        recordKind('sub:' + String(tip.subElementType ?? 'unknown'));
       }
     }
     return onlyGray;
