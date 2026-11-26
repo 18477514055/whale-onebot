@@ -303,6 +303,10 @@ public class ContainerService extends Service {
         if (http==null && (ACTION_START.equals(action)||ACTION_LOGIN.equals(action)||ACTION_BOT.equals(action)||ACTION_REFRESH_QR.equals(action))) {
             http=new HttpStatusServer(this);new Thread(http,"whale-http").start();
         }
+        // [layer: environment] 凡是会让 QQ 起来/重连的动作，都先把设备身份伪造物准备好（幂等，已存在就跳过）。
+        if (ACTION_START.equals(action)||ACTION_LOGIN.equals(action)||ACTION_BOT.equals(action)||ACTION_REFRESH_QR.equals(action)) {
+            ensureDeviceIdentity();
+        }
         if (ACTION_LOGIN.equals(action)) {
             final File files = svcFilesDir();
             File qq = new File(files, "rootfs/opt/whale/qq-state");
@@ -317,7 +321,7 @@ public class ContainerService extends Service {
             }
             try {
                 final Process np = spawnInContainer(files,
-                        "cd /opt/whale && LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
+                        "cd /opt/whale && WHALE_FAKE_HOSTNAME=" + fakeHostname(files) + " LD_PRELOAD=/opt/whale/native/libwhale-device.so:/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
                         + "exec node container-login.mjs");
                 loginProc = np;
                 logLine("LOGIN: started");
@@ -350,7 +354,7 @@ public class ContainerService extends Service {
                     // 在内置受管环境中只启动本机 QQ OneBot 协议端（不拉起旧版 agent），供受管宿主连接。
                     final boolean isManagedEnv = new File(files, "rootfs/.whale-public-environment").isFile();
                     final Process np = spawnInContainerTo(files,
-                            "cd /opt/whale && LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
+                            "cd /opt/whale && WHALE_FAKE_HOSTNAME=" + fakeHostname(files) + " LD_PRELOAD=/opt/whale/native/libwhale-device.so:/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
                             + "exec node container-bot.mjs" + (isManagedEnv ? "" : " --with-agent"),
                             new File(files, "rootfs/opt/whale/qq-state/bot.log"));
                     botProc = np;
@@ -458,6 +462,14 @@ public class ContainerService extends Service {
             extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
             extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
             extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
+            // [layer: environment] 设备身份伪造 shim：**无条件释放**（与上面几个脚本同理）。
+            // 它 hook gethostname()/uname()，把 localhost / 6.2.1-perf 换成看起来像一台普通 ARM64 Debian 的值。
+            // ★ 为什么必须无条件：测试机是 legacy 环境（没有 .whale-public-environment），
+            //   而 native/ 那一堆是在 if(managedImage) 里释放的 —— 放那儿等于永远不生效。
+            File whaleNativeDir = new File(whaleDir, "native");
+            mkdirs(whaleNativeDir);
+            try { extractAssetAlways("native/libwhale-device.so", new File(whaleNativeDir, "libwhale-device.so"), 0755); }
+            catch (Throwable t) { logLine("device shim: " + t); }
             // ★ 2026-11-26 [layer: shell-android] 协议端胶水的**分发通路**补上（原缺口）：
             //   container-bot.mjs 会 import /qq-onebot/src/bridge/native-bridge.mjs（原生收发/看图/看视频/戳一戳全在这），
             //   但 src/ 这棵树**从来不在任何发布产物里** —— core.zip 只有 payload/src（核心层），APK assets 只有扁平的
@@ -663,6 +675,85 @@ public class ContainerService extends Service {
         }
     }
 
+    /**
+     * [layer: environment] 设备身份伪造：每机稳定派生的 hostname / machine-id，外加一份假的 /proc/mounts。
+     *
+     * <p>起因（2026-11-26）：QQ 安全中心把容器判成「设备存在外挂或其他软件影响 QQ 正常使用」并强制下线，
+     * 界面上设备名直接显示 **localhost** —— 那是 Android 内核的默认 hostname。容器跑在 proot 里，
+     * {@code gethostname()} 走 syscall，改 /etc/hostname 无效，所以另配 {@code libwhale-device.so} 做 LD_PRELOAD 拦截；
+     * 这里负责**生成那些能用文件覆盖的部分**（machine-id、假挂载表）以及派生一个稳定的设备名。
+     *
+     * <p>★ 取值规则：**同一台手机每次都一样**（否则每次登录都像新设备，更容易被风控），
+     * **不同手机不同**（否则多台机器共用一个设备指纹会被关联）。种子里优先用 ANDROID_ID。
+     */
+    void ensureDeviceIdentity() {
+        try {
+            File files = svcFilesDir();
+            File dir = new File(files, "rootfs/opt/whale/device");
+            if (!dir.isDirectory() && !dir.mkdirs()) return;
+            File hostFile = new File(dir, "hostname");
+            File midFile = new File(dir, "machine-id");
+            File mountsFile = new File(dir, "mounts");
+            if (hostFile.isFile() && midFile.isFile() && mountsFile.isFile()) return;
+            String seed = null;
+            try {
+                seed = android.provider.Settings.Secure.getString(getContentResolver(),
+                        android.provider.Settings.Secure.ANDROID_ID);
+            } catch (Throwable ignored) {}
+            if (seed == null || seed.length() < 8) {
+                seed = android.os.Build.FINGERPRINT + "|" + android.os.Build.SERIAL + "|" + files.getAbsolutePath();
+            }
+            String hs = deviceHash(seed, "whale-host");
+            String mid = deviceHash(seed, "whale-mid");
+            writeUtf8(hostFile, "deb-arm64-" + hs.substring(0, 8) + "\n");
+            writeUtf8(midFile, mid + "\n");
+            // ★ machine-id 必须落在 rootfs 的 /etc 下（那才是程序实际读的路径），device/ 里那份只是留档。
+            File etcDir = new File(files, "rootfs/etc");
+            if (etcDir.isDirectory() || etcDir.mkdirs()) {
+                File realMid = new File(etcDir, "machine-id");
+                if (!realMid.isFile()) writeUtf8(realMid, mid + "\n");
+            }
+            // Android 的根分区是 /dev/block/dm-N + erofs，桌面 Linux 是 /dev/vda1 或 /dev/mmcblk0pN + ext4。
+            writeUtf8(mountsFile,
+                      "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n"
+                    + "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+                    + "/dev/vda1 / ext4 rw,relatime,errors=remount-ro 0 0\n"
+                    + "tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
+            logLine("device identity: ready (host=" + "deb-arm64-" + hs.substring(0, 8) + ")");
+        } catch (Throwable t) { logLine("device identity FAIL: " + t); }
+    }
+
+    /** 读 ensureDeviceIdentity() 生成的设备名；没有就退回 debian（不阻塞启动）。 */
+    static String fakeHostname(File files) {
+        try {
+            File f = new File(files, "rootfs/opt/whale/device/hostname");
+            if (f.isFile()) {
+                java.io.BufferedReader r = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
+                try { String s = r.readLine(); if (s != null && s.trim().length() > 0) return s.trim(); }
+                finally { r.close(); }
+            }
+        } catch (Throwable ignored) {}
+        return "debian";
+    }
+
+    private static String deviceHash(String seed, String salt) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest((salt + "|" + seed).getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 16; i++) sb.append(String.format(java.util.Locale.ROOT, "%02x", d[i]));
+            return sb.toString();
+        } catch (Throwable t) { return "0123456789abcdef0123456789abcdef"; }
+    }
+
+    private static void writeUtf8(File f, String s) throws Exception {
+        File tmp = new File(f.getParentFile(), f.getName() + ".next");
+        java.io.FileOutputStream o = new java.io.FileOutputStream(tmp);
+        try { o.write(s.getBytes("UTF-8")); } finally { try { o.close(); } catch (Throwable ignored) {} }
+        if (!tmp.renameTo(f)) { f.delete(); if (!tmp.renameTo(f)) throw new java.io.IOException("rename failed: " + f); }
+    }
+
     /** 容器的私有 files 目录（用 /data/data 而不是 /data/user/0，避免 tar 的 realpath 比较出错）。 */
     File svcFilesDir() {
         File direct = new File("/data/data/" + getPackageName() + "/files");
@@ -735,8 +826,11 @@ public class ContainerService extends Service {
         c.add(new File(bin, "proot").getAbsolutePath());
         c.add("--root-id"); c.add("--cwd=/root"); c.add("-L");
         c.add("--link2symlink"); c.add("--sysvipc"); c.add("--kill-on-exit");
-        c.add("--kernel-release=6.2.1-perf");
+        c.add("--kernel-release=6.1.0-28-arm64");
         c.add("-b"); c.add("/dev"); c.add("-b"); c.add("/proc"); c.add("-b"); c.add("/sys");
+        // ★ 2026-11-26 实测：`-b 假文件:/proc/mounts` **不生效**（procfs 是内核特例，bind 被绕过，
+        //   读到的仍是 /dev/block/dm-9 erofs）。而 QQ 是即时通讯，不枚举磁盘，这个字段优先级最低 ——
+        //   先不做，等真有证据说它被采集再想办法（改内核参数或 proot 源码，成本高一个量级）。
         c.add("-r"); c.add(rootfs.getAbsolutePath());
         c.add("/bin/bash"); c.add("-lc");
         c.add("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin;"
