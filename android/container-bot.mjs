@@ -10,6 +10,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import {
+  createNativeWatchdogState,
+  createAgentConsoleWatchdogState,
+  readRestartHistory,
+  recordRestartTimestamp
+} from './container-watchdog.mjs';
 
 const STATE = '/opt/whale/qq-state';
 const GLOBAL = path.join(STATE, 'global');
@@ -389,6 +395,8 @@ const listener = {
     }
     authenticated = true;
     state.uin = String(value.uin); state.uid = value.uid;
+    try { fs.unlinkSync(path.join(STATE, 'qr.url')); } catch {}
+    try { fs.unlinkSync(path.join(STATE, 'qr.png')); } catch {}
     try { fs.writeFileSync(path.join(STATE, 'identity.json'),
       JSON.stringify({ uin: state.uin, uid: state.uid, at: new Date().toISOString() })); } catch {}
     save('authenticated');
@@ -593,6 +601,127 @@ async function startBot() {
       agentAttempts,
     } });
   }, 3000);
+
+  // ★ 2026-11-27 半死自愈方案 1A + 2A：
+  // ① 原生通道真实联网探活（每 90s 打一次 get_stranger_info 核验而非纯内存 get_status）：
+  //    Level 1 触发进程内唤醒（免重登），Level 2 限频退出重启（qr-ready 等人工扫码期绝不重启）。
+  const processBootAt = Date.now();
+  const restartStampFile = path.join(STATE, 'watchdog-restarts.json');
+  const nativeWatchdog = createNativeWatchdogState();
+  let nativeCheckInFlight = false;
+  const nativeWatchdogTimer = setInterval(async () => {
+    if (finished || !authenticated || !onebot || nativeCheckInFlight) return;
+    if (state.phase === 'qr-ready' || state.phase === 'qr-polling' || state.phase === 'scanned') return;
+    nativeCheckInFlight = true;
+    try {
+      const targetUid = /^\d{5,15}$/.test(String(BOT_UIN || state.uin || '')) ? Number(BOT_UIN || state.uin) : 0;
+      const payload = targetUid > 0
+        ? { action: 'get_stranger_info', params: { user_id: targetUid } }
+        : { action: 'get_robot_uin_range', params: {} };
+      const probe = await probeOneBotAction(child.port, onebotToken, payload, 12000);
+      if (probe && probe.status === 'ok') {
+        nativeWatchdog.recordSuccess(Date.now());
+      } else {
+        const now = Date.now();
+        const recent = readRestartHistory(restartStampFile, now);
+        const decision = nativeWatchdog.recordFailure({
+          phase: state.phase,
+          uptimeMs: now - processBootAt,
+          now,
+          recentRestarts: recent
+        });
+        log('NATIVE_WATCHDOG_FAIL count=' + nativeWatchdog.snapshot().consecutiveFails + ' decision=' + decision + ' detail=' + String(probe?.error || probe?.retcode || 'unknown'));
+        if (decision === 'wake') {
+          try {
+            const wakeInfo = await originalChat?.wakeSession?.();
+            log('NATIVE_WATCHDOG_WAKE ' + JSON.stringify(wakeInfo ?? { invoked: true }));
+          } catch (e) {
+            log('NATIVE_WATCHDOG_WAKE_ERR ' + (e?.message ?? e));
+          }
+        } else if (decision === 'restart') {
+          try { recordRestartTimestamp(restartStampFile, now); } catch {}
+          log('NATIVE_WATCHDOG_RESTART triggering rate-limited process exit');
+          process.exit(1);
+        }
+      }
+    } catch (e) {
+      log('NATIVE_WATCHDOG_ERR ' + (e?.message ?? e));
+    } finally {
+      nativeCheckInFlight = false;
+    }
+  }, 90_000);
+  nativeWatchdogTimer.unref?.();
+
+  // ② agent 控制台独立看门狗（每 60s 测 /api/chats）：只精准杀并重拉 agentProc，绝不断 QQ 原生会话。
+  let consoleCheckInFlight = false;
+  const consoleWatchdogTimer = setInterval(async () => {
+    if (!WITH_AGENT || finished || consoleCheckInFlight) return;
+    if (!agentProc || agentProc.exitCode !== null || agentProc.signalCode !== null) return;
+    consoleCheckInFlight = true;
+    try {
+      const cPort = agentConsolePort();
+      const code = await probeHttpGet('127.0.0.1', cPort, '/api/chats', 5000);
+      const now = Date.now();
+      if (code === 200) {
+        const res = consoleWatchdog.recordHealthy({ now, startedAt: lastAgentStartedAt });
+        if (res.shouldResetAttempts && agentAttempts > 0) {
+          log('AGENT_CONSOLE_HEALTHY reset agentAttempts ' + agentAttempts + ' -> 0');
+          agentAttempts = 0;
+        }
+      } else {
+        const res = consoleWatchdog.recordFailure({ now, startedAt: lastAgentStartedAt });
+        if (!res.ignoredInGrace) {
+          log('AGENT_CONSOLE_WATCHDOG_FAIL code=' + code + ' count=' + consoleWatchdog.snapshot().consecutiveFails);
+        }
+        if (res.restartAgentOnly && agentProc && agentProc.exitCode === null) {
+          const deadPid = agentProc.pid;
+          log('AGENT_CONSOLE_WATCHDOG_KILL pid=' + deadPid + ' (保留 QQ 原生会话不掉线)');
+          try { process.kill(deadPid, 'SIGKILL'); } catch {}
+        }
+      }
+    } catch (e) {
+      log('AGENT_CONSOLE_WATCHDOG_ERR ' + (e?.message ?? e));
+    } finally {
+      consoleCheckInFlight = false;
+    }
+  }, 60_000);
+  consoleWatchdogTimer.unref?.();
+}
+
+function probeHttpGet(host, port, reqPath, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      host, port, path: reqPath, method: 'GET', timeout: timeoutMs,
+      headers: { Host: `${host}:${port}` }
+    }, (res) => { res.resume(); resolve(res.statusCode || 0); });
+    req.on('error', () => resolve(0));
+    req.on('timeout', () => { req.destroy(); resolve(0); });
+    req.end();
+  });
+}
+
+function probeOneBotAction(port, token, bodyObj, timeoutMs) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(bodyObj);
+    const req = http.request({
+      host: '127.0.0.1', port, path: '/', method: 'POST', timeout: timeoutMs,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        authorization: 'Bearer ' + token
+      }
+    }, (res) => {
+      let raw = '';
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw)); }
+        catch { resolve({ error: 'invalid-json', httpStatus: res.statusCode }); }
+      });
+    });
+    req.on('error', (e) => resolve({ error: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ error: 'timeout' }); });
+    req.end(body);
+  });
 }
 
 // agent 启动**不再需要 preload**（2026-11-20 深度改造折叠，P6）：
@@ -605,6 +734,8 @@ async function startBot() {
 // ★ 若超时锚点/构造器形状再变，报错点在源内（ONEBOT_TIMEOUT_INVALID），不再有 SOURCE_CHANGED 钩子报错。
 
 let agentAttempts = 0;
+let lastAgentStartedAt = 0;
+const consoleWatchdog = createAgentConsoleWatchdogState();
 /** 同一时刻只允许一次 startAgent 在飞：之前两次并发起 agent 会互相把对方的进程当残留杀掉（互杀循环）。 */
 let agentInFlight = false;
 
@@ -776,6 +907,8 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
   proc.on('error', e => log('AGENT_ERROR ' + e.message));
   save('agent-started', { agent: { pid: proc.pid } });
   const agentStartedAt = Date.now();
+  lastAgentStartedAt = agentStartedAt;
+  consoleWatchdog.resetForNewProcess();
   log('AGENT_STARTED pid=' + proc.pid);
   consoleReadyProbe(agentConsolePort(), agentStartedAt);
 

@@ -1,11 +1,14 @@
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
+import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile, rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { normalizeMessage, toCQ } from '../segments.mjs';
 import { isGroupFileId, isGroupFolderId, normalizeHistoryParams, validateParams } from '../actions.mjs';
 import { BridgeError } from './error.mjs';
 import { RkeyProvider, relativeDownloadParts, rkeyForAppid, rkeyImageUrl, rkeyDiagnostics } from './rkey.mjs';
+import { WebCgiClient } from './web-cgi.mjs';
 import { BOT_UIN, OWNER_UIN } from '../config/account.mjs';
 // P1：语音/视频/文件的元素构建（纯函数模块，字段依据见该文件注释）
 import { buildPttElement, buildVideoElement, buildFileElement, validateLocalMedia } from '../media/element-builders.mjs';
@@ -353,7 +356,8 @@ const PSKEY_TIMEOUT_MS = 8000;
 // 可选会话服务探测白名单（只调 getter，不调方法）。名字写死而不是动态猜：
 // 猜出来的 getter 名一旦拼错会被 getter 的副作用掩盖，读出来的"不存在"就是假的。
 const SESSION_SERVICE_PROBES = Object.freeze([
-  'getTipOffService', 'getUserService', 'getFileService', 'getAvatarService', 'getEmojiService',
+  'getTipOffService', 'getTicketService', 'getSearchService', 'getAppService',
+  'getUserService', 'getFileService', 'getAvatarService', 'getEmojiService',
   'getRobotService', 'getRecentContactService', 'getProfileLikeService', 'getUixConvertService',
   'getRichMediaService', 'getMsgService', 'getGroupService', 'getBuddyService', 'getProfileService',
 ]);
@@ -744,8 +748,14 @@ export class NativeBridge extends EventEmitter {
     this.forwardSources = new Map();
     this.reactionPages = new Map();
     this.friendRequests = new Map();
+    this.groupRequests = new Map();
     this.retiredFriendRequestTime = 0;
     this.retiredFriendRequestUids = new Set();
+    this.webCgi = new WebCgiClient({
+      getUin: () => this.identity?.user_id ?? BOT,
+      getTipOff: () => this.tipOff,
+      getTicketService: () => this.ticket,
+    });
     this.forwardPrefix = randomBytes(16).toString('hex');
     this.nextForward = 1;
     this.forwardLimit = Math.min(this.messages.limit, 1024);
@@ -834,7 +844,12 @@ export class NativeBridge extends EventEmitter {
       // ★ 实测（2026-11-23）：这台机的 QQ build 上 getTipOffService 存在且带 getPskey。
       //   pskey 只放内存、60 秒滑动 TTL，绝不打印、绝不落盘、绝不进台账。
       try { this.tipOff = this.session.getTipOffService?.(); } catch { this.tipOff = undefined; }
+      try { this.ticket = this.session.getTicketService?.(); } catch { this.ticket = undefined; }
+      try { this.search = this.session.getSearchService?.(); } catch { this.search = undefined; }
+      try { this.avatar = this.session.getAvatarService?.(); } catch { this.avatar = undefined; }
+      try { this.app = this.session.getAppService?.(); } catch { this.app = undefined; }
       this.#pskey = null;
+      this.webCgi.clear();
       // 免 hook 事件面：notice 回调（撤回/掉线/灰条/入群/群公告…）。失败不影响消息流。
       let notices = { msg: {}, group: {} };
       try { notices = this.noticeCallbacks(); } catch { this.stats.subscriberErrors++; }
@@ -923,7 +938,13 @@ export class NativeBridge extends EventEmitter {
     this.recentContact = undefined;
     this.profileLike = undefined;
     this.tipOff = undefined;
+    this.ticket = undefined;
+    this.search = undefined;
+    this.avatar = undefined;
+    this.app = undefined;
     this.#pskey = null;
+    this.webCgi.clear();
+    this.groupRequests.clear();
     this.memberRefreshes.clear();
     for (const { controller } of this.#voiceTranscriptions.values()) controller.abort();
     this.#voiceTranscriptions.clear();
@@ -1031,15 +1052,20 @@ export class NativeBridge extends EventEmitter {
     if (has(this.group, 'deleteGroupBulletin')) available.push('del_group_notice');
     // 群公告写要多一条 pskey 通道：内核 publishGroupBulletin 的第二个参数就是它。
     // 取不到 pskey 就不要把动作列出来（列出来必失败，比不报更难查）。
-    if (has(this.group, 'publishGroupBulletin') && has(this.tipOff, 'getPskey')) available.push('send_group_notice');
+    if (has(this.group, 'publishGroupBulletin') && (has(this.tipOff, 'getPskey') || has(this.ticket, 'forceFetchClientKey')))
+      available.push('send_group_notice');
     if (has(this.group, 'getSingleScreenNotifies')) available.push('get_group_system_msg');
+    if (has(this.group, 'operateSysNotify') || has(this.group, 'operateSysNotifyV2')) available.push('set_group_add_request');
     // get_doubt_friends_add_request：本机 build 的 buddy.getDoubtBuddyReq() 永不 resolve（实测 2026-11-18），
     // 故**不对外声明**。实现保留在 doubtFriendRequests()，等某个 build 真能回答时再打开这一行。
     // P0 免 hook：精华消息（内核 addGroupEssence / removeGroupEssence，参数用本会话索引里的 msgRandom/msgSeq）
     if (has(this.group, 'addGroupEssence', 'removeGroupEssence')) available.push('set_essence_msg', 'del_essence_msg');
+    if (has(this.group, 'fetchGroupEssenceListV2') || has(this.group, 'fetchGroupEssenceList') || this.webCgi.hasAuthProvider())
+      available.push('get_essence_msg_list');
     // P0 免 hook：单条转发（内核 forwardMsg(msgIds, srcPeer, dstPeers, []))
     if (has(this.msg, 'forwardMsg')) available.push('forward_friend_single_msg', 'forward_group_single_msg');
-    if (has(this.group, 'getGroupList', 'addKernelGroupListener', 'removeKernelGroupListener')) available.push('get_group_list');
+    if (this.webCgi.hasAuthProvider() || has(this.group, 'getGroupList', 'addKernelGroupListener', 'removeKernelGroupListener'))
+      available.push('get_group_list');
     if (has(this.group, 'getGroupDetailInfo', 'addKernelGroupListener', 'removeKernelGroupListener')) available.push('get_group_info', 'get_group_detail_info');
     if (available.includes('get_group_detail_info') && has(this.group, 'modifyGroupRemark')) available.push('set_group_remark');
     if (has(this.group, 'getAllMemberList')) available.push('get_group_member_list', 'get_group_member_info');
@@ -1050,6 +1076,23 @@ export class NativeBridge extends EventEmitter {
     if (has(this.group, 'modifyMemberCardName', 'getUidByUins', 'getAllMemberList')) available.push('set_group_card');
     if (has(this.group, 'modifyMemberRole', 'getUidByUins', 'getAllMemberList')) available.push('set_group_admin');
     if (has(this.group, 'quitGroupV2', 'getGroupList', 'addKernelGroupListener', 'removeKernelGroupListener')) available.push('set_group_leave');
+    if (has(this.msg, 'sendMsg', 'generateMsgUniqueId')) {
+      available.push('upload_group_file', 'send_group_file');
+      if (has(this.group, 'getUidByUins')) available.push('upload_private_file', 'send_private_file');
+    }
+    if (has(this.richMedia, 'getGroupFileInfo') || this.webCgi.hasAuthProvider()) available.push('get_group_file_url');
+    if (has(this.richMedia, 'getScreenOCR')) available.push('ocr_image');
+    if (has(this.search, 'searchMsgWithKeywords') || has(this.msg, 'queryMsgsWithFilterEx')) available.push('search_local_msgs');
+    if (has(this.group, 'listAllAIVoice')) available.push('get_ai_characters');
+    available.push('get_qq_avatar', 'get_group_avatar', 'get_protocol_readiness');
+    if (this.webCgi.hasAuthProvider()) {
+      available.push(
+        'get_cookies', 'get_credentials', 'get_csrf_token',
+        'get_qzone_msg_list', 'get_qzone_feeds', 'send_qzone_msg', 'comment_qzone', 'like_qzone',
+        'get_group_album_list', 'get_group_album_media_list', 'set_group_album_media_like',
+        'do_group_album_comment', 'upload_image_to_qun_album',
+      );
+    }
     // Current official legacy kick contract is independently described in
     // V2 flags and personal-title methods are
     // not guessed from their presence or the older MIT facade.
@@ -1059,7 +1102,7 @@ export class NativeBridge extends EventEmitter {
     if (has(this.profile, 'getUserDetailInfoByUin')) available.push('get_stranger_info');
     if (has(this.profile, 'getUserDetailInfoByUin', 'setLongNick')) available.push('set_self_longnick');
     if (has(this.profile, 'getUserDetailInfoByUin', 'modifyDesktopMiniProfile')) available.push('set_qq_profile');
-    return available;
+    return [...new Set(available)];
   }
 
   // A single waiter has an absolute timeout, abort, and lifecycle cancellation.
@@ -1441,22 +1484,26 @@ export class NativeBridge extends EventEmitter {
       this.#pskey.expireAt = now + PSKEY_TTL_MS;
       return this.#pskey.value;
     }
-    if (typeof this.tipOff?.getPskey !== 'function')
-      throw new BridgeError('UNSUPPORTED', 'This native profile cannot obtain a qun.qq.com pskey', { retcode: 1404 });
-    let response;
-    try {
-      response = await this.wait(null, () => this.tipOff.getPskey([domain], true), { ...options, timeoutMs: PSKEY_TIMEOUT_MS });
-    } catch {
-      throw new BridgeError('UNSUPPORTED', 'qun.qq.com pskey request did not complete', { retcode: 1404 });
+    if (typeof this.tipOff?.getPskey === 'function') {
+      try {
+        const response = await this.wait(null, () => this.tipOff.getPskey([domain], true), { ...options, timeoutMs: PSKEY_TIMEOUT_MS });
+        const map = response?.domainPskeyMap;
+        const value = map instanceof Map ? map.get(domain)
+          : (map && typeof map === 'object' ? map[domain] : undefined);
+        if (typeof value === 'string' && value.length >= 8 && value.length <= 512 && !/[\s\x00-\x1f\x7f]/.test(value)) {
+          this.#pskey = { domain, value, expireAt: Date.now() + PSKEY_TTL_MS };
+          return value;
+        }
+      } catch { /* fall back to WebCgiClient clientKey jump flow cleanly */ }
     }
-    const map = response?.domainPskeyMap;
-    const value = map instanceof Map ? map.get(domain)
-      : (map && typeof map === 'object' ? map[domain] : undefined);
-    // 只接受有界字符串：拿不到就明确报「取不到」，绝不回退成空串去发请求。
-    if (typeof value !== 'string' || value.length < 8 || value.length > 512 || /[\s\x00-\x1f\x7f]/.test(value))
-      throw new BridgeError('UNSUPPORTED', 'qun.qq.com pskey was not returned by the runtime', { retcode: 1404 });
-    this.#pskey = { domain, value, expireAt: Date.now() + PSKEY_TTL_MS };
-    return value;
+    if (this.webCgi.hasAuthProvider()) {
+      const info = await this.webCgi.getCookies(domain);
+      if (info?.p_skey) {
+        this.#pskey = { domain, value: info.p_skey, expireAt: Date.now() + PSKEY_TTL_MS };
+        return info.p_skey;
+      }
+    }
+    throw new BridgeError('UNSUPPORTED', 'This native profile cannot obtain a qun.qq.com pskey', { retcode: 1404 });
   }
 
   /**
@@ -1527,7 +1574,307 @@ export class NativeBridge extends EventEmitter {
     const list = Array.isArray(page?.notifies) ? page.notifies
       : Array.isArray(page?.result?.notifies) ? page.result.notifies
       : Array.isArray(page) ? page : [];
-    return { notifies: list.slice(0, 200), total: list.length, raw: page };
+    const notifies = list.slice(0, 200).map((item) => {
+      const req = this.rememberGroupRequest(item);
+      return req ? { ...item, flag: req.flag } : item;
+    });
+    return { notifies, total: notifies.length, raw: page };
+  }
+
+  rememberGroupRequest(item) {
+    if (!item || typeof item !== 'object') return null;
+    const seq = item.seq !== undefined && item.seq !== null ? String(item.seq) : '';
+    const groupCode = item.group?.groupCode ?? item.groupCode ?? item.groupUin;
+    if (!seq || groupCode === undefined || groupCode === null) return null;
+    const notifyType = Number(item.type ?? 1);
+    const subType = notifyType === 2 || notifyType === 12 ? 'invite' : 'add';
+    const flag = `${seq}|${String(groupCode)}|${notifyType}`;
+    const entry = {
+      flag,
+      seq,
+      groupCode: String(groupCode),
+      notifyType,
+      subType,
+      userUid: String(item.user1?.uid || item.actionUser?.uid || ''),
+      comment: typeof item.postscript === 'string' ? item.postscript.slice(0, 500) : '',
+      status: Number(item.status ?? 0),
+    };
+    this.groupRequests.set(flag, entry);
+    this.groupRequests.set(seq, entry);
+    while (this.groupRequests.size > 1000) {
+      this.groupRequests.delete(this.groupRequests.keys().next().value);
+    }
+    return entry;
+  }
+
+  async wakeSession() {
+    if (!this.attached) return { awake: false, reason: 'detached' };
+    const calls = [];
+    const tryCall = async (label, fn) => {
+      if (typeof fn !== 'function') return;
+      try {
+        await Promise.race([Promise.resolve(fn()), delay(2500)]);
+        calls.push(label);
+      } catch { /* 唤醒调用尽力而为，不抛出 */ }
+    };
+    await tryCall('switchBackGround', () => this.app?.switchBackGround?.());
+    await tryCall('switchForeGround', () => this.app?.switchForeGround?.());
+    await tryCall('onLine', () => this.app?.onLine?.());
+    await tryCall('startMsgSync', () => this.msg?.startMsgSync?.());
+    return { awake: true, invoked: calls };
+  }
+
+  async protocolReadiness() {
+    const actions = this.capabilities();
+    const web = await this.webCgi.readiness();
+    return {
+      supportedCount: actions.length,
+      webAuthReady: web.tipOffPskey || web.ticketClientKey,
+      tipOffPskey: web.tipOffPskey,
+      ticketClientKey: web.ticketClientKey,
+      cachedDomainsCount: web.cachedDomainsCount,
+      groupListViaCgi: this.webCgi.hasAuthProvider(),
+      groupRequestActionReady: actions.includes('set_group_add_request'),
+      ocrReady: actions.includes('ocr_image'),
+      qzoneReady: actions.includes('get_qzone_feeds'),
+      groupAlbumReady: actions.includes('get_group_album_list'),
+      fileUploadReady: actions.includes('upload_group_file'),
+    };
+  }
+
+  async uploadFileAction(params, isGroup, options) {
+    const generation = this.generation;
+    const rawFile = params.file.startsWith('file://')
+      ? new URL(params.file).pathname
+      : params.file;
+    let info;
+    try { info = await stat(rawFile); } catch {
+      throw new BridgeError('FILE_NOT_FOUND', 'Upload source file does not exist', { retcode: 1404 });
+    }
+    if (!info.isFile() || info.size <= 0 || info.size > MEDIA_SEND_LIMITS.file) {
+      throw invalid('Upload file must be a non-empty regular file within size limit');
+    }
+    const peer = await this.peer(params, isGroup ? 'group' : 'private', options);
+    const element = buildFileElement({
+      filePath: rawFile,
+      fileName: params.name,
+      size: String(info.size),
+      folderId: isGroup ? (params.folder ?? '') : '',
+      groupFile: isGroup,
+    });
+    return this.sendElements(peer, [element], options, generation);
+  }
+
+  async getGroupFileUrlAction(params, options) {
+    const code = String(id(params.group_id, 'group_id'));
+    const fileId = String(params.file_id || '');
+    if (!isGroupFileId(fileId)) throw invalid('Invalid file_id');
+    if (typeof this.richMedia?.getGroupFileInfo === 'function') {
+      try {
+        const info = await this.wait(null, () => this.richMedia.getGroupFileInfo(code, fileId), options);
+        const directUrl = info?.fileInfo?.downloadUrl || info?.downloadUrl || info?.url;
+        if (typeof directUrl === 'string' && /^https?:\/\//i.test(directUrl)) {
+          return { url: directUrl };
+        }
+      } catch { /* fall back to Web CGI cleanly */ }
+    }
+    if (this.webCgi.hasAuthProvider()) {
+      return this.webCgi.getGroupFileUrl(code, fileId, params.busid ?? 102);
+    }
+    throw new BridgeError('FILE_URL_UNAVAILABLE', 'Unable to resolve group file URL', { retcode: 1404 });
+  }
+
+  async decideGroupRequest(params, options) {
+    const generation = this.generation;
+    const stored = this.groupRequests.get(params.flag);
+    const parts = params.flag.split('|');
+    const seq = stored?.seq ?? (parts[0] || params.flag);
+    const groupCode = stored?.groupCode ?? (parts[1] || '');
+    const notifyType = stored?.notifyType ?? (Number(parts[2]) || (params.sub_type === 'invite' ? 2 : 1));
+    if (!seq || !/^\d+$/.test(String(groupCode))) {
+      throw invalid('Expected a valid group request flag (run get_group_system_msg or supply seq|group_id|type)');
+    }
+    await this.probe();
+    if (!this.attached || generation !== this.generation || options?.signal?.aborted)
+      throw new BridgeError('STALE_SESSION', 'Group request decision crossed a session change', { retcode: 1503 });
+    const operateType = params.approve ? 1 : 2;
+    const targetMsg = {
+      seq: String(seq),
+      type: notifyType,
+      groupCode: String(groupCode),
+      postscript: params.reason ?? '',
+    };
+    const fn = typeof this.group?.operateSysNotifyV2 === 'function'
+      ? () => this.group.operateSysNotifyV2(false, { operateType, targetMsg })
+      : () => this.group.operateSysNotify(false, { operateType, targetMsg });
+    const res = await this.wait(null, fn, { ...options, sideEffect: true });
+    checkResult(res, true);
+    return null;
+  }
+
+  async getEssenceMsgList(code, options) {
+    const generation = this.generation;
+    await this.probe();
+    if (!this.attached || generation !== this.generation || options?.signal?.aborted)
+      throw new BridgeError('STALE_SESSION', 'Essence query crossed a session change', { retcode: 1503 });
+    const nativeFn = typeof this.group?.fetchGroupEssenceListV2 === 'function'
+      ? () => this.group.fetchGroupEssenceListV2({ groupCode: code, pageStart: 0, pageLimit: 50 })
+      : typeof this.group?.fetchGroupEssenceList === 'function'
+        ? () => this.group.fetchGroupEssenceList({ groupCode: code, pageStart: 0, pageLimit: 50 })
+        : null;
+    if (nativeFn) {
+      try {
+        const res = await this.wait(null, nativeFn, options);
+        const list = Array.isArray(res?.msgList) ? res.msgList : Array.isArray(res?.result?.msgList) ? res.result.msgList : null;
+        if (list) {
+          return list.map((m) => ({
+            sender_id: Number(m?.senderUin || 0),
+            sender_nick: String(m?.senderNick || ''),
+            sender_time: Number(m?.senderTime || 0),
+            operator_id: Number(m?.addDigestUin || m?.operatorUin || 0),
+            operator_nick: String(m?.addDigestNick || ''),
+            operator_time: Number(m?.addDigestTime || 0),
+            message_seq: Number(m?.msgSeq || 0),
+            message_id: Number(m?.msgRandom || m?.msgSeq || 0),
+            content: Array.isArray(m?.elements) ? m.elements : [],
+          }));
+        }
+      } catch { /* fall back to Web CGI cleanly */ }
+    }
+    if (this.webCgi.hasAuthProvider()) {
+      return this.webCgi.getEssenceMsgList(code);
+    }
+    throw unsupported();
+  }
+
+  async setGroupSpecialTitle(params, options) {
+    const generation = this.generation;
+    const code = String(id(params.group_id, 'group_id'));
+    const uid = await this.uid(user(params.user_id), options);
+    const title = typeof params.special_title === 'string' ? params.special_title.trim().slice(0, 32) : '';
+    await this.probe();
+    if (!this.attached || generation !== this.generation || options?.signal?.aborted)
+      throw new BridgeError('STALE_SESSION', 'Special title crossed a session change', { retcode: 1503 });
+    const res = await this.wait(null, () => this.group.setIdentityTitleInfo({
+      groupCode: code,
+      uid,
+      title,
+      expireTime: Number.isSafeInteger(Number(params.duration)) ? Number(params.duration) : -1,
+    }), { ...options, sideEffect: true });
+    checkResult(res, true);
+    return null;
+  }
+
+  async ocrImageAction(imageRef, options) {
+    let tempFile = '';
+    let targetPath = imageRef;
+    try {
+      const isB64 = /^base64:\/\//i.test(imageRef);
+      const dataMatch = !isB64 ? /^data:image\/[a-z0-9.+-]+;base64,(.+)$/i.exec(imageRef) : null;
+      if (isB64 || dataMatch) {
+        const b64 = isB64 ? imageRef.slice('base64://'.length) : dataMatch[1];
+        const buf = Buffer.from(b64, 'base64');
+        if (!buf.length || buf.length > 15 * 1024 * 1024) throw invalid('OCR image exceeds size limit');
+        tempFile = path.join(os.tmpdir(), `whale-ocr-${randomBytes(8).toString('hex')}.png`);
+        await writeFile(tempFile, buf, { mode: 0o600 });
+        targetPath = tempFile;
+      } else {
+        const st = await stat(imageRef).catch(() => null);
+        if (!st || !st.isFile()) throw invalid('OCR image path must be an existing local file or base64:// image');
+      }
+      const res = await this.wait(null, () => this.richMedia.getScreenOCR(targetPath), { ...options, timeoutMs: 15000 });
+      checkResult(res);
+      const rawLines = Array.isArray(res?.ocrResult?.textInfos)
+        ? res.ocrResult.textInfos
+        : Array.isArray(res?.textInfos) ? res.textInfos : [];
+      return {
+        texts: rawLines.map((line) => ({
+          text: String(line?.text ?? ''),
+          confidence: Number(line?.confidence ?? 0),
+          coordinates: Array.isArray(line?.pt) ? line.pt : [],
+        })),
+        language: String(res?.ocrResult?.language ?? res?.language ?? ''),
+      };
+    } finally {
+      if (tempFile) await rm(tempFile, { force: true }).catch(() => {});
+    }
+  }
+
+  async searchLocalMsgs(params, options) {
+    const keyword = typeof params.keyword === 'string' ? params.keyword.trim() : '';
+    if (!keyword || keyword.length > 200) throw invalid('keyword must be 1 to 200 characters');
+    const count = integer(params.count ?? 20, 1, 100, 20);
+    const generation = this.generation;
+    await this.probe();
+    if (!this.attached || generation !== this.generation || options?.signal?.aborted)
+      throw new BridgeError('STALE_SESSION', 'Local search crossed a session change', { retcode: 1503 });
+    if (typeof this.msg?.queryMsgsWithFilterEx === 'function' && (params.group_id !== undefined || params.user_id !== undefined)) {
+      const peer = await this.peer(params, params.group_id !== undefined ? 'group' : 'private', options);
+      const res = await this.wait(null, () => this.msg.queryMsgsWithFilterEx('0', '0', '0', {
+        chatInfo: peer,
+        filterMsgType: [],
+        filterSendersUid: [],
+        filterMsgFromTime: '0',
+        filterMsgToTime: '0',
+        pageLimit: count,
+        isReverseOrder: true,
+        isIncludeCurrent: true,
+      }), options);
+      checkResult(res);
+      const msgs = Array.isArray(res?.msgList) ? res.msgList : [];
+      const lower = keyword.toLowerCase();
+      const matched = [];
+      for (const m of msgs) {
+        try {
+          const translated = this.translate(m);
+          if (String(translated.raw_message || '').toLowerCase().includes(lower)) {
+            matched.push(translated);
+          }
+        } catch { /* skip malformed historical item */ }
+      }
+      return { messages: matched.slice(0, count), total: matched.length };
+    }
+    if (typeof this.search?.searchMsgWithKeywords === 'function') {
+      const res = await this.wait(null, () => this.search.searchMsgWithKeywords(keyword, count), options);
+      return { results: res ?? null };
+    }
+    throw unsupported();
+  }
+
+  async getQqAvatar(params) {
+    const uin = String(id(params.user_id, 'user_id'));
+    const size = [40, 100, 140, 640].includes(Number(params.size)) ? Number(params.size) : 640;
+    let localPath = '';
+    try {
+      const p = await Promise.resolve(this.avatar?.getAvatarPathByUin?.(uin));
+      if (typeof p === 'string') localPath = p;
+    } catch { /* ignore */ }
+    return {
+      user_id: Number(uin),
+      url: `https://q.qlogo.cn/headimg_dl?dst_uin=${uin}&spec=${size}`,
+      ...(localPath ? { local_path: localPath } : {}),
+    };
+  }
+
+  async getGroupAvatar(params) {
+    const code = String(id(params.group_id, 'group_id'));
+    const size = [40, 100, 140, 640].includes(Number(params.size)) ? Number(params.size) : 640;
+    let localPath = '';
+    try {
+      const p = await Promise.resolve(this.avatar?.getGroupAvatarPath?.(code));
+      if (typeof p === 'string') localPath = p;
+    } catch { /* ignore */ }
+    return {
+      group_id: Number(code),
+      url: `https://p.qlogo.cn/gh/${code}/${code}/${size}`,
+      ...(localPath ? { local_path: localPath } : {}),
+    };
+  }
+
+  async getAiCharacters(code, params, options) {
+    const res = await this.wait(null, () => this.group.listAllAIVoice(BigInt(code)), options);
+    checkResult(res);
+    return { characters: Array.isArray(res?.aiVoiceList) ? res.aiVoiceList : (res?.characters ?? []) };
   }
 
   /** 陌生人/可疑好友申请（P1，只读）。内核：buddy.getDoubtBuddyReq()。 */
@@ -2529,6 +2876,62 @@ export class NativeBridge extends EventEmitter {
         } catch { throw new BridgeError('UNCONFIRMED', 'Mutation submitted but readback did not confirm it', { retcode: 1502, outcome: 'unknown' }); }
         return null;
       }
+      case 'get_cookies': {
+        const domain = typeof params.domain === 'string' && params.domain.trim() ? params.domain.trim() : 'qun.qq.com';
+        const info = await this.webCgi.getCookies(domain, { noCache: bool(params.no_cache) });
+        return { cookies: info.cookies, bkn: String(info.bkn) };
+      }
+      case 'get_credentials': {
+        const domain = typeof params.domain === 'string' && params.domain.trim() ? params.domain.trim() : 'qun.qq.com';
+        const info = await this.webCgi.getCookies(domain, { noCache: bool(params.no_cache) });
+        return { cookies: info.cookies, csrf_token: info.bkn };
+      }
+      case 'get_csrf_token': {
+        const domain = typeof params.domain === 'string' && params.domain.trim() ? params.domain.trim() : 'qun.qq.com';
+        const info = await this.webCgi.getCookies(domain, { noCache: bool(params.no_cache) });
+        return { token: info.bkn };
+      }
+      case 'get_protocol_readiness': return this.protocolReadiness();
+      case 'upload_group_file': case 'send_group_file':
+      case 'upload_private_file': case 'send_private_file': {
+        let req;
+        try { req = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.uploadFileAction(req, action.endsWith('group_file'), options);
+      }
+      case 'get_group_file_url': {
+        let req;
+        try { req = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.getGroupFileUrlAction(req, options);
+      }
+      case 'set_group_add_request': {
+        let req;
+        try { req = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.decideGroupRequest(req, options);
+      }
+      case 'get_essence_msg_list': return this.getEssenceMsgList(groupCode(), options);
+      case 'ocr_image': {
+        let req;
+        try { req = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.ocrImageAction(req.image, options);
+      }
+      case 'search_local_msgs': {
+        let req;
+        try { req = validateParams(action, params); } catch (error) { throw invalid(error.message); }
+        return this.searchLocalMsgs(req, options);
+      }
+      case 'get_qq_avatar': return this.getQqAvatar(params);
+      case 'get_group_avatar': return this.getGroupAvatar(params);
+      case 'get_ai_characters': return this.getAiCharacters(groupCode(), params, options);
+      case 'get_qzone_msg_list': return this.webCgi.getQzoneMsgList(params);
+      case 'get_qzone_feeds': return this.webCgi.getQzoneFeeds(params);
+      case 'send_qzone_msg': return this.webCgi.sendQzoneMsg(validateParams(action, params));
+      case 'comment_qzone': return this.webCgi.commentQzone(validateParams(action, params));
+      case 'like_qzone': return this.webCgi.likeQzone(validateParams(action, params));
+      case 'get_group_album_list': return this.webCgi.getGroupAlbumList(validateParams(action, params));
+      case 'get_group_album_media_list': return this.webCgi.getGroupAlbumMediaList(validateParams(action, params));
+      case 'set_group_album_media_like': return this.webCgi.setGroupAlbumMediaLike(validateParams(action, params));
+      case 'do_group_album_comment': return this.webCgi.doGroupAlbumComment(validateParams(action, params));
+      case 'upload_image_to_qun_album': return this.webCgi.uploadImageToQunAlbum(validateParams(action, params));
       default: throw unsupported();
     }
   }
@@ -3126,7 +3529,17 @@ export class NativeBridge extends EventEmitter {
     }
   }
 
-  readGroupList(fresh, options) {
+  async readGroupList(fresh, options) {
+    if (this.webCgi.hasAuthProvider()) {
+      try {
+        return await this.webCgi.getGroupList({ noCache: fresh === true });
+      } catch (error) {
+        if (typeof this.group?.getGroupList !== 'function'
+            || typeof this.group?.addKernelGroupListener !== 'function') {
+          throw error;
+        }
+      }
+    }
     return this.readGroupCallback('groups', () => this.group.getGroupList(fresh), options, groups => {
       if (groups.length > 10000) throw forwardInvalid();
       const seen = new Set();
@@ -4934,13 +5347,35 @@ export class NativeBridge extends EventEmitter {
             }).catch(() => {});
           } catch {}
         }),
-        onGroupNotifiesUpdated: this.safeNotice((value) => {
+        onGroupNotifiesUpdated: this.safeNotice((...args) => {
           try {
-            const groupCode = value?.groupCode ?? value?.group?.groupCode;
-            if (groupCode === undefined) return;
-            const text = typeof value?.contentStr === 'string' ? value.contentStr.slice(0, 200) : '';
-            this.emitNotice({ post_type: 'notice', notice_type: 'notify', sub_type: 'group_notify',
-              group_id: Number(groupCode), text });
+            const payload = args.length >= 2 && Array.isArray(args[1])
+              ? args[1]
+              : (Array.isArray(args[0]) ? args[0] : [args[0]]);
+            for (const value of payload) {
+              if (!value || typeof value !== 'object') continue;
+              const req = this.rememberGroupRequest(value);
+              const groupCode = req?.groupCode ?? value?.groupCode ?? value?.group?.groupCode;
+              if (groupCode === undefined) continue;
+              const text = typeof value?.contentStr === 'string' ? value.contentStr.slice(0, 200) : '';
+              this.emitNotice({ post_type: 'notice', notice_type: 'notify', sub_type: 'group_notify',
+                group_id: Number(groupCode), text });
+              if (req && (req.status === 0 || req.status === 1) && req.seq) {
+                const dedupKey = this.noticeKey('group-req', req.flag, Math.floor(Date.now() / 60000));
+                if (!this.noticeOnce(dedupKey)) continue;
+                void this.noticeUin(req.userUid, null).then((uin) => {
+                  this.emitNotice({
+                    post_type: 'request',
+                    request_type: 'group',
+                    sub_type: req.subType,
+                    group_id: Number(req.groupCode),
+                    user_id: uin ?? 0,
+                    comment: req.comment,
+                    flag: req.flag,
+                  });
+                }).catch(() => {});
+              }
+            }
           } catch {}
         }),
         onGroupBulletinChange: this.safeNotice((value) => {

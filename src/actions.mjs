@@ -102,6 +102,24 @@ add('send_group_notice', {group_id:'id', content:'string'}, true);
 add('get_group_system_msg', {count:'number'});
 add('get_doubt_friends_add_request', {count:'number'});
 add('friend_poke', {user_id:'id'}, true);
+// 低风控免 Hook 拓展接口（2026-11-27）：官方 Web CGI / N-API 公开服务（绝不落盘或记录明文 Cookie/p_skey）
+add('get_group_file_url', {group_id:'id', file_id:'string'});
+add('get_essence_msg_list', {group_id:'id'});
+add('ocr_image', {image:'string'});
+add('search_local_msgs', {keyword:'string'});
+add('get_qq_avatar', {user_id:'id'});
+add('get_group_avatar', {group_id:'id'});
+add('get_protocol_readiness');
+add('get_qzone_msg_list');
+add('get_qzone_feeds');
+add('send_qzone_msg', {content:'string'}, true);
+add('comment_qzone', {tid:'string', content:'string'}, true);
+add('like_qzone', {tid:'string'}, true);
+add('get_group_album_list', {group_id:'id'});
+add('get_group_album_media_list', {group_id:'id', album_id:'string'});
+add('set_group_album_media_like', {group_id:'id', album_id:'string', lloc:'string'}, true);
+add('do_group_album_comment', {group_id:'id', album_id:'string', lloc:'string', content:'string'}, true);
+add('upload_image_to_qun_album', {group_id:'id', album_id:'string', file:'string'}, true);
 export const ACTIONS = Object.freeze(descriptors);
 export const ALIASES = Object.freeze({send_message:'send_msg'});
 // Light social / cosmetic writes whose native confirmation is documented as
@@ -112,6 +130,8 @@ export const ALIASES = Object.freeze({send_message:'send_msg'});
 // latching on an unconfirmable cosmetic write would freeze every later send.
 export const NON_LATCHING_ACTIONS = Object.freeze(new Set([
   'group_poke', 'friend_poke', 'set_online_status', 'add_custom_face', 'set_qq_avatar',
+  'set_group_special_title', 'send_qzone_msg', 'comment_qzone', 'like_qzone',
+  'set_group_album_media_like', 'do_group_album_comment', 'upload_image_to_qun_album',
 ]));
 
 export function isGroupFileId(value) {
@@ -146,6 +166,56 @@ export function validateParams(action, input) {
   if (input === undefined) input = {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('params must be an object');
   const params = structuredClone(input);
+  if (['upload_group_file', 'send_group_file', 'upload_private_file', 'send_private_file'].includes(action)) {
+    const isGroup = action.endsWith('group_file');
+    const peerKey = isGroup ? 'group_id' : 'user_id';
+    const peer = params[peerKey];
+    if (!/^[1-9]\d{0,15}$/.test(String(peer)) || !Number.isSafeInteger(Number(peer))) {
+      throw new TypeError(`Invalid ${peerKey}`);
+    }
+    if (typeof params.file !== 'string' || !params.file.trim() || params.file.length > 4096) {
+      throw new TypeError('Invalid file');
+    }
+    const resolvedName = (typeof params.name === 'string' && params.name.trim())
+      ? params.name.trim()
+      : params.file.replace(/\\/g, '/').split('/').pop() || '';
+    if (!resolvedName || resolvedName.length > 512) throw new TypeError('Invalid name');
+    params[peerKey] = Number(peer);
+    params.file = params.file.trim();
+    params.name = resolvedName;
+    if (isGroup && params.folder !== undefined) {
+      if (typeof params.folder !== 'string' || params.folder.length > 256) throw new TypeError('Invalid folder');
+    }
+    return params;
+  }
+  if (action === 'set_group_add_request') {
+    if (typeof params.flag !== 'string' || !params.flag.trim() || params.flag.length > 512) {
+      throw new TypeError('Invalid flag');
+    }
+    const kind = params.sub_type ?? params.type;
+    if (kind !== undefined && !['add', 'invite'].includes(String(kind))) {
+      throw new TypeError('Invalid sub_type');
+    }
+    params.flag = params.flag.trim();
+    if (kind !== undefined) params.sub_type = String(kind);
+    if ('approve' in params) {
+      if (![true, false, 'true', 'false'].includes(params.approve)) throw new TypeError('Invalid approve');
+      params.approve = params.approve === true || params.approve === 'true';
+    } else {
+      params.approve = true;
+    }
+    if (params.reason !== undefined && (typeof params.reason !== 'string' || params.reason.length > 512)) {
+      throw new TypeError('Invalid reason');
+    }
+    return params;
+  }
+  if (action === 'ocr_image') {
+    const img = params.image ?? params.file;
+    if (typeof img !== 'string' || !img.trim() || img.length > 20 * 1024 * 1024) {
+      throw new TypeError('Invalid image');
+    }
+    return { image: img.trim() };
+  }
   if (action === 'get_group_msg_history') return normalizeGroupHistoryParams(params);
   if (action === 'get_friend_msg_history') return normalizeHistoryParams(params, 'user_id');
   for (const field of ['__proto__', 'prototype', 'constructor']) if (Object.hasOwn(params,field)) throw new TypeError('Invalid parameter');

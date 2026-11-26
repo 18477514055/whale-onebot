@@ -6,8 +6,10 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -56,6 +58,8 @@ public class ContainerService extends Service {
     private static PrintWriter logw = null;
     /** 日志文件（每次追加都重开，避免持有已关闭的 writer 导致整段日志悄悄丢失）。 */
     private static volatile File logFile = null;
+    private PowerManager.WakeLock wakeLock = null;
+    private WifiManager.WifiLock wifiLock = null;
     private Thread worker;
     private HttpStatusServer http;
 
@@ -283,10 +287,12 @@ public class ContainerService extends Service {
             try { startForeground(1, buildNotification()); } catch (Throwable ignored) {}
         }
         if (ACTION_STOP.equals(action)) {
+            releaseKeepAliveLocks();
             stopContainer();
             stopSelf();
             return START_NOT_STICKY;
         }
+        acquireKeepAliveLocks();
         if ("com.whaleonebot.BOUND".equals(action)) {
             String bot=intent.getStringExtra("bot");
             String ticket=intent.getStringExtra("ticket");new Thread(()->{if(InstalledRuntimeHost.core(getFilesDir(),bot)!=null)InstalledRuntimeHost.reconcile(this,bot,ticket,intent.getStringExtra("platform"),intent.getStringExtra("slot"));else if(intent.getStringExtra("platform")==null)BindingControl.launch(this,bot,ticket);},"bound-start").start();
@@ -410,9 +416,52 @@ public class ContainerService extends Service {
 
     @Override public void onDestroy() {
         log("service onDestroy");
+        releaseKeepAliveLocks();
         if(http!=null)http.stop();
         stopContainer();
         super.onDestroy();
+    }
+
+    private synchronized void acquireKeepAliveLocks() {
+        try {
+            if (wakeLock == null) {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "whaleonebot:container");
+                    wakeLock.setReferenceCounted(false);
+                }
+            }
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire();
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("WhaleLog", "acquire wakeLock failed", t);
+        }
+        try {
+            if (wifiLock == null) {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wm != null) {
+                    @SuppressWarnings("deprecation")
+                    int mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                    wifiLock = wm.createWifiLock(mode, "whaleonebot:wifi");
+                    wifiLock.setReferenceCounted(false);
+                }
+            }
+            if (wifiLock != null && !wifiLock.isHeld()) {
+                wifiLock.acquire();
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("WhaleLog", "acquire wifiLock failed", t);
+        }
+    }
+
+    private synchronized void releaseKeepAliveLocks() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        } catch (Throwable ignored) {}
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        } catch (Throwable ignored) {}
     }
 
     // ------------------------------------------------------------------ boot
@@ -461,6 +510,7 @@ public class ContainerService extends Service {
             mkdirs(new File(whaleDir, "qq-state"));
             extractAssetAlways("container-login.mjs", new File(whaleDir, "container-login.mjs"), 0644);
             extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
+            extractAssetAlways("container-watchdog.mjs", new File(whaleDir, "container-watchdog.mjs"), 0644);
             extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
             extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
             // [layer: environment] 设备身份伪造 shim：**无条件释放**（与上面几个脚本同理）。
@@ -478,9 +528,10 @@ public class ContainerService extends Service {
             //   于是「改了 native-bridge 却发不出去」：用户装新包也还是旧桥。这里随 APK 无条件释放，让它跟着版本走。
             File bridgeDir = new File(new File(rootfs, "qq-onebot/src"), "bridge");
             mkdirs(bridgeDir);
-            for(String n:new String[]{"error.mjs","native-bridge.mjs","qq-profile.mjs","rkey.mjs"}){
-                extractAssetAlways("bridge/"+n,new File(bridgeDir,n),0644);
+            for(String n:new String[]{"error.mjs","native-bridge.mjs","qq-profile.mjs","rkey.mjs","web-cgi.mjs"}){
+                try { extractAssetAlways("bridge/"+n,new File(bridgeDir,n),0644); } catch (Throwable ignored) {}
             }
+            extractAssetTree("qq-protocol", new File(rootfs, "qq-onebot/src"), 0644);
             // ★ 2026-11-24 修正：native 桥与那 525 个图形库**只在「内置环境」这条路上释放**。
             //   legacy（debug 的老 Debian rootfs）本来就有这些，且版本更新；无条件覆盖会把它换成旧库，
             //   真机后果是 QQ 内核每收一条消息都打 `dlsym failed NodeContextifyContextMetrics1`，
@@ -639,6 +690,23 @@ public class ContainerService extends Service {
             log("asset* " + name + " -> " + dest);
         } catch (Throwable t) {
             log("!! 覆盖释放 " + name + " 失败: " + t);
+        }
+    }
+
+    private void extractAssetTree(String assetPath, File destDir, int mode) {
+        try {
+            String[] list = getAssets().list(assetPath);
+            if (list == null || list.length == 0) {
+                extractAssetAlways(assetPath, destDir, mode);
+                return;
+            }
+            mkdirs(destDir);
+            for (String child : list) {
+                if (child == null || child.isEmpty()) continue;
+                extractAssetTree(assetPath + "/" + child, new File(destDir, child), mode);
+            }
+        } catch (Throwable t) {
+            log("!! 同步目录 " + assetPath + " 失败: " + t);
         }
     }
 

@@ -292,6 +292,7 @@ export function createOriginalChatBridge({ session, identity, isCurrent, onUpdat
     proof(); publishReady = true; flush(); return value;
   };
   facade.capabilities = () => !closed && raw.attached ? raw.capabilities() : [];
+  facade.wakeSession = () => !closed && raw.attached ? raw.wakeSession() : Promise.resolve({ awake: false, reason: 'detached' });
   facade.call = async (action, params, options = {}) => {
     proof();
     try { return await raw.call(action, params, options); }

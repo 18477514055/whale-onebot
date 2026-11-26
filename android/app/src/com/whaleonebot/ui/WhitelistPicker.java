@@ -116,14 +116,14 @@ final class WhitelistPicker {
             @Override
             public void run() {
                 // 后台线程：读 bot.json + 一次 HTTP。失败返回 null，不抛。
-                final List<Model.Chat> chats = loadChats(host, k);
+                final List<WhitelistModel.Chat> chats = loadChats(host, k);
                 host.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         if (host.isFinishing()) return;
                         try {
                             showDialog(host, t, heading, pre, chats, callback,
-                                    k == KIND_PRIVATE ? "好友 + 收到过消息的会话" : "只显示收到过消息的群", k);
+                                    k == KIND_PRIVATE ? "好友 + 收到过消息的会话" : "群列表 + 收到过消息的群", k);
                         } catch (Throwable ignored) {
                             // 弹窗都弹不出来时不做事，也绝不把面板带崩
                         }
@@ -137,7 +137,7 @@ final class WhitelistPicker {
 
     /** 合并待写回的号码：原有行原样保留（含空行），新勾选的按顺序追加，去重。 */
     static ArrayList<String> mergeIds(List<String> existing, List<String> picked) {
-        return Model.merge(existing, picked);
+        return WhitelistModel.merge(existing, picked);
     }
 
     // ================================================================ 取数
@@ -145,14 +145,12 @@ final class WhitelistPicker {
     /** 协议端状态文件。位置与 {@code ContainerService.qqStateDir()} 一致，只是这里只读。 */
     private static final String BOT_JSON = "rootfs/opt/whale/qq-state/bot.json";
 
-    /** 读 bot.json → 取端口与令牌 → POST 协议端。任何一步失败都返回 null。 */
-    private static List<Model.Chat> loadChats(Activity activity, int kind) {
+    /** 共用协议端一次性 POST 查询，供白名单选人页与 QQ 状态卡复用（令牌绝不落日志）。 */
+    static String queryProtocol(Activity activity, String action, String json, int timeoutMs) {
         try {
             if (activity == null) return null;
             String cfgText = readText(new File(activity.getFilesDir(), BOT_JSON));
             if (cfgText == null) {
-                // 兜底：个别设备上 /data/user/0 与 /data/data 不是同一条路径，
-                // 容器那边（ContainerService.svcFilesDir）也为这留了同一个兜底。
                 try {
                     cfgText = readText(new File("/data/data/" + activity.getPackageName()
                             + "/files/" + BOT_JSON));
@@ -161,34 +159,42 @@ final class WhitelistPicker {
                 }
             }
             if (cfgText == null) return null;
-            String port = Model.portOf(cfgText);
-            String token = Model.tokenOf(cfgText);
+            String port = WhitelistModel.portOf(cfgText);
+            String token = WhitelistModel.tokenOf(cfgText);
             if (port == null || port.length() == 0) return null;
             if (token == null || token.length() == 0) return null;
+            return postJson(port, token, action, json, timeoutMs);
+        } catch (Throwable th) {
+            return null;
+        }
+    }
 
-            // ① 真的收到过消息的会话（get_known_chats 是我们自己的动作，只读、不依赖原生回调）
-            String body = post(port, token, "get_known_chats");
-            List<Model.Chat> chats = body == null ? null : Model.parse(body, kind);
+    /** 读 bot.json → 取端口与令牌 → POST 协议端。任何一步失败都返回 null。 */
+    private static List<WhitelistModel.Chat> loadChats(Activity activity, int kind) {
+        try {
+            String body = queryProtocol(activity, "get_known_chats", "{}", TIMEOUT_MS);
+            List<WhitelistModel.Chat> chats = body == null ? null : WhitelistModel.parse(body, kind);
 
-            // ② 私聊再加一路真名单：好友列表（get_friend_list 在本机 build 上是好的）。
-            //    群列表没有这一路 —— get_group_list 走原生 onGroupListUpdate，本机永不触发（1502）。
             if (kind == KIND_PRIVATE) {
-                String friends = post(port, token, "get_friend_list");
-                List<Model.Chat> friendList = friends == null ? null : Model.parseFriends(friends);
-                chats = Model.mergeSources(friendList, chats);
+                String friends = queryProtocol(activity, "get_friend_list", "{}", TIMEOUT_MS);
+                List<WhitelistModel.Chat> friendList = friends == null ? null : WhitelistModel.parseFriends(friends);
+                chats = WhitelistModel.mergeSources(friendList, chats);
+            } else if (kind == KIND_GROUP) {
+                String groups = queryProtocol(activity, "get_group_list", "{}", 6000);
+                List<WhitelistModel.Chat> groupList = groups == null ? null : WhitelistModel.parseGroups(groups);
+                chats = WhitelistModel.mergeSources(groupList, chats);
             }
 
-            // ③ 群名：拿上面那批群号再问一次（只读扩展 get_chat_names）。
-            //    失败 / 超时 / 结构不对都只是「没有名字」：chats 原样返回，照旧显示号码。
             if (kind == KIND_GROUP && chats != null && !chats.isEmpty()) {
-                String namesBody = postJson(port, token, "get_chat_names",
-                        Model.groupsRequest(chats), NAMES_TIMEOUT_MS);
-                Map<String, String> names = namesBody == null ? null : Model.parseNames(namesBody);
-                chats = Model.withNames(chats, names);
+                String reqJson = WhitelistModel.groupsRequest(chats);
+                if (!reqJson.contains("[]")) {
+                    String namesBody = queryProtocol(activity, "get_chat_names", reqJson, NAMES_TIMEOUT_MS);
+                    Map<String, String> names = namesBody == null ? null : WhitelistModel.parseNames(namesBody);
+                    chats = WhitelistModel.withNames(chats, names);
+                }
             }
             return chats;
         } catch (Throwable th) {
-            // 令牌、端口一律不进日志：这里什么都不打
             return null;
         }
     }
@@ -330,7 +336,7 @@ final class WhitelistPicker {
     }
 
     private static void showDialog(final Activity a, final Theme t, final String title,
-                                   final List<String> already, final List<Model.Chat> chats,
+                                   final List<String> already, final List<WhitelistModel.Chat> chats,
                                    final Callback cb, final String hint, final int kind) {
         if (open != null) return; // 已经有一层浮层：连点不再叠第二层
         final Dialog dlg = newDialog(a);
@@ -361,7 +367,7 @@ final class WhitelistPicker {
             box.addView(pill(a, t, "还没有收到过消息的会话"),
                     top(a, Theme.S2, MATCH_PARENT, WRAP_CONTENT));
         } else {
-            sel.addAll(Model.preselect(already));
+            sel.addAll(WhitelistModel.preselect(already));
             initial.addAll(sel);
 
             ScrollView scroll = new ScrollView(a);
@@ -461,7 +467,7 @@ final class WhitelistPicker {
      * <p>群聊且拿到了群名时：标题用<b>群名</b>，右侧补「群 871721981 · 收到 N 条」；
      * 没名字的群（以及私聊）保持原样：标题是号码（等宽），右侧是备注名 / 条数。
      */
-    private static View checkRow(Activity a, final Theme t, final Model.Chat c,
+    private static View checkRow(Activity a, final Theme t, final WhitelistModel.Chat c,
                                  final LinkedHashSet<String> sel, final int kind) {
         final boolean[] on = new boolean[]{sel.contains(c.id)};
         final boolean namedGroup = kind == KIND_GROUP && c.name != null && c.name.length() > 0;
@@ -577,318 +583,5 @@ final class WhitelistPicker {
         return Ui.dp(a, v);
     }
 
-    // ================================================================ 纯逻辑（可在普通 JVM 上测）
-    /**
-     * 不引用任何 Android 类型的一层：解析 {@code get_known_chats} 的响应、预勾选、合并、
-     * 从 bot.json 文本里取端口与令牌。浮层代码只调它，探针也只测它。
-     */
-    static final class Model {
-
-        private Model() {
-        }
-
-        static final class Chat {
-            final String id;
-            final long last;
-            final int count;
-            /** 显示名：私聊是好友备注名 / 昵称，群聊是群名；都没有时为 null。 */
-            final String name;
-
-            Chat(String id, long last, int count) {
-                this(id, last, count, null);
-            }
-
-            Chat(String id, long last, int count, String name) {
-                this.id = id;
-                this.last = last;
-                this.count = count;
-                this.name = name;
-            }
-        }
-
-        /** {@code "port"\s*:\s*(\d+)}，只要纯数字（wsPort 有引号前缀，不会误命中）。 */
-        private static final Pattern PORT_RE = Pattern.compile("\"port\"\\s*:\\s*(\\d+)");
-        /** {@code "token"\s*:\s*"([^"]+)"}。 */
-        private static final Pattern TOKEN_RE = Pattern.compile("\"token\"\\s*:\\s*\"([^\"]+)\"");
-
-        static String portOf(String configText) {
-            return firstGroup(configText, PORT_RE);
-        }
-
-        static String tokenOf(String configText) {
-            return firstGroup(configText, TOKEN_RE);
-        }
-
-        private static String firstGroup(String text, Pattern re) {
-            if (text == null) return null;
-            try {
-                Matcher m = re.matcher(text);
-                if (!m.find()) return null;
-                String g = m.group(1);
-                return g == null ? null : g.trim();
-            } catch (Throwable th) {
-                return null;
-            }
-        }
-
-        /**
-         * 解析响应，只留 {@code kind} 对应的会话，按最近活跃倒序，同 id 去重（取较大的 last/count）。
-         *
-         * @return {@code null} = 结构不对（当作读取失败）；空列表 = 真的没有会话
-         */
-        static List<Chat> parse(String json, int kind) {
-            if (json == null) return null;
-            Object root;
-            try {
-                root = BotConfigJson.parse(json);
-            } catch (Throwable th) {
-                return null;
-            }
-            List<Object> arr = BotConfigJson.asArray(BotConfigJson.get(root, "data.chats"));
-            if (arr == null) return null; // 没有 chats 这一层 = 不是我们要的响应
-
-            String want = kind == KIND_GROUP ? "group" : "private";
-            LinkedHashMap<String, Chat> uniq = new LinkedHashMap<String, Chat>();
-            for (int i = 0; i < arr.size(); i++) {
-                Map<String, Object> o = BotConfigJson.asObject(arr.get(i));
-                if (o == null) continue;
-                if (!want.equals(textOf(o.get("type")))) continue;
-                String id = textOf(o.get("id")).trim();
-                if (id.length() == 0) continue;
-                long last = numOf(o.get("last"));
-                int count = (int) numOf(o.get("count"));
-                if (count < 0) count = 0;
-                Chat old = uniq.get(id);
-                if (old == null) {
-                    uniq.put(id, new Chat(id, last, count));
-                } else {
-                    uniq.put(id, new Chat(id, Math.max(old.last, last),
-                            Math.max(old.count, count)));
-                }
-            }
-
-            ArrayList<Chat> out = new ArrayList<Chat>(uniq.values());
-            Collections.sort(out, new Comparator<Chat>() {
-                @Override
-                public int compare(Chat a, Chat b) {
-                    if (a.last != b.last) return a.last > b.last ? -1 : 1;
-                    if (a.count != b.count) return a.count > b.count ? -1 : 1;
-                    return a.id.compareTo(b.id);
-                }
-            });
-            if (out.size() > MAX_ROWS) {
-                return new ArrayList<Chat>(out.subList(0, MAX_ROWS));
-            }
-            return out;
-        }
-
-        /**
-         * 解析 {@code get_friend_list} 的响应：{@code data[]} 里每项是
-         * {@code {user_id, nickname, remark}}。名字优先用备注。
-         *
-         * @return {@code null} = 结构不对（当读取失败）；空列表 = 真的没有好友
-         */
-        static List<Chat> parseFriends(String json) {
-            if (json == null) return null;
-            Object root;
-            try {
-                root = BotConfigJson.parse(json);
-            } catch (Throwable th) {
-                return null;
-            }
-            List<Object> arr = BotConfigJson.asArray(BotConfigJson.get(root, "data"));
-            if (arr == null) return null;
-
-            LinkedHashMap<String, Chat> uniq = new LinkedHashMap<String, Chat>();
-            for (int i = 0; i < arr.size(); i++) {
-                Map<String, Object> o = BotConfigJson.asObject(arr.get(i));
-                if (o == null) continue;
-                String id = textOf(o.get("user_id")).trim();
-                if (id.length() == 0) id = textOf(o.get("uin")).trim();
-                if (id.length() == 0) continue;
-                String remark = textOf(o.get("remark")).trim();
-                String nick = textOf(o.get("nickname")).trim();
-                String name = remark.length() > 0 ? remark : nick;
-                if (uniq.containsKey(id)) continue;
-                uniq.put(id, new Chat(id, 0L, 0, name.length() == 0 ? null : name));
-            }
-            ArrayList<Chat> out = new ArrayList<Chat>(uniq.values());
-            if (out.size() > MAX_ROWS) out = new ArrayList<Chat>(out.subList(0, MAX_ROWS));
-            return out;
-        }
-
-        /**
-         * 两路来源合并：{@code primary}（好友，带名字）在前，{@code extra}（收到过消息的会话）里
-         * 没出现过的追加在后（好友那一路没有消息计数，计数仍取会话那一路的）。
-         *
-         * <p>任何一路为 {@code null} 都当「那一路没取到」：两路都 null 才返回 null（= 读取失败）。
-         */
-        static List<Chat> mergeSources(List<Chat> primary, List<Chat> extra) {
-            if (primary == null && extra == null) return null;
-            LinkedHashMap<String, Chat> byId = new LinkedHashMap<String, Chat>();
-            LinkedHashMap<String, Integer> counts = new LinkedHashMap<String, Integer>();
-            if (extra != null) {
-                for (int i = 0; i < extra.size(); i++) counts.put(extra.get(i).id, extra.get(i).count);
-            }
-            if (primary != null) {
-                for (int i = 0; i < primary.size(); i++) {
-                    Chat c = primary.get(i);
-                    Integer n = counts.get(c.id);
-                    byId.put(c.id, new Chat(c.id, c.last, n == null ? c.count : n.intValue(), c.name));
-                    counts.remove(c.id);
-                }
-            }
-            if (extra != null) {
-                for (int i = 0; i < extra.size(); i++) {
-                    Chat c = extra.get(i);
-                    if (byId.containsKey(c.id) || !counts.containsKey(c.id)) continue;
-                    byId.put(c.id, c);
-                    counts.remove(c.id);
-                }
-            }
-            ArrayList<Chat> out = new ArrayList<Chat>(byId.values());
-            if (out.size() > MAX_ROWS) out = new ArrayList<Chat>(out.subList(0, MAX_ROWS));
-            return out;
-        }
-
-        /**
-         * 构造 {@code get_chat_names} 的请求体：{@code {"groups":["871721981",...]}}。
-         *
-         * <p>只收 5-15 位纯数字（与协议端的校验一致）：不合规的号码不发过去，
-         * 免得一个坏行把整批请求打成 1400。最多 {@link #MAX_NAME_QUERIES} 个 ——
-         * 协议端上限就是 50，超出部分不查（那些行照旧显示号码）。
-         *
-         * <p>顺序沿用列表顺序（最近活跃在前），所以「名字最可能有用」的那些排在前面。
-         */
-        static String groupsRequest(List<Chat> chats) {
-            StringBuilder sb = new StringBuilder("{\"action\":\"get_chat_names\",\"params\":{\"groups\":[");
-            int n = 0;
-            if (chats != null) {
-                for (int i = 0; i < chats.size() && n < MAX_NAME_QUERIES; i++) {
-                    String id = chats.get(i).id;
-                    if (!isGroupCode(id)) continue;
-                    if (n > 0) sb.append(',');
-                    sb.append('"').append(id).append('"');
-                    n++;
-                }
-            }
-            sb.append("]}}");   // 收 groups 数组 + params 对象
-            return sb.toString();
-        }
-
-        /**
-         * 解析 {@code get_chat_names} 的响应：{@code data.names} 是 {@code {群号: 群名}}。
-         *
-         * @return {@code null} = 结构不对（当「没取到名字」，调用方照旧显示号码）；
-         *         空 Map = 一个名字都没拿到（同样只是没有名字，不是读取失败）
-         */
-        static Map<String, String> parseNames(String json) {
-            if (json == null) return null;
-            Object root;
-            try {
-                root = BotConfigJson.parse(json);
-            } catch (Throwable th) {
-                return null;
-            }
-            Map<String, Object> names = BotConfigJson.asObject(BotConfigJson.get(root, "data.names"));
-            if (names == null) return null;
-            LinkedHashMap<String, String> out = new LinkedHashMap<String, String>();
-            for (Map.Entry<String, Object> e : names.entrySet()) {
-                if (e == null) continue;
-                String id = e.getKey() == null ? "" : e.getKey().trim();
-                if (!isGroupCode(id)) continue;
-                Object v = e.getValue();
-                if (!(v instanceof String)) continue;
-                String name = ((String) v).trim();
-                if (name.length() == 0 || name.length() > 128) continue;
-                out.put(id, name);
-            }
-            return out;
-        }
-
-        /**
-         * 把群名并进 {@link Chat}（{@code name} 字段）。
-         *
-         * <p>只改「有名字」的那些行；顺序、计数、勾选语义一个都不动。
-         * {@code names} 为 {@code null} / 空 ⇒ 原样返回（= 名字这一路没取到，退化成只显示号码）。
-         */
-        static List<Chat> withNames(List<Chat> chats, Map<String, String> names) {
-            if (chats == null || names == null || names.isEmpty()) return chats;
-            ArrayList<Chat> out = new ArrayList<Chat>(chats.size());
-            for (int i = 0; i < chats.size(); i++) {
-                Chat c = chats.get(i);
-                String name = names.get(c.id);
-                if (name != null && name.length() > 0) {
-                    out.add(new Chat(c.id, c.last, c.count, name));
-                } else {
-                    out.add(c);
-                }
-            }
-            return out;
-        }
-
-        /** 5-15 位纯数字（协议端 {@code get_chat_names} 的口径）。 */
-        private static boolean isGroupCode(String code) {
-            if (code == null) return false;
-            int n = code.length();
-            if (n < 5 || n > 15) return false;
-            for (int i = 0; i < n; i++) {
-                char ch = code.charAt(i);
-                if (ch < '0' || ch > '9') return false;
-            }
-            return true;
-        }
-
-        /** 已在该字段里的号码 → 预勾选集合（去重、忽略空行）。 */
-        static LinkedHashSet<String> preselect(List<String> already) {
-            LinkedHashSet<String> out = new LinkedHashSet<String>();
-            if (already == null) return out;
-            for (int i = 0; i < already.size(); i++) {
-                String v = already.get(i) == null ? "" : already.get(i).trim();
-                if (v.length() > 0) out.add(v);
-            }
-            return out;
-        }
-
-        /**
-         * 合并：原有行一个都不动（连空行也留着），新选的追加到末尾，重复的不加。
-         * 这样用户手填的号码不会因为「从会话选择」被重排或被吞掉。
-         */
-        static ArrayList<String> merge(List<String> existing, List<String> picked) {
-            ArrayList<String> out = new ArrayList<String>();
-            LinkedHashSet<String> seen = new LinkedHashSet<String>();
-            if (existing != null) {
-                for (int i = 0; i < existing.size(); i++) {
-                    String v = existing.get(i);
-                    out.add(v == null ? "" : v);
-                }
-            }
-            for (int i = 0; i < out.size(); i++) {
-                String v = out.get(i).trim();
-                if (v.length() > 0) seen.add(v);
-            }
-            if (picked != null) {
-                for (int i = 0; i < picked.size(); i++) {
-                    String v = picked.get(i) == null ? "" : picked.get(i).trim();
-                    if (v.length() == 0 || seen.contains(v)) continue;
-                    seen.add(v);
-                    out.add(v);
-                }
-            }
-            return out;
-        }
-
-        private static String textOf(Object v) {
-            if (v == null || v == BotConfigJson.NULL) return "";
-            if (v instanceof BotConfigJson.Num) return ((BotConfigJson.Num) v).raw;
-            if (v instanceof String) return (String) v;
-            return String.valueOf(v);
-        }
-
-        private static long numOf(Object v) {
-            double d = BotConfigJson.numOf(v);
-            if (Double.isNaN(d) || Double.isInfinite(d)) return 0L;
-            return (long) d;
-        }
-    }
+    // 纯逻辑已全部收进 WhitelistModel.java，便于 run-java-logic-tests 直接测试（零重复）。
 }

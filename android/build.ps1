@@ -41,7 +41,7 @@ foreach ($f in @('proot','libtalloc.so.2','libandroid-shmem.so')) {
 
 # The container scripts ship as assets and are force-copied into the rootfs on every
 # start, so changing the login / bot logic only needs an APK reinstall, not a 1.2GB rootfs repack.
-foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'binding-host.mjs', 'bili-protocol-host.mjs')) {
+foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'container-watchdog.mjs', 'binding-host.mjs', 'bili-protocol-host.mjs')) {
   $src = Join-Path $PSScriptRoot $script
   if (-not (Test-Path $src)) { throw "missing: $src" }
   Copy-Item $src (Join-Path $assetsDir $script) -Force
@@ -54,12 +54,30 @@ foreach ($script in @('container-login.mjs', 'container-bot.mjs', 'binding-host.
 $bridgeSrc = Join-Path $PSScriptRoot '../src/bridge'
 $bridgeDst = Join-Path $assetsDir 'bridge'
 New-Item -ItemType Directory -Path $bridgeDst -Force | Out-Null
-foreach ($n in @('error.mjs', 'native-bridge.mjs', 'qq-profile.mjs', 'rkey.mjs')) {
+foreach ($n in @('error.mjs', 'native-bridge.mjs', 'qq-profile.mjs', 'rkey.mjs', 'web-cgi.mjs')) {
   $src = Join-Path $bridgeSrc $n
   if (-not (Test-Path $src)) { throw "missing: $src" }
   Copy-Item $src (Join-Path $bridgeDst $n) -Force
 }
-Write-Host ("[0/6] bundled src/bridge/ (4 files, native-bridge {0} B)" -f (Get-Item (Join-Path $bridgeSrc 'native-bridge.mjs')).Length)
+Write-Host ("[0/6] bundled src/bridge/ (5 files, native-bridge {0} B)" -f (Get-Item (Join-Path $bridgeSrc 'native-bridge.mjs')).Length)
+
+# [layer: shell-android] Q14 全量同步 QQ 协议层 src/ 到 assets/qq-protocol/，消除「容器里 src/ 与仓库漂移」。
+$protoSrcRoot = (Resolve-Path (Join-Path $PSScriptRoot '../src')).Path
+$protoDstRoot = Join-Path $assetsDir 'qq-protocol'
+if (Test-Path $protoDstRoot) { Remove-Item $protoDstRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $protoDstRoot -Force | Out-Null
+$protoCount = 0
+Get-ChildItem -Recurse -File -Filter *.mjs -Path $protoSrcRoot | Where-Object {
+  $_.FullName -notmatch '\\src\\(platforms|native|ops)\\'
+} | ForEach-Object {
+  $rel = $_.FullName.Substring($protoSrcRoot.Length).TrimStart('\', '/')  # $protoSrcRoot 已规范化
+  $dst = Join-Path $protoDstRoot $rel
+  $dir = Split-Path -Parent $dst
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  Copy-Item $_.FullName $dst -Force
+  $protoCount++
+}
+Write-Host ("[0/6] bundled src/ protocol tree ({0} files -> assets/qq-protocol)" -f $protoCount)
 
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/client.mjs') (Join-Path $assetsDir 'bili-client.mjs') -Force
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/authorized-client.mjs') (Join-Path $assetsDir 'authorized-client.mjs') -Force

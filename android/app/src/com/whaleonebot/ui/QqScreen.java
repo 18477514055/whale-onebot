@@ -34,6 +34,7 @@ final class QqScreen extends Screen {
     private TextView statusText;
     private IconView statusDot;
     private TextView uinValue;
+    private TextView readinessValue;
     private TextView startBtn;
     private TextView stopBtn;
     private TextView saveBtn;
@@ -47,7 +48,11 @@ final class QqScreen extends Screen {
 
     private String lastStatus;
     private String lastUin;
+    private String lastReadiness;
     private String lastLog;
+    private volatile long lastReadinessAt = 0L;
+    private volatile String cachedReadinessText = null;
+    private volatile boolean readinessInFlight = false;
 
     QqScreen(AppShell shell) {
         super(shell);
@@ -209,6 +214,17 @@ final class QqScreen extends Screen {
         LinearLayout.LayoutParams l2lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2lp.topMargin = dp(Theme.S2);
         sbox.addView(line2, l2lp);
+
+        LinearLayout line3 = Ui.row(activity);
+        TextView rLabel = Ui.text(activity, "协议能力", Theme.T_CAP, t.textSecondary);
+        line3.addView(rLabel, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        readinessValue = Ui.text(activity, "待检测", Theme.T_CAP, t.textSecondary);
+        LinearLayout.LayoutParams rvp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        rvp.leftMargin = dp(Theme.S2);
+        line3.addView(readinessValue, rvp);
+        LinearLayout.LayoutParams l3lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        l3lp.topMargin = dp(Theme.S1);
+        sbox.addView(line3, l3lp);
 
         statusCard.addView(sbox, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         LinearLayout.LayoutParams sc = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
@@ -390,6 +406,47 @@ final class QqScreen extends Screen {
         if (!u.equals(lastUin)) {
             uinValue.setText(u);
             lastUin = u;
+        }
+
+        if (readinessValue != null) {
+            if (!running) {
+                cachedReadinessText = null;
+                lastReadinessAt = 0L;
+            } else if (!readinessInFlight && System.currentTimeMillis() - lastReadinessAt >= 15000L) {
+                readinessInFlight = true;
+                lastReadinessAt = System.currentTimeMillis();
+                Thread th = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            String raw = WhitelistPicker.queryProtocol(activity, "get_protocol_readiness", "{}", 2500);
+                            cachedReadinessText = WhitelistModel.formatReadinessSummary(raw);
+                        } finally {
+                            readinessInFlight = false;
+                        }
+                        if (activity != null && !activity.isFinishing()) {
+                            activity.runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (readinessValue != null && cachedReadinessText != null
+                                            && !cachedReadinessText.equals(lastReadiness)) {
+                                        readinessValue.setText(cachedReadinessText);
+                                        lastReadiness = cachedReadinessText;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }, "qq-readiness");
+                th.setDaemon(true);
+                th.start();
+            }
+            String rText = !running ? "容器未运行（启动后自动检测）"
+                    : (cachedReadinessText != null ? cachedReadinessText : "协议端就绪检测中…");
+            if (!rText.equals(lastReadiness)) {
+                readinessValue.setText(rText);
+                lastReadiness = rText;
+            }
         }
 
         Ui.enabled(startBtn, !running);
