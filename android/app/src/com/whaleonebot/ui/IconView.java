@@ -28,6 +28,12 @@ final class IconView extends View {
     static final int DOT = 10;      // 状态圆点
     static final int QR = 11;       // 二维码占位
     static final int PLAY = 12;     // 启动：播放三角
+    static final int WIZARD = 13;   // 一键部署向导：星芒
+    static final int GLOBE = 14;    // 版本与国内镜像：地球
+    static final int SHIELD = 15;   // 备份中心：盾牌
+    static final int PALETTE = 16;  // 外观主题：调色板
+    static final int CPU = 17;      // 环境配置：芯片
+    static final int POWER = 18;    // 自动重启保活：电源
 
     private static final Paint S = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final Paint F = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -174,6 +180,69 @@ final class IconView extends View {
                 cv.drawCircle(16.5f, 15.5f, 1.2f, F);
                 cv.drawCircle(20f, 19f, 1.2f, F);
                 cv.drawLine(13.5f, 20.5f, 20.5f, 20.5f, S);
+                break;
+
+            case WIZARD:
+                P.moveTo(12f, 2.8f);
+                P.quadTo(12.8f, 11.2f, 21.2f, 12f);
+                P.quadTo(12.8f, 12.8f, 12f, 21.2f);
+                P.quadTo(11.2f, 12.8f, 2.8f, 12f);
+                P.quadTo(11.2f, 11.2f, 12f, 2.8f);
+                P.close();
+                cv.drawPath(P, S);
+                cv.drawCircle(12f, 12f, 1.8f, F);
+                break;
+
+            case GLOBE:
+                cv.drawCircle(12f, 12f, 8.8f, S);
+                R.set(7.6f, 3.2f, 16.4f, 20.8f);
+                cv.drawOval(R, S);
+                cv.drawLine(3.6f, 9.2f, 20.4f, 9.2f, S);
+                cv.drawLine(3.6f, 14.8f, 20.4f, 14.8f, S);
+                break;
+
+            case SHIELD:
+                P.moveTo(12f, 3f);
+                P.lineTo(19.5f, 6f);
+                P.lineTo(19.5f, 12.2f);
+                P.quadTo(19.5f, 17.6f, 12f, 21f);
+                P.quadTo(4.5f, 17.6f, 4.5f, 12.2f);
+                P.lineTo(4.5f, 6f);
+                P.close();
+                cv.drawPath(P, S);
+                P.reset();
+                P.moveTo(8.8f, 12.2f);
+                P.lineTo(11.1f, 14.5f);
+                P.lineTo(15.6f, 9.8f);
+                cv.drawPath(P, S);
+                break;
+
+            case PALETTE:
+                cv.drawCircle(12f, 12f, 8.8f, S);
+                cv.drawCircle(8.8f, 9.2f, 1.3f, F);
+                cv.drawCircle(13.2f, 7.6f, 1.3f, F);
+                cv.drawCircle(16.6f, 10.6f, 1.3f, F);
+                cv.drawCircle(15.2f, 15.2f, 1.8f, F);
+                break;
+
+            case CPU:
+                R.set(6.5f, 6.5f, 17.5f, 17.5f);
+                cv.drawRoundRect(R, 2.2f, 2.2f, S);
+                cv.drawRect(10f, 10f, 14f, 14f, F);
+                cv.drawLine(9.5f, 3.2f, 9.5f, 6.5f, S);
+                cv.drawLine(14.5f, 3.2f, 14.5f, 6.5f, S);
+                cv.drawLine(9.5f, 17.5f, 9.5f, 20.8f, S);
+                cv.drawLine(14.5f, 17.5f, 14.5f, 20.8f, S);
+                cv.drawLine(3.2f, 9.5f, 6.5f, 9.5f, S);
+                cv.drawLine(3.2f, 14.5f, 6.5f, 14.5f, S);
+                cv.drawLine(17.5f, 9.5f, 20.8f, 9.5f, S);
+                cv.drawLine(17.5f, 14.5f, 20.8f, 14.5f, S);
+                break;
+
+            case POWER:
+                cv.drawLine(12f, 3.5f, 12f, 11.5f, S);
+                R.set(4.8f, 5.4f, 19.2f, 19.8f);
+                cv.drawArc(R, -52f, 284f, false, S);
                 break;
 
             default:

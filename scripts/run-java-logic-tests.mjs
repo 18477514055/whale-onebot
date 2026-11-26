@@ -18,6 +18,8 @@ const UI = path.join(ROOT, 'android/app/src/com/whaleonebot/ui');
 const REMOTE = path.join(ROOT, 'android/app/src/com/whaleonebot/remote');
 const QRGEN = path.join(ROOT, 'android/app/src/com/whaleonebot/ui/thirdparty/qrcodegen');
 const INSTALL = path.join(ROOT, 'android/app/src/com/whaleonebot/install');
+const NET = path.join(ROOT, 'android/app/src/com/whaleonebot/net');
+const DOUYIN_MOBILE = path.join(ROOT, 'android/app/src/com/whaleonebot/douyin/mobile');
 const TEST_DIR = path.join(ROOT, 'test/java');
 const OUT = path.join(ROOT, '.tmp/java-logic-test');
 
@@ -27,6 +29,8 @@ const REMOTE_LOGIC = ['RemoteCrypto.java', 'StunClient.java', 'MqttSignaling.jav
 const QRGEN_LOGIC = ['BitBuffer.java', 'DataTooLongException.java', 'QrCode.java', 'QrSegment.java'];
 // P14：v2 部件索引的读取器也刻意不 import Android，所以进纯逻辑测试
 const INSTALL_LOGIC = ['ComponentIndex.java'];
+const NET_LOGIC = ['MirrorFetch.java'];
+const DOUYIN_LOGIC = ['Desk.java'];
 
 const logicSrcs = LOGIC.map((n) => path.join(UI, n));
 for (const f of logicSrcs) {
@@ -54,6 +58,8 @@ fs.mkdirSync(path.join(stage, 'com/whaleonebot/ui'), { recursive: true });
 fs.mkdirSync(path.join(stage, 'com/whaleonebot/remote'), { recursive: true });
 fs.mkdirSync(path.join(stage, 'io/nayuki/qrcodegen'), { recursive: true });
 fs.mkdirSync(path.join(stage, 'com/whaleonebot/install'), { recursive: true });
+fs.mkdirSync(path.join(stage, 'com/whaleonebot/net'), { recursive: true });
+fs.mkdirSync(path.join(stage, 'com/whaleonebot/douyin/mobile'), { recursive: true });
 fs.mkdirSync(classes, { recursive: true });
 
 for (const n of LOGIC) {
@@ -68,6 +74,12 @@ for (const n of QRGEN_LOGIC) {
 for (const n of INSTALL_LOGIC) {
   fs.copyFileSync(path.join(INSTALL, n), path.join(stage, 'com/whaleonebot/install', n));
 }
+for (const n of NET_LOGIC) {
+  fs.copyFileSync(path.join(NET, n), path.join(stage, 'com/whaleonebot/net', n));
+}
+for (const n of DOUYIN_LOGIC) {
+  fs.copyFileSync(path.join(DOUYIN_MOBILE, n), path.join(stage, 'com/whaleonebot/douyin/mobile', n));
+}
 for (const f of testSrcs) {
   fs.copyFileSync(f, path.join(stage, path.basename(f)));
 }
@@ -77,6 +89,8 @@ const files = [
   ...REMOTE_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/remote', n)),
   ...QRGEN_LOGIC.map((n) => path.join(stage, 'io/nayuki/qrcodegen', n)),
   ...INSTALL_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/install', n)),
+  ...NET_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/net', n)),
+  ...DOUYIN_LOGIC.map((n) => path.join(stage, 'com/whaleonebot/douyin/mobile', n)),
   ...testSrcs.map((f) => path.join(stage, path.basename(f))),
 ];
 

@@ -1,0 +1,1047 @@
+[
+  {
+    "tag_name": "v1.2.7",
+    "name": "Whale OneBot v1.2.7",
+    "prerelease": false,
+    "published_at": "2026-11-26T09:29:57Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.7",
+    "assets": [
+      {
+        "name": "bot-core-1.2.7.zip",
+        "size": 2394195,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/bot-core-1.2.7.zip"
+      },
+      {
+        "name": "bot-douyin-1.2.7.zip",
+        "size": 16931,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/bot-douyin-1.2.7.zip"
+      },
+      {
+        "name": "platform-douyin-1.2.7.zip",
+        "size": 36576,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/platform-douyin-1.2.7.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 12862,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 443,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.7.apk",
+        "size": 109581452,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.7/whale-onebot-1.2.7.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.6",
+    "name": "Whale OneBot 1.2.6",
+    "prerelease": false,
+    "published_at": "2026-11-26T07:52:00Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.6",
+    "assets": [
+      {
+        "name": "bot-core-1.2.5.zip",
+        "size": 2391636,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.6/bot-core-1.2.5.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 11271,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.6/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 259,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.6/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.6.apk",
+        "size": 109540492,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.6/whale-onebot-1.2.6.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.5",
+    "name": "Whale OneBot 1.2.5",
+    "prerelease": false,
+    "published_at": "2026-11-26T04:50:18Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.5",
+    "assets": [
+      {
+        "name": "bot-core-1.2.5.zip",
+        "size": 2391636,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.5/bot-core-1.2.5.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 11271,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.5/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 259,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.5/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.5.apk",
+        "size": 109540414,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.5/whale-onebot-1.2.5.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.4",
+    "name": "Whale OneBot 1.2.4",
+    "prerelease": false,
+    "published_at": "2026-11-25T14:56:22Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.4",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 10826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.4/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.4/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.4.apk",
+        "size": 109441822,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.4/whale-onebot-1.2.4.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.3",
+    "name": "Whale OneBot 1.2.3",
+    "prerelease": false,
+    "published_at": "2026-11-25T13:45:19Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.3",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 10826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.3/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.3/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.3.apk",
+        "size": 109429534,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.3/whale-onebot-1.2.3.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.2",
+    "name": "Whale OneBot 1.2.2",
+    "prerelease": false,
+    "published_at": "2026-11-25T13:23:50Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.2",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 10826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.2/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.2/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.2.apk",
+        "size": 109425438,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.2/whale-onebot-1.2.2.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.1",
+    "name": "Whale OneBot 1.2.1",
+    "prerelease": false,
+    "published_at": "2026-11-25T11:49:22Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.1",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 10826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.1.apk",
+        "size": 109417246,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.1/whale-onebot-1.2.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.2.0",
+    "name": "Whale OneBot 1.2.0",
+    "prerelease": false,
+    "published_at": "2026-11-25T10:54:12Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.0",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.8.zip",
+        "size": 11356,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/bot-bilibili-1.1.8.zip"
+      },
+      {
+        "name": "bot-core-1.1.8.zip",
+        "size": 2373724,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/bot-core-1.1.8.zip"
+      },
+      {
+        "name": "bot-qq-1.1.8.zip",
+        "size": 8822,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/bot-qq-1.1.8.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 954,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "platform-bilibili-1.2.0-beta.1.zip",
+        "size": 105317,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/platform-bilibili-1.2.0-beta.1.zip"
+      },
+      {
+        "name": "platform-qq-1.2.0-beta.1.zip",
+        "size": 120609,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/platform-qq-1.2.0-beta.1.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 10826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1520,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/SHA256SUMS"
+      },
+      {
+        "name": "whale-desktop-protocol-1.2.0-beta.1.zip",
+        "size": 299601,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/whale-desktop-protocol-1.2.0-beta.1.zip"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.8.tar.gz",
+        "size": 51242508,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/whale-environment-arm64-1.1.8.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.2.0.apk",
+        "size": 109417246,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.0/whale-onebot-1.2.0.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.8-beta.1",
+    "name": "1.1.8-beta.1 — 修内置核心机器起不来容器；换环境不再重装 QQ",
+    "prerelease": true,
+    "published_at": "2026-11-24T18:36:14Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.8-beta.1",
+    "assets": [
+      {
+        "name": "SHA256SUMS",
+        "size": 97,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.1.8-beta.1.apk",
+        "size": 109298462,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8-beta.1/whale-onebot-1.1.8-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.8",
+    "name": "1.1.8 预览 — 修内置核心机器起不来容器；铺环境时一并装核心；换环境不再重装 QQ",
+    "prerelease": true,
+    "published_at": "2026-11-25T03:07:48Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.8",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.8.zip",
+        "size": 11356,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/bot-bilibili-1.1.8.zip"
+      },
+      {
+        "name": "bot-core-1.1.8.zip",
+        "size": 2373724,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/bot-core-1.1.8.zip"
+      },
+      {
+        "name": "bot-qq-1.1.8.zip",
+        "size": 8822,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/bot-qq-1.1.8.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 954,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 174,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 4413,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1237,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.8.tar.gz",
+        "size": 51242508,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/whale-environment-arm64-1.1.8.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.8-beta.2.apk",
+        "size": 109306654,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.8/whale-onebot-1.1.8-beta.2.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.7",
+    "name": "1.1.7 — 自带环境与内置核心，启动回到秒级",
+    "prerelease": false,
+    "published_at": "2026-11-24T17:19:32Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.7",
+    "assets": [
+      {
+        "name": "SHA256SUMS",
+        "size": 90,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.7/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.1.7.apk",
+        "size": 109294366,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.7/whale-onebot-1.1.7.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.6-beta.1",
+    "name": "Whale OneBot 1.1.6 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-23T16:10:27Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.6-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.5-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/bot-bilibili-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.5-beta.1.zip",
+        "size": 2367582,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/bot-core-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.5-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/bot-qq-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 3911,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1252,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.5-beta.1.tar.gz",
+        "size": 51242516,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/whale-environment-arm64-1.1.5-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.6-beta.1.apk",
+        "size": 1575813,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.6-beta.1/whale-onebot-1.1.6-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.5-beta.1",
+    "name": "Whale OneBot 1.1.5 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-23T02:54:58Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.5-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.5-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/bot-bilibili-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.5-beta.1.zip",
+        "size": 2367582,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/bot-core-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.5-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/bot-qq-1.1.5-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 3911,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1252,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.5-beta.1.tar.gz",
+        "size": 51242516,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/whale-environment-arm64-1.1.5-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.5-beta.1.apk",
+        "size": 1571717,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.5-beta.1/whale-onebot-1.1.5-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.4-beta.1",
+    "name": "Whale OneBot 1.1.4 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-22T10:04:50Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.4-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.4-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/bot-bilibili-1.1.4-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.4-beta.1.zip",
+        "size": 2363767,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/bot-core-1.1.4-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.4-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/bot-qq-1.1.4-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 3360,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1252,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.4-beta.1.tar.gz",
+        "size": 51242516,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/whale-environment-arm64-1.1.4-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.4-beta.1.apk",
+        "size": 1567621,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.4-beta.1/whale-onebot-1.1.4-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.3-beta.1",
+    "name": "Whale OneBot 1.1.3 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-22T07:01:49Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.3-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.3-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/bot-bilibili-1.1.3-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.3-beta.1.zip",
+        "size": 2360302,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/bot-core-1.1.3-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.3-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/bot-qq-1.1.3-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 2809,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 744,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.3-beta.1.tar.gz",
+        "size": 51242516,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/whale-environment-arm64-1.1.3-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.3-beta.1.apk",
+        "size": 1563525,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.3-beta.1/whale-onebot-1.1.3-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.2-beta.1",
+    "name": "Whale OneBot 1.1.2 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-22T06:19:28Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.2-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.2-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/bot-bilibili-1.1.2-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.2-beta.1.zip",
+        "size": 2358971,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/bot-core-1.1.2-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.2-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/bot-qq-1.1.2-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 2258,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 744,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.2-beta.1.tar.gz",
+        "size": 51242287,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/whale-environment-arm64-1.1.2-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.2-beta.1.apk",
+        "size": 1563525,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.2-beta.1/whale-onebot-1.1.2-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.1-beta.1",
+    "name": "Whale OneBot 1.1.1 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-21T20:51:06Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.1-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.1-beta.1.zip",
+        "size": 11360,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/bot-bilibili-1.1.1-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.1-beta.1.zip",
+        "size": 2352733,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/bot-core-1.1.1-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.1-beta.1.zip",
+        "size": 8827,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/bot-qq-1.1.1-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/catalog.json"
+      },
+      {
+        "name": "core-release-pin.json",
+        "size": 181,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/core-release-pin.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 1707,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 744,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.1-beta.1.tar.gz",
+        "size": 51240504,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/whale-environment-arm64-1.1.1-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.1-beta.1.apk",
+        "size": 1559429,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.1-beta.1/whale-onebot-1.1.1-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.0-beta.1",
+    "name": "Whale OneBot 1.1.0 Beta",
+    "prerelease": true,
+    "published_at": "2026-11-21T11:17:37Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.0-beta.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.0-beta.1.zip",
+        "size": 11361,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/bot-bilibili-1.1.0-beta.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.0-beta.1.zip",
+        "size": 2318711,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/bot-core-1.1.0-beta.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.0-beta.1.zip",
+        "size": 8828,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/bot-qq-1.1.0-beta.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 996,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/catalog.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 1156,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1179,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.0-beta.1.tar.gz",
+        "size": 51237724,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/whale-environment-arm64-1.1.0-beta.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-1.1.0-beta.1.apk",
+        "size": 1534853,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-beta.1/whale-onebot-1.1.0-beta.1.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.1.0-rc.1",
+    "name": "v1.1.0-rc.1",
+    "prerelease": true,
+    "published_at": "2026-11-20T14:28:25Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.1.0-rc.1",
+    "assets": [
+      {
+        "name": "aosp-libsepol.tar.gz",
+        "size": 519794,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/aosp-libsepol.tar.gz"
+      },
+      {
+        "name": "apk-native-build-tool-notices-and-patches.tar.gz",
+        "size": 82323,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/apk-native-build-tool-notices-and-patches.tar.gz"
+      },
+      {
+        "name": "apk-native-historical-build-sources.tar.gz",
+        "size": 1377061,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/apk-native-historical-build-sources.tar.gz"
+      },
+      {
+        "name": "apk-native-source-materials.tar.gz",
+        "size": 7324132,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/apk-native-source-materials.tar.gz"
+      },
+      {
+        "name": "bot-bilibili-1.1.0-rc.1.zip",
+        "size": 11360,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/bot-bilibili-1.1.0-rc.1.zip"
+      },
+      {
+        "name": "bot-core-1.1.0-rc.1.zip",
+        "size": 2318711,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/bot-core-1.1.0-rc.1.zip"
+      },
+      {
+        "name": "bot-qq-1.1.0-rc.1.zip",
+        "size": 8826,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/bot-qq-1.1.0-rc.1.zip"
+      },
+      {
+        "name": "catalog.json",
+        "size": 984,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/catalog.json"
+      },
+      {
+        "name": "debian-arm64-corresponding-source.tar",
+        "size": 147456000,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/debian-arm64-corresponding-source.tar"
+      },
+      {
+        "name": "release-index.json",
+        "size": 603,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 1163,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/SHA256SUMS"
+      },
+      {
+        "name": "whale-environment-arm64-1.1.0-rc.1.tar.gz",
+        "size": 51237722,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/whale-environment-arm64-1.1.0-rc.1.tar.gz"
+      },
+      {
+        "name": "whale-onebot-release.apk",
+        "size": 1506039,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.1.0-rc.1/whale-onebot-release.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.0.1",
+    "name": "Whale OneBot v1.0.1",
+    "prerelease": false,
+    "published_at": "2026-11-19T15:52:01Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.0.1",
+    "assets": [
+      {
+        "name": "rootfs.tar.gz",
+        "size": 1236176468,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.0.1/rootfs.tar.gz"
+      },
+      {
+        "name": "whale-onebot-release.apk",
+        "size": 1353050,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.0.1/whale-onebot-release.apk"
+      }
+    ]
+  }
+]

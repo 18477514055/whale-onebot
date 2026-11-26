@@ -107,14 +107,14 @@ final class HomeScreen extends Screen {
         col.addView(label, labelLp);
 
         // ---------- 四张卡 ----------
-        addCard(IconView.CHAT, "QQ", null,
-                Ui.alpha(t.accent, 0.16f), t.accent, false);
-        addCard(IconView.MUSIC, "抖音", "短视频与直播",
-                Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true);
-        addCard(IconView.TV, "bilibili", "查看本平台机器人",
-                Ui.alpha(t.accent, 0.16f), t.accent, false);
-        addCard(IconView.BOX, "小黑盒", "游戏社区与战绩",
-                Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true);
+        addCard(IconView.CHAT, BotRegistry.P_QQ, "QQ", null,
+                Ui.alpha(t.accent, 0.16f), t.accent, false, null);
+        addCard(IconView.MUSIC, BotRegistry.P_DOUYIN, "抖音", "短视频与互动",
+                Ui.alpha(t.accent, 0.16f), t.accent, false, "测试版");
+        addCard(IconView.TV, BotRegistry.P_BILIBILI, "bilibili", "查看本平台机器人",
+                Ui.alpha(t.accent, 0.16f), t.accent, false, null);
+        addCard(IconView.BOX, BotRegistry.P_XIAOHEIHE, "小黑盒", "游戏社区与战绩",
+                Ui.alpha(t.textPrimary, 0.10f), Ui.alpha(t.textPrimary, 0.85f), true, null);
 
         // ---------- 余量全部放到卡片组下方，页脚仍然贴在底部 ----------
         col.addView(new View(activity), new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
@@ -139,9 +139,9 @@ final class HomeScreen extends Screen {
         updateDevicePill();
     }
 
-    /** 一张平台卡：图标块 + 标题/副标题 + 尾部（箭头或「敬请期待」角标）。 */
-    private void addCard(int icon, String name, String staticSub,
-                         int tileFill, int iconTint, boolean soon) {
+    /** 一张平台卡：图标块 + 标题/可选角标/副标题 + 尾部（箭头或「敬请期待」角标）。 */
+    private void addCard(int icon, final String platformId, String name, String staticSub,
+                         int tileFill, int iconTint, boolean soon, String tagPill) {
         FrameLayout card = Ui.card(activity, t);
 
         LinearLayout row = Ui.row(activity);
@@ -163,8 +163,16 @@ final class HomeScreen extends Screen {
         blp.leftMargin = dp(Theme.S3);
         blp.rightMargin = dp(Theme.S2);
 
+        LinearLayout titleRow = Ui.row(activity);
         TextView title = Ui.strong(activity, name, Theme.T_CARD, t.textPrimary);
-        box.addView(title, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        titleRow.addView(title, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        if (tagPill != null && tagPill.length() > 0) {
+            TextView pill = Ui.pill(activity, t, tagPill, Ui.TONE_WARN);
+            LinearLayout.LayoutParams plp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            plp.leftMargin = dp(8);
+            titleRow.addView(pill, plp);
+        }
+        box.addView(titleRow, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
 
         LinearLayout subRow = Ui.row(activity);
         IconView dot = new IconView(activity, IconView.DOT,
@@ -201,7 +209,7 @@ final class HomeScreen extends Screen {
             card.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    host().toast("此平台尚未开放；可先配置 QQ 或 bilibili");
+                    host().toast("此平台尚未开放；可先配置 QQ、bilibili 或抖音（测试版）");
                 }
             });
             card.setAlpha(0.62f); // 明确的「不可用」，但文字仍可读
@@ -209,10 +217,7 @@ final class HomeScreen extends Screen {
             card.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    // 用户 2026-11-18 定：点平台先进「这个平台的机器人选择」，
-                    // 再点机器人进「启动 / 配置」。V1 只有 QQ 可点，所以平台 id 先写死 QQ；
-                    // 等别的平台开放时给 addCard 加一个 platformId 参数即可（就这一处）。
-                    shell.pushPlatformBots(icon == IconView.TV ? BotRegistry.P_BILIBILI : BotRegistry.P_QQ);
+                    shell.pushPlatformBots(platformId);
                 }
             });
         }
@@ -222,7 +227,7 @@ final class HomeScreen extends Screen {
         col.addView(card, clp);
         cards.add(card);
 
-        if (!soon) platformCounts.put(icon == IconView.TV ? BotRegistry.P_BILIBILI : BotRegistry.P_QQ, sub);
+        if (!soon) platformCounts.put(platformId, sub);
     }
 
         /**

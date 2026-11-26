@@ -2,6 +2,8 @@ package com.whaleonebot.install;
 
 import static com.whaleonebot.install.InstallFiles.*;
 
+import com.whaleonebot.net.MirrorFetch;
+
 import java.io.*;
 import java.net.*;
 import java.security.MessageDigest;
@@ -12,33 +14,11 @@ import java.util.List;
  * Immutable private content-addressed cache. Never trusts a hash obtained beside the index.
  *
  * <p>下载源说明：官方 {@link #ORIGIN} 仍为唯一名义地址；由于用户手机默认没有梯子、直连 github.com
- * 往往失败，传输层允许按固定顺序回退到 {@link #MIRROR_PREFIXES} 里的镜像前缀。
+ * 往往失败，传输层统一复用 {@link MirrorFetch} 维护的国内镜像池（含自定义镜像与自动记住最快源）。
  * <b>镜像只作传输层，信任仍由 APK 内置 pin + 流式长度 + SHA-256 决定（这条不可放宽）</b>。
  */
 final class ReleaseCache {
   static final String ORIGIN = "https://github.com/18477514055/whale-onebot/releases/download/";
-
-  /**
-   * 镜像前缀白名单（原因：用户没有梯子，直连 GitHub 资产经常超时）。
-   * ★ 2026-11-22 实测（不挂梯子、同一个资产逐个下载比对 sha256）：
-   *   ghproxy.net / ghfast.top / gh-proxy.com 可用（★ 2026-11-23 05:4x 两次实测均 200 且内容正确）；
-   *   ghfile.geekertao.top 两次都回 429（被限流）⇒ 已降到兜底；
-   *   hub.gitmirror.com 与 mirror.ghproxy.com 不可达 —— 前两个已从清单移除，保留 gh-proxy.com 作最后尝试。
-   * 镜像只作传输层，不放宽任何 SHA-256 / 长度 / pin 校验。
-   */
-  static final String[] MIRROR_PREFIXES = {
-    "https://ghproxy.net/",
-    "https://ghfast.top/",
-    "https://gh-proxy.com/",
-    "https://ghfile.geekertao.top/",
-  };
-
-  private static final String[] MIRROR_HOSTS = {
-    "ghproxy.net",
-    "ghfast.top",
-    "gh-proxy.com",
-    "ghfile.geekertao.top",
-  };
 
   private final File cache;
 
@@ -63,16 +43,17 @@ final class ReleaseCache {
   }
 
   /**
-   * 白名单前缀检查（官方前缀 + 镜像前缀白名单）。
-   * 改动原因：用户没有梯子，允许通过白名单镜像前缀传输官方 Release 资产；剥离镜像前缀后仍必须严格满足 {@link #origin(String)}。
+   * 白名单前缀检查（官方前缀 + {@link MirrorFetch#mirrorPrefixes()} 白名单）。
+   * 剥离镜像前缀后仍必须严格满足 {@link #origin(String)}。
    */
   static URL allowedDownloadUrl(String value) throws IOException {
     require(value != null, "Missing download URL");
     if (value.startsWith(ORIGIN)) {
       return origin(value);
     }
-    for (int i = 0; i < MIRROR_PREFIXES.length; i++) {
-      String prefix = MIRROR_PREFIXES[i];
+    String[] prefixes = MirrorFetch.mirrorPrefixes();
+    for (int i = 0; i < prefixes.length; i++) {
+      String prefix = prefixes[i];
       if (value.startsWith(prefix)) {
         origin(value.substring(prefix.length()));
         return new URL(value);
@@ -81,23 +62,19 @@ final class ReleaseCache {
     throw new IOException("URL not in official or mirror whitelist");
   }
 
-  /** 按固定顺序返回实际下载候选：官方 → gh-proxy.com → ghproxy.net → hub.gitmirror.com → mirror.ghproxy.com。 */
+  /** 返回按 MirrorFetch 智能排序（含最快源与官方退避）的实际下载候选列表。 */
   static List<URL> candidateUrls(String officialUrl) throws IOException {
-    URL official = origin(officialUrl);
-    List<URL> out = new ArrayList<URL>(1 + MIRROR_PREFIXES.length);
-    out.add(official);
-    for (int i = 0; i < MIRROR_PREFIXES.length; i++) {
-      out.add(allowedDownloadUrl(MIRROR_PREFIXES[i] + officialUrl));
+    origin(officialUrl);
+    List<String> prefixes = MirrorFetch.orderedPrefixes();
+    List<URL> out = new ArrayList<URL>(prefixes.size());
+    for (int i = 0; i < prefixes.size(); i++) {
+      out.add(allowedDownloadUrl(prefixes.get(i) + officialUrl));
     }
     return out;
   }
 
   private static boolean isMirrorHost(String host) {
-    if (host == null) return false;
-    for (int i = 0; i < MIRROR_HOSTS.length; i++) {
-      if (MIRROR_HOSTS[i].equals(host)) return true;
-    }
-    return false;
+    return MirrorFetch.isMirrorHost(host);
   }
 
   static URL redirect(URL from, String location) throws IOException {
@@ -141,9 +118,14 @@ final class ReleaseCache {
       StringBuilder failures = new StringBuilder();
       for (int idx = 0; idx < candidates.size(); idx++) {
         URL startUrl = allowedDownloadUrl(candidates.get(idx).toExternalForm());
+        boolean isOfficial = "github.com".equals(startUrl.getHost());
         try {
-          return fetchOne(name, startUrl, pin, bytes, limit, progress);
+          File got = fetchOne(name, startUrl, pin, bytes, limit, progress, isOfficial);
+          if (isOfficial) MirrorFetch.recordSuccessPrefix("");
+          else MirrorFetch.recordSuccessPrefix(MirrorFetch.sourcePrefixOf(startUrl.toExternalForm(), url));
+          return got;
         } catch (IOException ex) {
+          if (isOfficial) MirrorFetch.markOfficialFailed();
           if (failures.length() > 0) failures.append("; ");
           failures.append("源").append(idx + 1).append(": ")
               .append(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
@@ -158,7 +140,8 @@ final class ReleaseCache {
    * 校验不过立即删除临时文件并抛异常，绝不把未校验字节落盘或原子改名。
    */
   private File fetchOne(
-      String name, URL startUrl, String pin, long bytes, long limit, CoreInstaller.Progress progress)
+      String name, URL startUrl, String pin, long bytes, long limit, CoreInstaller.Progress progress,
+      boolean isOfficial)
       throws IOException {
     URL u = startUrl;
     File tmp = File.createTempFile(".fetch-", ".part", cache);
@@ -167,7 +150,9 @@ final class ReleaseCache {
         HttpURLConnection c = transport.open(u);
         try {
           c.setInstanceFollowRedirects(false);
-          c.setConnectTimeout(6000);
+          c.setConnectTimeout(isOfficial
+              ? MirrorFetch.OFFICIAL_CONNECT_TIMEOUT_MS
+              : MirrorFetch.MIRROR_CONNECT_TIMEOUT_MS);
           c.setReadTimeout(30000);
           c.setUseCaches(false);
           c.setRequestProperty("Accept-Encoding", "identity");

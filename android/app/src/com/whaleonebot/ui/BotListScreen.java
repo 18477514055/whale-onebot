@@ -31,12 +31,15 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
  */
 final class BotListScreen extends Screen {
 
+    private boolean coresExpanded;
+
     BotListScreen(AppShell shell) {
         super(shell);
     }
 
     @Override
     void build() {
+        root.removeAllViews();
         ScrollView scroll = new ScrollView(activity);
         scroll.setFillViewport(true);
         scroll.setClipChildren(false);
@@ -46,20 +49,49 @@ final class BotListScreen extends Screen {
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
         scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
-        col.addView(header("机器人"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("机器人与核心"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView crumb = Ui.text(activity, "设置 / 机器人", Theme.T_CAP, t.textTertiary);
+        TextView crumb = Ui.text(activity, "设置 / 机器人与核心", Theme.T_CAP, t.textTertiary);
         LinearLayout.LayoutParams clp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         clp.topMargin = dp(Theme.S1);
         col.addView(crumb, clp);
 
-        // [layer: shell-android] 本机核心库存统一收纳进白色圆角卡片（问答报告 Q1/Q3/Q11）：
-        // 顶部总数/空闲胶囊 + 逐行友好短名/占用者/状态胶囊/右箭头 + 底部下载与自定义接入入口。
+        // 1. 机器人列表优先置顶（主角先行）
+        List<BotRegistry.Bot> bots = BotRegistry.list();
+        if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
+
+        if (bots.isEmpty()) {
+            LinearLayout.LayoutParams elp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+            elp.topMargin = dp(Theme.S3);
+            col.addView(emptyCard(), elp);
+        } else {
+            col.addView(sectionLabel("全部机器人 · " + bots.size()), labelLp(Theme.S3));
+            for (int i = 0; i < bots.size(); i++) {
+                LinearLayout.LayoutParams rlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+                if (i > 0) rlp.topMargin = dp(Theme.S2);
+                col.addView(botCard(bots.get(i)), rlp);
+            }
+        }
+
+        // 快捷操作行：一键部署向导 + 手动新建机器人
+        LinearLayout quickBar = Ui.row(activity);
+        TextView wizBtn = Ui.button(activity, t, "一键部署向导", true);
+        wizBtn.setOnClickListener(v -> shell.pushDeployWizard());
+        TextView newBtn = Ui.button(activity, t, "手动新建机器人", false);
+        newBtn.setOnClickListener(v -> shell.pushNewBot());
+        quickBar.addView(wizBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        nlp.leftMargin = dp(Theme.S2);
+        quickBar.addView(newBtn, nlp);
+        col.addView(quickBar, marginTop(Theme.S3));
+
+        // 2. 核心库存收纳进可折叠白底卡片（默认空闲为 0 时自动展开，有机器人且有核心时紧凑折叠）
         java.util.List<CoreInventory.Instance> cores = BotRegistry.cores();
         int free = 0;
         for (CoreInventory.Instance c : cores) if (c.ownerId.isEmpty()) free++;
+        boolean showCoreDetails = coresExpanded || cores.isEmpty();
 
-        col.addView(sectionLabel("本机核心库存"), labelLp(Theme.S3));
+        col.addView(sectionLabel("核心库存"), labelLp(Theme.S4));
         LinearLayout coreCard = Ui.addCard(col, activity, t, 0);
         LinearLayout coreHead = Ui.row(activity);
         coreHead.addView(Ui.strong(activity, "已安装核心 · " + cores.size() + " 份", Theme.T_CARD, t.textPrimary),
@@ -70,11 +102,14 @@ final class BotListScreen extends Screen {
         if (cores.isEmpty()) {
             coreCard.addView(Ui.text(activity, "当前还没有核心，请先下载内置核心或接入自定义核心。",
                     Theme.T_BODY, t.textSecondary), marginTop(Theme.S2));
-        } else {
+        } else if (showCoreDetails) {
             for (int i = 0; i < cores.size(); i++) {
                 coreCard.addView(Ui.divider(activity, t));
                 coreCard.addView(coreRow(cores.get(i)), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
             }
+        } else {
+            coreCard.addView(Ui.text(activity, "已折叠核心明细，点击下方按钮可查看每份核心及各平台插件状态。",
+                    Theme.T_CAP, t.textSecondary), marginTop(Theme.S1));
         }
         coreCard.addView(Ui.divider(activity, t));
         LinearLayout coreActions = Ui.row(activity);
@@ -89,29 +124,17 @@ final class BotListScreen extends Screen {
         coreActions.addView(customBtn, a2);
         coreCard.addView(coreActions, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        control(col, "新建机器人", true, () -> shell.pushNewBot());
-        // 每次进页都重新读注册表：新建/删除之后回来看到的就是最新状态。
-        List<BotRegistry.Bot> bots = BotRegistry.list();
-        if (bots == null) bots = new ArrayList<BotRegistry.Bot>();
-
-        if (bots.isEmpty()) {
-            // 空态：一句话 + 同一个主按钮（按钮统一放在列表末尾，两态位置一致，不跳动）
-            LinearLayout.LayoutParams elp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-            elp.topMargin = dp(Theme.S4);
-            col.addView(emptyCard(), elp);
-        } else {
-            col.addView(sectionLabel("全部机器人 · " + bots.size()), labelLp(Theme.S3));
-            for (int i = 0; i < bots.size(); i++) {
-                LinearLayout.LayoutParams rlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-                if (i > 0) rlp.topMargin = dp(Theme.S2);
-                col.addView(botCard(bots.get(i)), rlp);
-            }
+        if (!cores.isEmpty()) {
+            TextView foldBtn = Ui.button(activity, t, showCoreDetails ? "收起核心明细" : ("展开全部 " + cores.size() + " 份核心"), false);
+            foldBtn.setOnClickListener(v -> {
+                coresExpanded = !showCoreDetails;
+                build();
+            });
+            coreCard.addView(foldBtn, marginTop(Theme.S2));
         }
 
-        // Creation actions precede the bot list, alongside the inventory.
-
         TextView note = Ui.text(activity,
-                "平台登录与白名单请回首页进入对应平台配置。",
+                "平台登录与白名单请回首页进入对应平台（QQ / bilibili / 抖音测试版）配置。",
                 Theme.T_CAP, t.textTertiary);
         note.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams tlp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);

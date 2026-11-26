@@ -42,8 +42,8 @@ public final class BotRegistry {
     public static final List<String> PLATFORMS = Collections.unmodifiableList(
             Arrays.asList(P_QQ, P_DOUYIN, P_BILIBILI, P_XIAOHEIHE));
 
-    /** V1 真正接通的平台。以后接通抖音/bilibili，往这里加一项即可，界面自动跟着变。 */
-    private static final String[] SUPPORTED = {P_QQ, P_BILIBILI};
+    /** 当前已接通的平台（含抖音测试版）。 */
+    private static final String[] SUPPORTED = {P_QQ, P_BILIBILI, P_DOUYIN};
 
     public static final class Binding {
         public final String id, platform, accountId, memoryMode, httpUrl, wsUrl, peerId;
@@ -105,7 +105,7 @@ public final class BotRegistry {
         if (b == null || !b.enabled || !"whale-1".equals(b.id) || !KIND_BUILTIN.equals(b.runtimeKind)) return false;
         boolean found=false;
         for (Binding v : b.bindings) {
-            if (P_BILIBILI.equals(v.platform)) continue;
+            if (P_BILIBILI.equals(v.platform) || P_DOUYIN.equals(v.platform)) continue;
             if (found || !P_QQ.equals(v.platform) || !v.accountId.isEmpty() || !v.httpUrl.isEmpty() || !v.wsUrl.isEmpty()) return false;
             found=true;
         }

@@ -58,6 +58,7 @@ final class VersionScreen extends Screen {
     private long currentVersionCode = 0L;
 
     private LinearLayout appListBox;
+    private LinearLayout mirrorBox;
     private LinearLayout installedCoresBox;
     private LinearLayout coreVersionsBox;
     private LinearLayout componentBox;
@@ -73,8 +74,11 @@ final class VersionScreen extends Screen {
 
     private boolean loadingApp;
     private boolean loadingCore;
+    private boolean probingMirrors;
     private boolean showAllReleases;
+    private boolean componentsExpanded;
     private List<ReleaseItem> cachedReleases;
+    private List<MirrorFetch.ProbeResult> lastProbeResults;
     private String cachedSource = "未知";
     private String cachedErr;
     private CoreManagerScreen.Download lastShownDownload;
@@ -98,7 +102,7 @@ final class VersionScreen extends Screen {
         col.setPadding(p, dp(Theme.S3 + 4), p, p);
         scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
-        col.addView(header("版本管理"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("版本与国内镜像"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         // ---------------- 顶部状态总览卡 ----------------
         LinearLayout summaryCard = Ui.addCard(col, activity, t, Theme.S3);
@@ -174,6 +178,13 @@ final class VersionScreen extends Screen {
         appUpdateBtn.setEnabled(false);
         appUpdateBtn.setOnClickListener(v -> startAppUpdate());
         appCard.addView(appUpdateBtn, topMargin(dp(Theme.S2)));
+
+        // ---------------- A2. 国内镜像源与一键测速 ----------------
+        col.addView(sectionLabel("国内镜像源与网络测速（免 VPN）"));
+        LinearLayout mirrorCard = Ui.addCard(col, activity, t, Theme.S1);
+        mirrorBox = Ui.column(activity);
+        mirrorCard.addView(mirrorBox, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        renderMirrorPanel();
 
         // ---------------- B. 内置核心版本 ----------------
         col.addView(sectionLabel("内置核心版本"));
@@ -277,9 +288,9 @@ final class VersionScreen extends Screen {
             String err = null;
             String apiErr = null;
             try {
-                String body = MirrorFetch.getJson(RELEASES_PATH);
+                String body = MirrorFetch.getAppReleasesJson(RELEASES_PATH);
                 String apiSource = MirrorFetch.lastSourceLabel();
-                if (apiSource == null || apiSource.length() == 0) apiSource = "GitHub";
+                if (apiSource == null || apiSource.length() == 0) apiSource = "国内镜像";
                 List<ReleaseItem> parsed = parseApiReleases(body, apiSource);
                 if (!parsed.isEmpty()) {
                     items = parsed;
@@ -695,10 +706,11 @@ final class VersionScreen extends Screen {
             new java.util.concurrent.atomic.AtomicBoolean(false);
     private static volatile android.app.Activity lastForegroundActivity = null;
 
-    /** 用系统的 DownloadManager 下载 APK：同时挂广播接收器 + 1 秒状态轮询（防 MIUI 漏发广播），完成后立刻自动拉起安装器。 */
+    /** 经 MirrorFetch 自动解析当前网络可连通的国内镜像 APK 地址后再交由系统 DownloadManager，下载完成自动拉起安装器。 */
     private void startAppUpdate() {
-        AssetItem apk = apkOf(selectedRelease);
-        if (apk == null || apk.url == null || apk.url.length() == 0) return;
+        final AssetItem apk = apkOf(selectedRelease);
+        final ReleaseItem rel = selectedRelease;
+        if (apk == null || apk.url == null || apk.url.length() == 0 || rel == null) return;
 
         if (Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) {
             host().toast("请先允许本应用安装未知来源应用，再回来点更新");
@@ -711,34 +723,152 @@ final class VersionScreen extends Screen {
             return;
         }
 
-        try {
-            lastForegroundActivity = activity;
-            Context appCtx = activity.getApplicationContext();
-            android.app.DownloadManager dm =
-                    (android.app.DownloadManager) appCtx.getSystemService(Context.DOWNLOAD_SERVICE);
-            android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(apk.url));
-            req.setTitle(apk.name);
-            req.setDescription(selectedRelease.tag);
-            req.setMimeType("application/vnd.android.package-archive");
-            req.setNotificationVisibility(
-                    android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, apk.name);
-            long id = dm.enqueue(req);
-            activeUpdateDownloadId = id;
-            activeUpdateFileName = apk.name;
-            activeUpdateProgressText = "正在下载 " + apk.name + "…（完成后自动拉起安装）";
-            activeUpdateInstalled.set(false);
-            updateDownloadId = id;
-            // 根治原缺陷：此前从未调用 watchUpdateDownload()，且追加 1 秒状态轮询防系统广播丢失
-            watchUpdateDownload(appCtx, id);
-            startUpdateProgressPoller(appCtx, id);
-            host().toast("开始下载 " + apk.name + "，完成后会自动拉起安装");
-        } catch (Throwable ex) {
-            host().toast("无法开始下载：" + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
-            activeUpdateDownloadId = -1L;
-            updateDownloadId = -1L;
-        }
+        lastForegroundActivity = activity;
+        activeUpdateFileName = apk.name;
+        activeUpdateProgressText = "正在为 " + apk.name + " 优选国内镜像源…";
         syncAppUpdate();
+        host().toast("正在探测最快国内镜像源…");
+
+        final Context appCtx = activity.getApplicationContext();
+        new Thread(() -> {
+            final String resolvedUrl = MirrorFetch.resolveDownloadUrl(apk.url);
+            final String sourceLabel = MirrorFetch.lastSourceLabel();
+            activity.runOnUiThread(() -> {
+                try {
+                    android.app.DownloadManager dm =
+                            (android.app.DownloadManager) appCtx.getSystemService(Context.DOWNLOAD_SERVICE);
+                    android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(resolvedUrl));
+                    req.setTitle(apk.name);
+                    req.setDescription(rel.tag + " · " + sourceLabel);
+                    req.setMimeType("application/vnd.android.package-archive");
+                    req.setNotificationVisibility(
+                            android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                    req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, apk.name);
+                    long id = dm.enqueue(req);
+                    activeUpdateDownloadId = id;
+                    activeUpdateFileName = apk.name;
+                    activeUpdateProgressText = "正在经「" + sourceLabel + "」下载 " + apk.name + "…（完成后自动安装）";
+                    activeUpdateInstalled.set(false);
+                    updateDownloadId = id;
+                    watchUpdateDownload(appCtx, id);
+                    startUpdateProgressPoller(appCtx, id);
+                    host().toast("已通过「" + sourceLabel + "」开始下载 " + apk.name);
+                    renderMirrorPanel();
+                } catch (Throwable ex) {
+                    host().toast("无法开始下载：" + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+                    activeUpdateDownloadId = -1L;
+                    updateDownloadId = -1L;
+                }
+                syncAppUpdate();
+            });
+        }, "apk-mirror-resolve").start();
+    }
+
+    /** 渲染「国内镜像源与网络测速」卡片（支持记住最快源、国内优先开关、一键全节点测速、自定义镜像前缀）。 */
+    private void renderMirrorPanel() {
+        if (mirrorBox == null) return;
+        mirrorBox.removeAllViews();
+
+        String pref = MirrorFetch.preferredPrefix();
+        LinearLayout head = Ui.row(activity);
+        head.addView(Ui.strong(activity, "当前优选下载源", Theme.T_BODY, t.textPrimary),
+                new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        head.addView(Ui.pill(activity, t,
+                pref.isEmpty() ? "自动故障转移" : MirrorFetch.describeCandidate(pref + "https://github.com/x", "https://github.com/x"),
+                pref.isEmpty() ? Ui.TONE_NEUTRAL : Ui.TONE_OK));
+        mirrorBox.addView(head, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        mirrorBox.addView(Ui.text(activity,
+                "App 更新、核心、插件、部件与 QQ 社区包统一走国内多节点镜像池；镜像只作传输层，资产仍做严格 SHA-256 校验。",
+                Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
+
+        mirrorBox.addView(Ui.divider(activity, t));
+        LinearLayout firstRow = Ui.row(activity);
+        LinearLayout firstText = Ui.column(activity);
+        firstText.addView(Ui.strong(activity, "始终国内镜像优先（推荐无 VPN）", Theme.T_BODY, t.textPrimary));
+        firstText.addView(Ui.text(activity, "开启后直接走国内最快镜像，不再先等官方 2.5 秒超时",
+                Theme.T_CAP, t.textSecondary), topMargin(dp(2)));
+        firstRow.addView(firstText, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        Switch firstSw = new Switch(activity);
+        firstSw.setChecked(MirrorFetch.isMirrorFirst());
+        firstSw.setOnCheckedChangeListener((b, on) -> {
+            MirrorFetch.setMirrorFirst(on);
+            host().toast(on ? "已开启国内镜像优先" : "已切回官方 2.5s 探测 + 自动镜像回退");
+        });
+        firstRow.addView(firstSw, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        mirrorBox.addView(firstRow, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        LinearLayout btnRow = Ui.row(activity);
+        TextView probeBtn = Ui.button(activity, t, probingMirrors ? "测速中…" : "一键测速并选最快源", true);
+        probeBtn.setEnabled(!probingMirrors);
+        probeBtn.setOnClickListener(v -> runMirrorProbe());
+        TextView customBtn = Ui.button(activity, t,
+                "自定义镜像 (" + MirrorFetch.customPrefixes().size() + ")", false);
+        customBtn.setOnClickListener(v -> openCustomMirrorEditor());
+        btnRow.addView(probeBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1.15f));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        clp.leftMargin = dp(Theme.S2);
+        btnRow.addView(customBtn, clp);
+        mirrorBox.addView(btnRow, topMargin(dp(Theme.S3)));
+
+        if (lastProbeResults != null && !lastProbeResults.isEmpty()) {
+            mirrorBox.addView(Ui.divider(activity, t));
+            for (MirrorFetch.ProbeResult r : lastProbeResults) {
+                LinearLayout line = Ui.row(activity);
+                line.setPadding(0, dp(4), 0, dp(4));
+                String tag = r.custom ? "（自定义）" : "";
+                line.addView(Ui.text(activity, r.label + tag, Theme.T_CAP, t.textPrimary),
+                        new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+                line.addView(Ui.pill(activity, t,
+                        r.ok ? (r.latencyMs + " ms") : ("不可达 · " + r.detail),
+                        r.ok ? Ui.TONE_OK : Ui.TONE_WARN));
+                mirrorBox.addView(line, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+            }
+        }
+    }
+
+    private void runMirrorProbe() {
+        if (probingMirrors) return;
+        probingMirrors = true;
+        renderMirrorPanel();
+        host().toast("正在并行测速全部国内镜像节点…");
+        new Thread(() -> {
+            final List<MirrorFetch.ProbeResult> res = MirrorFetch.probeAllMirrors();
+            activity.runOnUiThread(() -> {
+                probingMirrors = false;
+                lastProbeResults = res;
+                String best = MirrorFetch.preferredPrefix();
+                host().toast(best.isEmpty() ? "测速完成" : ("测速完成，已优选 " + best));
+                renderMirrorPanel();
+            });
+        }, "mirror-probe-all").start();
+    }
+
+    private void openCustomMirrorEditor() {
+        LinearLayout box = Ui.column(activity);
+        box.addView(Ui.text(activity,
+                "每行填写一个镜像前缀（以 https:// 开头，例如 https://my-proxy.example.com/），自定义源排在最前优先尝试。",
+                Theme.T_CAP, t.textSecondary));
+        final android.widget.EditText et = new android.widget.EditText(activity);
+        StringBuilder sb = new StringBuilder();
+        for (String p : MirrorFetch.customPrefixes()) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(p);
+        }
+        et.setText(sb.toString());
+        et.setMinLines(3);
+        et.setHint("https://gh-proxy.com/");
+        Ui.styleInput(et, activity, t);
+        box.addView(et, topMargin(dp(Theme.S2)));
+
+        PromptSheet.custom(activity, t, "自定义国内镜像前缀", box,
+                "保存", (d, btn) -> {
+                    List<String> saved = MirrorFetch.setCustomPrefixesFromText(
+                            et.getText() == null ? "" : et.getText().toString());
+                    d.dismiss();
+                    host().toast(saved.isEmpty() ? "已清空自定义镜像" : ("已保存 " + saved.size() + " 条自定义镜像"));
+                    renderMirrorPanel();
+                }, null, null, "取消", (d, btn) -> d.dismiss(), false, false, null, null);
     }
 
     /** 在 ApplicationContext 上注册下载完成广播（离开当前页也不失效，触发一次即自注销）。 */

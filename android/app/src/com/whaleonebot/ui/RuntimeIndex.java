@@ -161,42 +161,12 @@ public final class RuntimeIndex {
     }
 
     private static String httpGet(String url, int timeoutMs) {
-        HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setRequestMethod("GET");
-            c.setConnectTimeout(timeoutMs);
-            c.setReadTimeout(timeoutMs);
-            c.setUseCaches(false);
-            c.setRequestProperty("Accept", "application/json");
-            if (c.getResponseCode() != 200) return null;
-            InputStream in = c.getInputStream();
-            try {
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                    if (out.size() > 1024 * 1024) break; // 索引不该有 1MB
-                }
-                return new String(out.toByteArray(), "UTF-8");
-            } finally {
-                try {
-                    in.close();
-                } catch (Throwable ignored) {
-                    // 读完就关
-                }
-            }
+            String body = com.whaleonebot.net.MirrorFetch.getText(url, Math.max(5000, timeoutMs));
+            if (body != null && body.length() <= 1024 * 1024) return body;
+            return null;
         } catch (Throwable t) {
             return null;
-        } finally {
-            if (c != null) {
-                try {
-                    c.disconnect();
-                } catch (Throwable ignored) {
-                    // 连接马上回收
-                }
-            }
         }
     }
 

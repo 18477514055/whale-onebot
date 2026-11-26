@@ -88,11 +88,16 @@ final class PlatformBotScreen extends Screen {
         //   一个老 QQ 机器人后来加了 B 站账号，从 B 站进来仍然显示「旧版 QQ 容器」，
         //   用户会以为进错了页。路由本来就是对的（下面 pushBiliAccounts），错的是文案。
         final boolean biliEntry = BotRegistry.P_BILIBILI.equals(platformId);
+        final boolean douyinEntry = BotRegistry.P_DOUYIN.equals(platformId);
         col.addView(entryCard(IconView.PLAY, "启动",
-                biliEntry ? "B 站账号登录与连接" : BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接", new View.OnClickListener() {
+                biliEntry ? "B 站账号登录与连接"
+                        : douyinEntry ? "抖音测试版：实验性网页登录、审批台与作品队列"
+                        : BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接",
+                new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"start");
+                        if (biliEntry) shell.pushBiliAccounts(bot.id,"start");
+                        else if (douyinEntry) shell.pushDouyinPlatform(bot.id, "start");
                         else shell.pushBotStart(bot.id);
                     }
                 }), l1);
@@ -100,10 +105,14 @@ final class PlatformBotScreen extends Screen {
         LinearLayout.LayoutParams l2 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2.topMargin = dp(Theme.S2);
         col.addView(entryCard(IconView.TUNE, "配置",
-                biliEntry ? "账号、私信对端、记忆范围与行为参数" : BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围", new View.OnClickListener() {
+                biliEntry ? "账号、私信对端、记忆范围与行为参数"
+                        : douyinEntry ? "写操作分级授权策略、定时浏览与每日预算（测试版）"
+                        : BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围",
+                new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"config");
+                        if (biliEntry) shell.pushBiliAccounts(bot.id,"config");
+                        else if (douyinEntry) shell.pushDouyinPlatform(bot.id, "config");
                         else if (BotRegistry.legacyQQ(bot)) shell.pushBotConfig(bot.id);
                         else shell.pushBot(bot.id);
                     }

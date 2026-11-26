@@ -214,20 +214,45 @@ final class RuntimeDownloader {
         }
     }
 
-    /** 真正的传输：连接 → 校验响应 → 边下边算哈希 → 校验 → 改名。 */
+    /** 真正的传输：按 MirrorFetch 候选源依次尝试 → 校验响应 → 边下边算哈希 → 校验 → 改名。 */
     private void transfer() throws IOException {
         if (!dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) {
             throw new IOException("无法创建运行端目录：" + dir.getAbsolutePath());
         }
-        // 上一轮可能留下半截文件：先清掉，否则校验时可能把旧字节算进去
-        if (part.isFile() && !part.delete()) {
-            throw new IOException("删不掉旧的临时文件：" + part.getAbsolutePath());
+        java.util.List<String> candidates = com.whaleonebot.net.MirrorFetch.candidateUrls(entry.url);
+        if (candidates.isEmpty()) candidates.add(entry.url);
+        IOException last = null;
+        for (int i = 0; i < candidates.size(); i++) {
+            checkCancelled();
+            String candidateUrl = candidates.get(i);
+            boolean isOfficial = candidateUrl.equals(entry.url);
+            if (part.isFile() && !part.delete()) {
+                throw new IOException("删不掉旧的临时文件：" + part.getAbsolutePath());
+            }
+            try {
+                transferSingle(candidateUrl, isOfficial);
+                if (isOfficial) com.whaleonebot.net.MirrorFetch.recordSuccessPrefix("");
+                else com.whaleonebot.net.MirrorFetch.recordSuccessPrefix(
+                        com.whaleonebot.net.MirrorFetch.sourcePrefixOf(candidateUrl, entry.url));
+                return;
+            } catch (CancelledException ce) {
+                throw ce;
+            } catch (IOException ex) {
+                if (isOfficial) com.whaleonebot.net.MirrorFetch.markOfficialFailed();
+                last = ex;
+                deleteQuietly(part);
+            }
         }
+        throw last != null ? last : new IOException("所有下载源均失败");
+    }
 
-        URL url = new URL(entry.url);
+    private void transferSingle(String targetUrl, boolean isOfficial) throws IOException {
+        URL url = new URL(targetUrl);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         conn = c;
-        c.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        c.setConnectTimeout(isOfficial
+                ? com.whaleonebot.net.MirrorFetch.OFFICIAL_CONNECT_TIMEOUT_MS
+                : CONNECT_TIMEOUT_MS);
         c.setReadTimeout(READ_TIMEOUT_MS);
         c.setInstanceFollowRedirects(true);
         c.setUseCaches(false);
@@ -240,7 +265,7 @@ final class RuntimeDownloader {
         if (code != HttpURLConnection.HTTP_OK) {
             throw new IOException("服务器返回 HTTP " + code
                     + (code == 404 ? "（地址上找不到这个文件）" : "")
-                    + "，地址 " + entry.url);
+                    + "，地址 " + targetUrl);
         }
 
         long total = entry.hasBytes() ? entry.bytes : -1L;

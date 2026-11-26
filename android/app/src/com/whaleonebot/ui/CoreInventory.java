@@ -39,12 +39,12 @@ public final class CoreInventory {
     static Instance builtin(String id,String version) {
         require(id!=null && id.matches("[a-z][a-z0-9-]{0,63}") && !id.startsWith("custom-") && !id.startsWith("legacy-"));
         require(validVersion(version));
-        return new Instance(id,"builtin",version,"",false,Arrays.asList("qq","bilibili"),Collections.<RuntimeUiLink>emptyList());
+        return new Instance(id,"builtin",version,"",false,Arrays.asList("qq","bilibili","douyin"),Collections.<RuntimeUiLink>emptyList());
     }
     static Instance migrated(BotRegistry.Bot b) {
         require(b.id.matches("[a-z][a-z0-9-]{0,63}"));
         return new Instance("legacy-"+b.id,b.runtimeKind,b.runtimeRef.isEmpty()?"legacy":b.runtimeRef,b.id,true,
-            BotRegistry.KIND_CUSTOM.equals(b.runtimeKind)?b.platforms:Arrays.asList("qq","bilibili"),b.runtimeUi);
+            BotRegistry.KIND_CUSTOM.equals(b.runtimeKind)?b.platforms:Arrays.asList("qq","bilibili","douyin"),b.runtimeUi);
     }
     public static Instance parseDescriptor(String json) {
         require(json!=null && json.length()<=16384 && json.getBytes(StandardCharsets.UTF_8).length<=16384);

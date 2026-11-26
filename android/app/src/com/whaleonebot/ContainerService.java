@@ -240,6 +240,7 @@ public class ContainerService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        com.whaleonebot.net.MirrorPrefs.attach(this);
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(new NotificationChannel(CHANNEL, "WhaleOneBot 容器",

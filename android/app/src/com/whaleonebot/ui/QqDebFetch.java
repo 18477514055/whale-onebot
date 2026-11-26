@@ -34,11 +34,6 @@ final class QqDebFetch {
     private static final String META = "https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/linuxConfig.js";
     private static final String KNOWN_3_2_35 =
             "https://qqdl.gtimg.cn/qqfile/QQNTV2/9.9.37/release/816b3c79/QQ_3.2.35_261103_arm64_01.deb";
-    /** GitHub 直连在很多手机网络上解析不了（真机实测 "No address associated with hostname"），
-     *  所以社区源先走镜像 —— 与发行物下载是同一批镜像，只是传输层。 */
-    private static final String[] MIRRORS = {
-            "https://ghproxy.net/", "https://ghfast.top/", "https://gh-proxy.com/"
-    };
     private static final String COMMUNITY_3_2_32 =
             "https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260813-1d08f1d4/QQ_3.2.32_260812_arm64_01.deb";
 
@@ -52,7 +47,7 @@ final class QqDebFetch {
 
     private QqDebFetch() { }
 
-    /** 候选列表：官方最新 → 已知 3.2.35 → 社区 3.2.32。官方元数据取不到就只用后两个。 */
+    /** 候选列表：官方最新 → 已知 3.2.35 → 社区 3.2.32（统一走 MirrorFetch 国内镜像池）。官方元数据取不到就只用后两个。 */
     static List<String> candidates(Progress p) {
         List<String> out = new ArrayList<>();
         try {
@@ -63,8 +58,8 @@ final class QqDebFetch {
             if (p != null) p.onProgress("读官方元数据失败：" + shortReason(e), -1, -1);
         }
         out.add(KNOWN_3_2_35);
-        // 社区包先走镜像（手机侧 github.com 常常根本解析不了），最后才试直连。
-        for (String m : MIRRORS) out.add(m + COMMUNITY_3_2_32);
+        // 社区包先走统一国内镜像池（手机侧 github.com 常常根本解析不了），最后才试直连。
+        for (String m : com.whaleonebot.net.MirrorFetch.mirrorPrefixes()) out.add(m + COMMUNITY_3_2_32);
         out.add(COMMUNITY_3_2_32);
         return out;
     }

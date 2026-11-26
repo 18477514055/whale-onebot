@@ -67,6 +67,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         // 必须在 super.onCreate 之前定下来；否则浅色主题下弹窗是深底、白字压浅底读不出来。
         com.whaleonebot.ui.ThemeBridge.apply(this);
         super.onCreate(state);
+        com.whaleonebot.net.MirrorPrefs.attach(this);
         if (!ContainerService.isRunning()) ContainerService.start(this);
         if (checkSelfPermission("android.permission.READ_EXTERNAL_STORAGE")
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {

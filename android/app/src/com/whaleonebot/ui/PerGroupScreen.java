@@ -45,6 +45,10 @@ final class PerGroupScreen extends Screen {
     private final LinkedHashMap<String, String> modeDraft = new LinkedHashMap<String, String>();
     /** 群号 → 概率（显示值 0~100）。 */
     private final LinkedHashMap<String, Integer> probDraft = new LinkedHashMap<String, Integer>();
+    /** 群号 → 被 @ 冷却（秒；null = 跟随全局，0 = 不限制）。 */
+    private final LinkedHashMap<String, Integer> mentionCdDraft = new LinkedHashMap<String, Integer>();
+    /** 群号 → 戳一戳冷却（秒；null = 跟随全局，0 = 不限制）。 */
+    private final LinkedHashMap<String, Integer> pokeCdDraft = new LinkedHashMap<String, Integer>();
     private boolean unifiedOffDraft;
 
     private LinearLayout body;
@@ -84,6 +88,8 @@ final class PerGroupScreen extends Screen {
                 loaded = false;
                 modeDraft.clear();
                 probDraft.clear();
+                mentionCdDraft.clear();
+                pokeCdDraft.clear();
                 ensureLoaded();
                 render();
             }
@@ -143,6 +149,8 @@ final class PerGroupScreen extends Screen {
             Map<String, Object> gm = BotConfigJson.asObject(modes);
             Object pos = BotConfigJson.get(data, "store.groupSliderPos");
             Map<String, Object> ps = BotConfigJson.asObject(pos);
+            Map<String, Object> mcd = BotConfigJson.asObject(BotConfigJson.get(data, "conversation.groupMentionCooldownSec"));
+            Map<String, Object> pcd = BotConfigJson.asObject(BotConfigJson.get(data, "conversation.groupPokeCooldownSec"));
             int fallback = intOf(BotConfigJson.get(data, "store.randomPercent"), 5);
             for (int i = 0; list != null && i < list.size(); i++) {
                 String id = list.get(i) == null ? "" : String.valueOf(list.get(i)).trim();
@@ -151,6 +159,8 @@ final class PerGroupScreen extends Screen {
                 modeDraft.put(id, mode == null ? "" : mode);
                 probDraft.put(id, ps != null && ps.get(id) != null
                         ? intOf(ps.get(id), fallback) : fallback);
+                mentionCdDraft.put(id, mcd != null ? optCooldown(mcd.get(id)) : null);
+                pokeCdDraft.put(id, pcd != null ? optCooldown(pcd.get(id)) : null);
             }
         } catch (Throwable t) {
             loadError = "读不到 config.json";
@@ -172,6 +182,15 @@ final class PerGroupScreen extends Screen {
         int n = (int) Math.round(d);
         if (n < 0) return 0;
         return Math.min(n, 100);
+    }
+
+    private static Integer optCooldown(Object v) {
+        if (v == null) return null;
+        double d = BotConfigJson.numOf(v);
+        if (Double.isNaN(d)) return null;
+        int n = (int) Math.round(d);
+        if (n < 0) return 0;
+        return Math.min(n, 3600);
     }
 
     // ------------------------------------------------------------------ 渲染
@@ -217,7 +236,13 @@ final class PerGroupScreen extends Screen {
         String mode = modeDraft.get(id);
         String shown = mode == null || mode.length() == 0 ? "跟随全局" : modeName(mode);
         Integer p = probDraft.get(id);
-        TextView sub = Ui.text(activity, shown + " · " + (p == null ? 0 : p) + "%", Theme.T_CAP, t.textSecondary);
+        Integer mcd = mentionCdDraft.get(id);
+        Integer pcd = pokeCdDraft.get(id);
+        StringBuilder meta = new StringBuilder();
+        meta.append(shown).append(" · ").append(p == null ? 0 : p).append("%");
+        if (mcd != null) meta.append(" · @冷却 ").append(mcd == 0 ? "关" : (mcd + "s"));
+        if (pcd != null) meta.append(" · 戳冷却 ").append(pcd == 0 ? "关" : (pcd + "s"));
+        TextView sub = Ui.text(activity, meta.toString(), Theme.T_CAP, t.textSecondary);
         box.addView(sub, marginTop(Theme.S1));
         row.addView(box, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
 
@@ -307,6 +332,36 @@ final class PerGroupScreen extends Screen {
         input.setPadding(dp(12), dp(8), dp(12), dp(8));
         box.addView(input, marginTop(Theme.S1));
 
+        // 被 @ 冷却（秒）
+        box.addView(Ui.text(activity, "被 @ 冷却（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textTertiary), marginTop(Theme.S2));
+        final EditText mentionInput = new EditText(activity);
+        Integer curMcd = mentionCdDraft.get(id);
+        mentionInput.setText(curMcd == null ? "" : String.valueOf(curMcd));
+        mentionInput.setHint("留空跟随全局（默认 60）");
+        mentionInput.setHintTextColor(t.textTertiary);
+        mentionInput.setTextSize(Theme.T_BODY);
+        mentionInput.setSingleLine(true);
+        mentionInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        mentionInput.setTextColor(t.textPrimary);
+        mentionInput.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(1), dp(Theme.R_BTN)));
+        mentionInput.setPadding(dp(12), dp(8), dp(12), dp(8));
+        box.addView(mentionInput, marginTop(Theme.S1));
+
+        // 戳一戳冷却（秒）
+        box.addView(Ui.text(activity, "戳一戳冷却（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textTertiary), marginTop(Theme.S2));
+        final EditText pokeInput = new EditText(activity);
+        Integer curPcd = pokeCdDraft.get(id);
+        pokeInput.setText(curPcd == null ? "" : String.valueOf(curPcd));
+        pokeInput.setHint("留空跟随全局（默认 60）");
+        pokeInput.setHintTextColor(t.textTertiary);
+        pokeInput.setTextSize(Theme.T_BODY);
+        pokeInput.setSingleLine(true);
+        pokeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        pokeInput.setTextColor(t.textPrimary);
+        pokeInput.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(1), dp(Theme.R_BTN)));
+        pokeInput.setPadding(dp(12), dp(8), dp(12), dp(8));
+        box.addView(pokeInput, marginTop(Theme.S1));
+
         LinearLayout bar = Ui.row(activity);
         TextView cancel = Ui.button(activity, t, "取消", false);
         cancel.setOnClickListener(new View.OnClickListener() {
@@ -331,8 +386,40 @@ final class PerGroupScreen extends Screen {
                     host().toast("概率要在 0~100 之间");
                     return;
                 }
+                Integer mVal = null;
+                String rawM = mentionInput.getText() == null ? "" : mentionInput.getText().toString().trim();
+                if (rawM.length() > 0) {
+                    try {
+                        int n = Integer.parseInt(rawM);
+                        if (n < 0 || n > 3600) {
+                            host().toast("被 @ 冷却要在 0~3600 秒之间");
+                            return;
+                        }
+                        mVal = n;
+                    } catch (NumberFormatException e) {
+                        host().toast("被 @ 冷却要填整数或留空");
+                        return;
+                    }
+                }
+                Integer pVal = null;
+                String rawP = pokeInput.getText() == null ? "" : pokeInput.getText().toString().trim();
+                if (rawP.length() > 0) {
+                    try {
+                        int n = Integer.parseInt(rawP);
+                        if (n < 0 || n > 3600) {
+                            host().toast("戳一戳冷却要在 0~3600 秒之间");
+                            return;
+                        }
+                        pVal = n;
+                    } catch (NumberFormatException e) {
+                        host().toast("戳一戳冷却要填整数或留空");
+                        return;
+                    }
+                }
                 modeDraft.put(id, picked[0]);
                 probDraft.put(id, p);
+                mentionCdDraft.put(id, mVal);
+                pokeCdDraft.put(id, pVal);
                 closeOverlay();
                 render();
             }
@@ -377,6 +464,17 @@ final class PerGroupScreen extends Screen {
             // 3) 逐群概率
             for (Map.Entry<String, Integer> e : probDraft.entrySet()) {
                 setObjectKey(out, "store.groupSliderPos", e.getKey(),
+                        new BotConfigJson.Num(String.valueOf(e.getValue())));
+            }
+            // 4) 逐群被 @ / 戳一戳冷却（null = 删键跟随全局）
+            for (Map.Entry<String, Integer> e : mentionCdDraft.entrySet()) {
+                if (e.getValue() == null) removeKey(out, "conversation.groupMentionCooldownSec", e.getKey());
+                else setObjectKey(out, "conversation.groupMentionCooldownSec", e.getKey(),
+                        new BotConfigJson.Num(String.valueOf(e.getValue())));
+            }
+            for (Map.Entry<String, Integer> e : pokeCdDraft.entrySet()) {
+                if (e.getValue() == null) removeKey(out, "conversation.groupPokeCooldownSec", e.getKey());
+                else setObjectKey(out, "conversation.groupPokeCooldownSec", e.getKey(),
                         new BotConfigJson.Num(String.valueOf(e.getValue())));
             }
             String json = BotConfigJson.write(out);

@@ -150,10 +150,16 @@ public class AppShell {
     static final int P_RECONCILE = 27;
     static final int P_BILI_ACCOUNT = 28;
     static final int P_CORE_MANAGER=29, P_EXTERNAL_ACCOUNT=30;
+    /** 抖音（测试版）平台专属页：实验性 WebView 登录、写操作授权策略、定时浏览与作品队列。 */
+    static final int P_DOUYIN_ACCOUNT = 31;
+    /** 设置内的一键部署向导（支持多平台与本地/远程模式，完成后自动退回设置主页）。 */
+    static final int P_DEPLOY_WIZARD = 64;
     void externalAccount(String bot,String binding){push(P_EXTERNAL_ACCOUNT,bot,binding==null?"":binding);}
     void corePage(String mode,String coreId){push(P_CORE_MANAGER,mode,coreId);}
 
     void pushBiliAccounts(String id,String tab) { push(P_BILI_ACCOUNT,id,tab); }
+    void pushDouyinPlatform(String id, String tab) { push(P_DOUYIN_ACCOUNT, id, tab); }
+    void pushDeployWizard() { push(P_DEPLOY_WIZARD, null); }
 
     final Activity activity;
     final Host host;
@@ -559,7 +565,7 @@ public class AppShell {
     public String currentBotId() {
         for (int i=stack.size()-1;i>=0;i--) {
             Entry entry=stack.get(i);
-            if (entry.arg!=null && (entry.kind==P_BOT || entry.kind==P_PLATFORMBOT || entry.kind==P_BILI_ACCOUNT || entry.kind==P_QQ || entry.kind==P_BOTCONFIG || entry.kind==P_RUNTIMEDL)) return entry.arg;
+            if (entry.arg!=null && (entry.kind==P_BOT || entry.kind==P_PLATFORMBOT || entry.kind==P_BILI_ACCOUNT || entry.kind==P_DOUYIN_ACCOUNT || entry.kind==P_QQ || entry.kind==P_BOTCONFIG || entry.kind==P_RUNTIMEDL)) return entry.arg;
         }
         if (botId != null && botId.length() > 0) return botId;
         BotRegistry.Bot b = BotRegistry.primary();
@@ -611,7 +617,7 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
-        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_DEPLOY_WIZARD && e.kind!=P_DOUYIN_ACCOUNT && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
             BotRegistry.Bot owner=BotRegistry.get(currentBotId());
             CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
             if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
@@ -658,6 +664,12 @@ public class AppShell {
                     break;
                 case P_BILI_ACCOUNT:
                     s = arg2!=null&&(arg2.startsWith("slot:")||arg2.startsWith("new:"))?new BiliEnrollScreen(this,arg,arg2):new BiliPlatformScreen(this,BotRegistry.get(arg),arg2);
+                    break;
+                case P_DOUYIN_ACCOUNT:
+                    s = new DouyinPlatformScreen(this, BotRegistry.get(arg), arg2);
+                    break;
+                case P_DEPLOY_WIZARD:
+                    s = new DeployWizardScreen(this);
                     break;
                 case P_PLATFORMBOTS:
                     s = new PlatformBotsScreen(this, arg);
@@ -746,7 +758,7 @@ public class AppShell {
                     break;
             }
             s.build();
-            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION) screenCache.put(e, s);
+            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_DOUYIN_ACCOUNT && kind != P_DEPLOY_WIZARD && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。
