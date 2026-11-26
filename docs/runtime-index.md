@@ -1,113 +1,93 @@
-# 内置运行端索引（`runtime-index/index.json`）
+# 部件索引与版本来源（`release-index.json`）
 
-> 这是「内置机器人」下载运行端时读的清单。**App 通过它决定下载哪一版**，所以我们发新运行端
-> 不必重发 APK —— 这正是用户 2026-11-19 说的「我们维护一个索引，和软件主仓库一起提交」。
+> 本文原名「内置运行端索引」，讲的是 1.2.0 之前那种「一个大 runtime 包」的模型。
+> **那套已经废弃**：现在是**按部件分别发布、各自独立版本号**（见 README 的「这套东西由四层组成」）。
+> 下面写的是现在真正在跑的东西。
 
-## 0. 运行包是什么（和 1.2 GB 骨架分开）
+## 0. 先分清两个东西
 
-| 物 | 内容 | 大小 | 什么时候装 |
-|---|---|---|---|
-| **Debian 骨架** `rootfs.tar.gz` | 整个容器根文件系统 | ~1.2 GB | 装一次，很少变 |
-| **运行包** `runtime-<版本>.zip` | 只含 `input/agent-app/**`（运行端）+ `qq-onebot/src/**`（协议端）+ LICENSE/致谢 + `runtime-package.json` | 几 MB～几十 MB | 每次更新内置机器人 |
+| | 是什么 | 谁读它 |
+|---|---|---|
+| **`core-release-pin.json`**（信任根） | 174 字节，只有 `{url, sha256}` 两个字段，URL 里的 tag 是**字面量**。随 APK 一起分发 | App 启动时读它，用 `sha256` 校验索引的**原始字节** |
+| **`release-index.json`**（目录） | 一份 JSON，列出「有哪些部件、各有哪几个版本、每个版本从哪下、多大、什么哈希」 | 校验通过后由 App 解析 |
 
-运行包**解包到 rootfs 根目录**即可覆盖对应路径。这样「检查更新 → 下载 → 覆盖 → 重启机器人」是几十 MB 的事，
-不用让用户每次重下 1.2 GB。
+**pin 是入口，不是版本锁。** 它指向某一次 Release 的 `release-index.json`；我们发新版本时如果索引内容变了，pin 里的 sha256 就要跟着变（同批生成，不手改）。
 
-生成：`node scripts/build-runtime-package.mjs --agent <运行端根目录> --version 1.0.1`
-（脚本用自写的 store zip 写入器，**条目名一律正斜杠** —— `Compress-Archive` 的反斜杠会让 rootfs 永远不就绪。）
-
-## 1. 契约
-
-索引是纯 JSON，随主仓库一起提交（不做成 release 资产，改一行就能改版本）：
+## 1. 索引长什么样（schemaVersion 2）
 
 ```json
 {
-  "schemaVersion": 1,
-  "entries": [
-    {
-      "version": "1.0.1",
-      "url": "https://github.com/<owner>/<repo>/releases/download/v1.0.1/runtime-1.0.1.zip",
-      "bytes": 12345678,
-      "sha256": "<64 位十六进制>",
-      "minApp": 1,
-      "notes": "可选，一行"
-    }
-  ]
+  "schemaVersion": 2,
+  "current": "1.2.7",
+  "releases": [ ... ],
+  "components": {
+    "environment":  [ { "version": "1.1.8", "file": "...", "bytes": 0, "sha256": "...", "url": "..." } ],
+    "core":         [ { "version": "1.2.7", ... }, { "version": "1.2.5", ... } ],
+    "plugins":      { "qq": [...], "bilibili": [...], "douyin": [...] },
+    "backends":     { "qq": [...], "bilibili": [...], "douyin": [...] },
+    "desktopProtocol": [ ... ]
+  }
 }
 ```
 
-| 字段 | 必填 | 含义 |
-|---|---|---|
-| `version` | ✅ | 同时是落盘目录名 `files/runtimes/<version>/`（只允许字母数字 `. _ -`） |
-| `url` | ✅ | 必须是 http(s)；下载器只认这两种 |
-| `bytes` | ✅ | 期望字节数，下载器边下边核对（**不要手抄**，用脚本生成） |
-| `sha256` | ✅ | 期望哈希，下完比对；不一致即判失败 |
-| `minApp` | ⬜ | App 的 `versionCode` 下限；比它老的 App 跳过这条（默认 1） |
-| `notes` | ⬜ | 给人看的一行说明 |
+两个字段各有各的读者，**不要合并**：
 
-App 端行为（`android/app/src/com/whaleonebot/ui/RuntimeIndex.java`）：
+- **`releases[]`** —— 给**已装的 1.1.x 旧 App** 看的兼容面。老 App 只认这个数组，里面每条是「那个版本的环境包在哪」。
+  我们**从不改它**（新增版本时才追加），所以老 App 永远不会因为索引升级而变砖。
+- **`components{}`** —— 给 **1.2.0 及以后**的 App 看的。按部件分组，每组是一个**版本数组**，新的排在前面。
 
-1. 优先级：**设备偏好项 `source_url`**（本机临时指定，测试用） &gt; **索引** &gt; 源码常量；
-2. 索引地址：偏好项 `index_url` 优先，其次 `RuntimeCatalog.BUILTIN_INDEX_URL`（发布时填成 raw 地址）；
-3. 启动时后台拉一次索引 → 只更新磁盘缓存 `files/runtimes/runtime-index.json`；
-   **拉失败不动缓存**（一个坏索引不该让能用的旧缓存失效）；
-4. 挑条目：先按 `minApp <= versionCode` 过滤，再取版本号最大的那条；
-5. 索引为空/没配地址时退回源码常量 `BUILTIN_URL`；两者都没有 ⇒ 下载页显示「下载源未配置」并且按钮置灰
-   （**绝不产生假进度**）。
+App 端读取器是 `android/app/src/com/whaleonebot/install/ComponentIndex.java`（纯逻辑、不 import Android，所以能在 PC 上跑单测）：
+有 `components` 就用它；没有就退回 `releases[].environment`；两者都没有就不编造条目。
 
-## 2. 怎么生成 / 更新一条
+## 2. 现在的部件清单（P14，按产物算）
 
-```powershell
-# 算好 bytes + sha256 再写进索引（不会手抄错）
-node scripts/build-runtime-index.mjs `
-  --file  D:/build/runtime-1.0.1.zip `
-  --version 1.0.1 `
-  --url   https://github.com/<owner>/<repo>/releases/download/v1.0.1/runtime-1.0.1.zip `
-  --min-app 101
+| 部件 | 是什么 | 当前版本 | 更新频率 |
+|---|---|---|---|
+| **environment** | arm64 Debian 根文件系统（APK 也自带一份，首次启动铺开） | 1.1.8 | 很低 |
+| **core** | 内置核心：人格、记忆、知识库、亲密度、对话编排、控制台，**以及唯一那份 OneBot 11 契约层** | 1.2.7 | 随内核功能走，可单独升级 |
+| **plugin: qq / bilibili / douyin** | 把核心接到对应平台后端上的适配层 | qq 1.1.8 · bilibili 1.1.8 · douyin 1.2.7 | 与后端配套 |
+| **backend: qq / bilibili / douyin** | 平台对接本体。QQ 是胶水 + QQ 自带 native；B站/抖音是我们自己的进程 | qq 1.2.0-beta.1 · bilibili 1.2.0-beta.1 · douyin 1.2.7 | 各平台独立 |
+| **desktopProtocol** | 桌面端可单独部署的协议端 | 1.2.0-beta.1 | 独立 |
+
+**契约只有一份，不按平台拆。** 不管你接 QQ 还是 B站，OneBot 11 那套接口都是核心里的同一份实现。
+
+## 3. 校验链（P10：信任根与该 Release 同批生成，禁止手改）
+
+```
+APK 内置 pin（{url, sha256}）
+   └─▶ 用它校验 release-index.json 的**原始字节** sha256
+         └─▶ 解析索引，拿到某部件的 file / bytes / sha256 / url
+               └─▶ 下载（校验不过就换镜像，镜像只负责传输）
+                     └─▶ 解包后逐文件比对包内 manifest.json 的 sha256
 ```
 
-- 同一个 `version` 再跑一次 = **覆盖**它（幂等）；
-- 新 `version` = 追加；
-- 写完按版本号倒序（只影响可读性，App 端自己挑最大版本）；
-- `--dry-run` 只打印不写文件。
+下载器是 `install/ComponentFetcher.java`：**只信索引里的哈希**，镜像只是传输层；所有候选都校验不过就明确失败，不会「装上一个坏的」。
 
-## 3. 发布流程（每次发运行端）
+落盘位置：`<App 私有目录>/components/<group>[-<id>]/<version>/<file>`，幂等（已存在且哈希对就复用）。
 
-1. 打出运行端包（`.zip`，解包后就是 `files/rootfs` 那一份骨架，**不含任何用户数据/知识库/数据库**）；
-2. **盖章**：包内含改造后的上游源码 ⇒ 属再分发，MIT 要求随包保留版权声明与许可全文：
+## 4. 为什么不发一个大包了
 
-   ```powershell
-   node scripts/stamp-runtime-licenses.mjs <运行端包根目录> --check   # 缺了退出码 1
-   node scripts/stamp-runtime-licenses.mjs <运行端包根目录> --write   # 写 app/LICENSE + app/THIRD_PARTY_NOTICES.md
-   ```
+以前的 `runtime-<版本>.zip` 把核心和协议端打进一个包，结果是「改了核心里一行日志，用户要重下几十 MB」。
+现在拆开之后：
 
-   原件在 `third-party/qq-agent-plus/LICENSE`（上游逐字副本，版权行 `Copyright (c) 2026 Kondius`）。
-   脚本会把缺版权行的情况直接判失败，**不要**手工补这几行；
-3. 传到 release 资产里（文件名建议 `runtime-<version>.zip`）；
-4. 用上面的命令更新 `runtime-index/index.json`；
-5. 提交索引（它跟源码同一个仓库，评审可见 diff）；
-6. 用户下次打开「内置机器人运行端」页就能看到新版本 —— **不用发新版 App**。
+- 改了核心 → 只发 `bot-core-<ver>.zip`（约 2.4 MB）
+- 改了 B站行为 → 只发 `plugin:bilibili` / `backend:bilibili`
+- 环境没变 → 一个字节都不用重发
 
-## 4. 现状与已知缺口（别当成已完成）
+**部件更新不依赖 App 更新。** 反过来，装新 APK 也不等于换了核心 —— 版本管理页把 App、核心、插件、环境分开列，各自带下载按钮。
 
-- ✅ 机制齐了：索引文件、生成脚本、App 端拉取/缓存/挑选逻辑、来源显示（`来源：索引`）。
-- ✅ 索引地址已填：`RuntimeCatalog.BUILTIN_INDEX_URL` =
-  `https://raw.githubusercontent.com/18477514055/whale-onebot/main/runtime-index/index.json`。
-  ⚠ **仓库目前是 private ⇒ 该 raw 地址匿名访问返回 404**（已实测），App 会走「拉不到就不动缓存 +
-  退回源码常量」的兜底，所以现在等于没配；把它改成 public（或换成你自己的托管地址）后立即生效。
-- ✅ **「下载 → 装进容器」已接上**：`ContainerService.unpackRootfs()` 按顺序找
-  ①`files/runtimes/<版本>/` 里下载好的包（`rootfs.tar.gz` / `runtime.tar.gz` / `rootfs.tar` / `runtime.zip`）
-  ②`/sdcard/Download/whale/rootfs.tar.gz` ③都没有才报错。
-  - **先解到 `rootfs.new`，确认可用（bash / debian_version / 动态加载器 / node 四样齐全）才换上去**：
-    旧的改成 `rootfs.old-<时间戳>` 保留一份，换的过程只有两次 rename，中途没有「新坏旧也没了」的窗口。
-    只有最近一份旧副本会被保留，更旧的自动清掉。
-  - 格式**按文件头判**（`PK` = zip，否则当 tar）：下载器统一存成 `runtime.zip`，但索引里的资产
-    完全可能是 `rootfs.tar.gz`，用错解包器会把包解废。
-  - zip 走 App 自带 busybox 的 `unzip`（已实测该 applet 存在且能解包）。
-  - ⚠ **打包必须用正斜杠**：用 Windows 的 `Compress-Archive` 打出来的 zip，条目名里是反斜杠，
-    解包会得到一个叫 `usr\bin\x` 的怪文件而不是目录层级 ⇒ 骨架永远不就绪。
-    解包失败时会明确打一行「包内路径用了反斜杠…」。发版请在 Linux 下 `zip -r`，或直接发 `.tar.gz`。
-- ⚠ 索引本身不校验来源（没有签名）。要防中间人，只能靠 https + 发布者账号安全；
-  真要更强保证，下一步给索引加一个 detached 签名。
-- ⚠ 解包阶段只有日志（`tar rc=` / `unzip rc=`），界面上还是「下载进度」；下一版可以把「解包中」也接进界面。
+## 5. 无梯子怎么下载（1.2.7 起）
 
+`MirrorFetch.java` + `MirrorPrefs.java`：官方地址给 2.5 秒短超时，超了就按候选池切国内镜像（GitHub 代理 / jsDelivr 等 7 个节点，实测剔除了不可用的），**记住最快的那条**，也允许用户自己追加镜像并一键测速。
+
+- 镜像**只负责传输**：任何一份下载回来都按索引里的 `sha256` 校验，不过就换下一个。
+- APK 自身走的是静态 `runtime-index/app-releases.json`（20 条版本记录），绕开 `api.github.com` 的封锁与限流；
+  下载链接仍由 `resolveDownloadUrl` 拼成 `releases/download/<tag>/<asset>` 形态（P9）。
+- 同一个来源连续失败会退避 10 分钟，不会每一屏都去撞。
+
+## 6. 已知缺口（别当成已完成）
+
+- **索引本身没有独立签名**，只有「pin 里写死的 sha256」。防线是 https + 发布者账号安全；要做更强的保证，下一步是给索引加 detached 签名（`SignedChannel` 那条 `core-channel-v1/channel.json` 已经是现成通路）。
+- **environment 还没有 semver 版本号**：今天它靠 rootfs 里的 `.whale-public-environment`（64 字节 sha256 回执）判断就绪，索引里的 `version` 只是标签。P14 要求补上真正的语义化版本。
+- **抖音的后端/插件都是 1.2.7 首次发布**，还没有跨版本升级的实测样本。
+- 解包阶段只有日志（`tar rc=` / `unzip rc=`），界面上仍显示「下载进度」；「解包中」尚未接进 UI。
