@@ -520,14 +520,68 @@ final class KnowledgeScreen extends Screen {
                 + (engineLabel.length() > 0 ? (" · 共用引擎：" + engineLabel) : ""));
         Card c = card("资料库", statusLine);
 
+        Map<String, Object> libMap = libMap();
+        List<String> ids = new ArrayList<String>(libMap.keySet());
+
         if (rebuildNote != null && rebuildNote.length() > 0) {
             TextView note = Ui.text(activity, rebuildNote, Theme.T_CAP, t.accent);
             note.setLineSpacing(dp(3), 1f);
             c.body.addView(note, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         }
 
-        Map<String, Object> libMap = libMap();
-        List<String> ids = new ArrayList<String>(libMap.keySet());
+        // ★ P0 老库影子表后台静默升级进度与控制条（确认新数据可用前绝不清理旧数据）
+        if (liveStatus != null) {
+            boolean upgRunning = ModelsScreen.U.truthy(BotConfigJson.get(liveStatus, "upgrade.running"));
+            boolean upgPaused = ModelsScreen.U.truthy(BotConfigJson.get(liveStatus, "upgrade.paused"));
+            String upgLib = ModelsScreen.U.s(BotConfigJson.get(liveStatus, "upgrade.currentLib")).trim();
+            String upgErr = ModelsScreen.U.s(BotConfigJson.get(liveStatus, "upgrade.lastError")).trim();
+            StringBuilder upgLine = new StringBuilder();
+            if (upgRunning) {
+                upgLine.append("后台影子升级进行中");
+                if (upgLib.length() > 0) {
+                    int done = (int) BotConfigJson.numOf(BotConfigJson.get(liveStatus, "upgrade.libraries." + upgLib + ".doneSources"));
+                    int total = (int) BotConfigJson.numOf(BotConfigJson.get(liveStatus, "upgrade.libraries." + upgLib + ".totalSources"));
+                    upgLine.append("（").append(upgLib);
+                    if (total > 0) upgLine.append(" ").append(Math.max(0, done)).append("/").append(total).append(" 份");
+                    upgLine.append("）");
+                }
+            } else if (upgPaused) {
+                upgLine.append("后台影子升级已暂停（进度已断点保存，随时可继续）");
+            } else if (upgErr.length() > 0) {
+                upgLine.append("上次升级中止（旧数据完好）：").append(DashKit.cut(upgErr, 48));
+            }
+            if (upgLine.length() > 0) {
+                TextView upgText = Ui.text(activity, upgLine.toString(), Theme.T_CAP, t.accent);
+                upgText.setLineSpacing(dp(3), 1f);
+                c.body.addView(upgText, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+            }
+            if (!ids.isEmpty()) {
+                LinearLayout upgBar = Ui.row(activity);
+                final String act = upgRunning ? "pause" : (upgPaused ? "resume" : "start");
+                String label = upgRunning ? "暂停后台升级" : (upgPaused ? "继续后台升级" : "后台静默升级老库（影子表）");
+                TextView upgBtn = Ui.button(activity, t, label, false);
+                upgBtn.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        controlBackgroundUpgrade(act);
+                    }
+                });
+                LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                upgBar.addView(upgBtn, ulp);
+                TextView refBtn = Ui.button(activity, t, "刷新进度", false);
+                refBtn.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        fetchLiveStatus();
+                    }
+                });
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+                rlp.leftMargin = dp(Theme.S1);
+                upgBar.addView(refBtn, rlp);
+                c.body.addView(upgBar, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+            }
+        }
+
         if (ids.isEmpty()) {
             TextView empty = Ui.text(activity,
                     problem == null ? "还没有资料库，直接点下面从手机选文件导入，或新建资料库。" : problem,
@@ -687,6 +741,19 @@ final class KnowledgeScreen extends Screen {
             if (!Double.isNaN(upd) && upd > 0) {
                 v.append(" · 更新于 ").append(DashApi.ago((long) upd));
             }
+            String upgSt = ModelsScreen.U.s(BotConfigJson.get(liveStatus, "upgradeStates." + id + ".status")).trim();
+            if ("completed".equals(upgSt)) {
+                v.append(" · 结构索引已升级");
+            } else if ("running".equals(upgSt) || "paused".equals(upgSt)) {
+                int done = (int) BotConfigJson.numOf(BotConfigJson.get(liveStatus, "upgradeStates." + id + ".doneSources"));
+                int tot = (int) BotConfigJson.numOf(BotConfigJson.get(liveStatus, "upgradeStates." + id + ".totalSources"));
+                v.append(" · ").append("paused".equals(upgSt) ? "暂停 " : "升级中 ")
+                        .append(Math.max(0, done)).append("/").append(Math.max(0, tot));
+            }
+            String manSum = ModelsScreen.U.s(BotConfigJson.get(liveStatus, "manifests." + id + ".summaryText")).trim();
+            if (manSum.length() > 0) {
+                v.append("\n书架摘要：").append(DashKit.cut(manSum, 64));
+            }
         }
         return ModelsScreen.W.row(activity, t, name, v.toString(), true, new View.OnClickListener() {
             @Override
@@ -694,6 +761,33 @@ final class KnowledgeScreen extends Screen {
                 libraryDialog(id);
             }
         });
+    }
+
+    private void controlBackgroundUpgrade(final String action) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final DashApi.Resp resp = DashApi.post(DashApi.port(activity),
+                        "/api/local/knowledge/upgrade",
+                        "{\"action\":\"" + action + "\"}",
+                        15000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (resp != null && resp.ok()) {
+                            String msg = "pause".equals(action) ? "已暂停后台影子升级（断点已保存）"
+                                    : ("resume".equals(action) ? "已继续后台影子升级" : "已启动后台影子升级（旧数据受保护）");
+                            rebuildNote = msg;
+                            ModelsScreen.W.toast(activity, msg);
+                            fetchLiveStatus();
+                        } else {
+                            ModelsScreen.W.toast(activity, "操作失败：" + (resp == null ? "连不上运行端" : resp.reason()));
+                        }
+                        render();
+                    }
+                });
+            }
+        }, "kb-bg-upgrade").start();
     }
 
     private void libraryDialog(final String id) {

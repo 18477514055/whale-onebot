@@ -5,7 +5,7 @@
 一个 Android App 管住整个机器人（登录、配置、看板、更新），一个可以单独部署的 OneBot 11 协议端负责通信。
 你能只用 App 开箱即用，也能只拿协议端，把自己的机器人接进来。
 
-当前已发布最新 Release 为 **1.2.16**（`versionCode 12017`），下载见 [Releases](https://github.com/18477514055/whale-onebot/releases)；`main` 源码分支已演进至 **1.2.19**（`versionCode 12020`，含 v1.2.18 三平台登录健康中心与防代理劫持自检，以及 v1.2.19 原生 MSF 真唤醒、断链事件驱动自愈与四层状态真源对齐）。
+当前已发布最新 Release 为 **1.2.16**（`versionCode 12017`），下载见 [Releases](https://github.com/18477514055/whale-onebot/releases)；`main` 源码分支已演进至 **1.2.20**（`versionCode 12021`，含 P0 群聊社会动力学与关闭思考主模型 Lite-ToM 路由、三段式对数正态时间学、知识库结构切片/书架/HyDE/影子表安全静默升级与统一工作记忆预算引擎）。
 
 ---
 

@@ -196,3 +196,6 @@ if ($Release) {
 Write-Host ''
 Write-Host "APK: $apk"
 Write-Host ("size: {0:N1} MB" -f ((Get-Item $apk).Length / 1MB))
+
+# 构建成功即删掉本次的临时目录（每次约 210 MB；失败时保留供排查）
+Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
