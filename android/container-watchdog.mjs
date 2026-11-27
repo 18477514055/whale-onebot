@@ -98,8 +98,10 @@ export function createNativeWatchdogState({
           }
           return 'none';
         }
-        const quickSelfHealAllowed = (allowRestart || allowQuickLoginRestart) && canQuickLogin === true;
-        // 核心防反噬防线：不能免扫码快登或未开启自愈时，绝不杀进程，立刻发离线告警
+        const quickSelfHealAllowed = canQuickLogin === true
+          && (allowRestart || (allowQuickLoginRestart && msfTicketInvalid === true));
+        // 核心防反噬防线：普通 1502/网络半开（msfTicketInvalid=false）或无快登票据时绝不贸然杀进程，
+        // 仅在明确收到 MSF -10004/-10003 票据失效且有可用快登时才走限频免扫码快登重建会话
         if (!quickSelfHealAllowed) {
           if (!offlineNotified) {
             offlineNotified = true;

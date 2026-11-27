@@ -710,15 +710,15 @@ setTimeout(() => {
   void tryQuickLogin();
 }, 50000).unref();
 
-// ★ QQ 与 Agent 本体 / B 站彻底解耦：容器进程启动 1.5s 后立即独立拉起 Agent 本体（41907）与 B 站行为层，
-//   完全不等待 QQ 登录成功！即使 QQ 处于 token-expired / waiting-manual-login，B 站、知识库、记忆与配置 API 均照常运行。
+// ★ QQ 与 Agent 本体 / B 站彻底解耦：容器进程启动 5s 后若 QQ 仍未登录（如 token-expired / waiting-manual-login），
+//   自动独立拉起 Agent 本体（41907）与 B 站行为层；若 5s 内快登成功则直接一步到位带新 token 启动（零 401 重连）。
 setTimeout(() => {
   if (finished) return;
   try { startBiliWorker(); } catch (e) { log('early bili worker start failed: ' + (e?.message ?? e)); }
-  if (WITH_AGENT && !agentProc && !agentInFlight) {
+  if (WITH_AGENT && !agentProc && !agentInFlight && !agentSpawning) {
     void startAgent(null).catch(e => log('early decoupled agent start failed: ' + (e?.message ?? e)));
   }
-}, 1500).unref();
+}, 5000).unref();
 setInterval(() => {
   if (!finished) { try { startBiliWorker(); } catch {} }
 }, 15000).unref();
@@ -944,7 +944,6 @@ async function startBot() {
     });
   }
   await originalChat.attach();
-  log('bridge attached');
 
   onebotToken = randomBytes(24).toString('hex');
   const { port: obPort, wsPort: obWsPort, skipped } = pickOneBotPorts();
@@ -1062,9 +1061,11 @@ async function startBot() {
           });
           await checkpointLoginDb('watchdog-quick-restart');
           log('NATIVE_WATCHDOG_QUICK_RESTART triggering guarded quick-login recovery msfErr=' + String(state.lastMsfError || ''));
+          dumpBlackbox('watchdog-' + decision + '-msf-' + String(state.lastMsfError || 'none'));
           process.exit(1);
         } else if (decision === 'notify_offline') {
-          // 不能快登或限频预算用尽：立即发高优告警（needsManualLogin=true 保证手机通知栏与远端主力机立刻响铃提醒，绝不静默！）
+          dumpBlackbox('watchdog-notify-offline-' + String(probe?.error || probe?.retcode || 'unknown'));
+          // 不能快登、非票据失效网络半开或限频预算用尽：立即发高优告警（绝不盲目杀进程推进 140022015！）
           save('degraded', {
             needsManualLogin: true,
             offlineReason: msfTicketInvalid
@@ -1163,6 +1164,8 @@ let agentAttempts = 0;
 let lastAgentStartedAt = 0;
 const consoleWatchdog = createAgentConsoleWatchdogState();
 let agentInFlight = false;
+let agentSpawning = false;
+let agentAttachedToken = '';
 
 function agentConsolePort() {
   try {
@@ -1235,13 +1238,39 @@ function startBiliWorker() {
 }
 
 async function startAgent(child) {
-  if (agentInFlight) { log('agent start already in flight, skip'); return; }
+  const wantToken = (child && child.port && child.wsPort && onebotToken) ? String(onebotToken) : '';
+  const procAlive = Boolean(agentProc && agentProc.exitCode === null && agentProc.signalCode === null);
+  if (agentSpawning) {
+    log('agent spawn already in progress, skip');
+    return;
+  }
+  if (procAlive) {
+    // 关键修复：若 Agent 之前在 qq-detached 态启动（或持旧 OneBot token），
+    // 当 QQ 晚于 Agent 登录并生成新 OneBot token 时，必须平滑重启 Agent 注入新 token，避免永久 401 失联！
+    if (wantToken && wantToken !== agentAttachedToken) {
+      log('AGENT_REATTACH_ON_QQ_LOGIN switching token (prev=' + (agentAttachedToken ? 'stale' : 'detached') + ' -> attached)');
+      const oldProc = agentProc;
+      agentProc = null;
+      agentInFlight = false;
+      agentAttempts = 0;
+      try { oldProc.kill('SIGTERM'); } catch {}
+      await new Promise((r) => setTimeout(r, 1500));
+      try { if (oldProc.exitCode === null && oldProc.signalCode === null) oldProc.kill('SIGKILL'); } catch {}
+    } else {
+      log('agent already running with matching token, skip');
+      return;
+    }
+  } else if (agentInFlight) {
+    log('agent start already in flight, skip');
+    return;
+  }
   if (agentAttempts >= 6) { log('agent attempts exhausted'); return; }
+  agentSpawning = true;
   agentInFlight = true;
   agentAttempts++;
   const appDir = '/input/agent-app';
   const entry = path.join(appDir, 'src/server.js');
-  if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); agentInFlight = false; return; }
+  if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); agentSpawning = false; agentInFlight = false; return; }
 
   const cfgFile = '/agent/data/config.json';
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
@@ -1290,6 +1319,7 @@ async function startAgent(child) {
     agentEnv.WHALE_ONEBOT_WS_URL = 'ws://127.0.0.1:' + child.wsPort;
     agentEnv.WHALE_ONEBOT_HTTP_URL = 'http://127.0.0.1:' + child.port;
   }
+  agentAttachedToken = wantToken;
   const proc = spawn(process.execPath, [entry], {
     cwd: appDir,
     stdio: ['ignore', out, err],
@@ -1297,9 +1327,14 @@ async function startAgent(child) {
   });
   log('agent textTimeoutMs=' + textTimeoutMs + ' mode=' + (child ? 'qq-attached' : 'qq-detached'));
   agentProc = proc;
+  agentSpawning = false;
   proc.on('exit', (code, sig) => {
     log('AGENT_EXIT code=' + code + ' signal=' + sig);
+    // 只有当前仍是该进程句柄时才触发自动重拉（避免被 reattach 替换掉的旧进程重复触发）
+    if (agentProc !== proc) return;
+    agentProc = null;
     agentInFlight = false;
+    agentAttachedToken = '';
     // 无论 QQ 是否在线，Agent 本体都保持独立常驻（解耦）
     if (!finished) {
       const liveChild = (authenticated && onebot) ? { port: onebot.address.port, wsPort: onebot.wsAddress.port } : null;
