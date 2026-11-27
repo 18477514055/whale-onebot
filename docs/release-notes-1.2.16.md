@@ -1,7 +1,7 @@
 # Whale OneBot 1.2.16
 
 > 版本：`versionCode 12017` / `versionName 1.2.16`（紧接 `1.2.14` 正式版，合并并完善 `1.2.15` 全部去 Web 化与自有市场能力）  
-> 交付阶段：本地核心包 + 三端 APK 构建验签完成、已推送测试机 `marble` 实测、公开仓库源码与文档同步完成（本批暂未发布 GitHub Release）  
+> 交付阶段：本地核心包 + 三端 APK 构建验签完成、已推送测试机 `marble` 实测、公开仓库源码与文档同步完成（**已于 2026-11-27 发布 GitHub Release `v1.2.16`，含 APK / 核心包 / 索引 / 校验**）  
 > 改动层级：`[layer: core-bot]` + `[layer: shell-android]` + `[layer: environment]` + `[layer: protocol]` + `[layer: docs]`
 
 ---
@@ -49,10 +49,10 @@
   - `node test/container-watchdog.test.mjs`：**8/8 PASS**（含 MSF `-10004/-10003` 受控自愈）；
   - `node --test --import ./test/preload.mjs test/notice-events.test.mjs test/bridge.test.mjs`：**110/110 PASS**。
 - **三端 APK 与核心包验签**：
-  - `bot-core-1.2.16.zip`（296 文件，1,849,166 B，sha256 `0ad9233b…`）
-  - `whale-onebot-1.2.16.apk`（release 正式签名 `4e2e2ef3…`，无 debuggable，109,946,500 B）
-  - `whale-onebot-debug-1.2.16.apk`（debug 签名，debuggable，109,987,653 B）
-  - `whale-onebot-beta-1.2.16.apk`（`com.whaleonebot.beta`，release 正式签名 `4e2e2ef3…`，109,946,500 B）
+  - `bot-core-1.2.16.zip`（296 文件，**1,851,975 B**，sha256 `adfe4a0eb6347b4ce15e37ea092aac214eba59f524faaf8eec3383b5865f3397`）
+  - `whale-onebot-1.2.16.apk`（release 正式签名 `4e2e2ef3…`，无 debuggable，**109,950,596 B**，sha256 `7ecd5caa9637573ddb4476d3986bfd9258c48d5062d67ce78dbebfa3e6ed4a15`）
+  - `whale-onebot-debug-1.2.16.apk`（debug 签名，debuggable，**109,991,749 B**）
+  - `whale-onebot-beta-1.2.16.apk`（`com.whaleonebot.beta`，release 正式签名 `4e2e2ef3…`，**109,950,596 B**）
 - **测试机 `marble` 实机覆盖安装与多接口实测**：
   - MD5 校验通过后覆盖安装 `whale-onebot-debug-1.2.16.apk`（`12017 / 1.2.16`）并覆盖无 Web 新核；
   - 实测在 QQ 未登录（`waiting-manual-login`）状态下，`bili-protocol-host.mjs`、`bili-behavior/worker.mjs`、主 `agent-app`（`mode=qq-detached`）与 `binding-supervisor` 全部独立拉起运行，且 `127.0.0.1:41907/` 实返回 `HTTP 200 {"ok":true,"service":"whale-agent-api","webUi":false}`；原有知识库 124,448 段与 660 条记忆印象 100% 完好保留；

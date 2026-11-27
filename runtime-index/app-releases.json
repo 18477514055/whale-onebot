@@ -1,5 +1,34 @@
 [
   {
+    "tag_name": "v1.2.16",
+    "name": "v1.2.16 — QQ/Agent/B站解耦、彻底去 Web 化 + 自有市场、模型库双页与人设/单群重构（含新核心 1.2.16）",
+    "prerelease": false,
+    "published_at": "2026-11-27T15:45:06Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.16",
+    "assets": [
+      {
+        "name": "bot-core-1.2.16.zip",
+        "size": 1851975,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.16/bot-core-1.2.16.zip"
+      },
+      {
+        "name": "release-index.json",
+        "size": 14925,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.16/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 261,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.16/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.16.apk",
+        "size": 109950596,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.16/whale-onebot-1.2.16.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "v1.2.14",
     "name": "Whale OneBot v1.2.14",
     "prerelease": false,
