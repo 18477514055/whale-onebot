@@ -1,5 +1,29 @@
 [
   {
+    "tag_name": "v1.2.12",
+    "name": "v1.2.12 — 修一键部署的 Unsupported release index（v2 索引支持 + current 语义修正）",
+    "prerelease": false,
+    "published_at": "2026-11-27T03:38:49Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.12",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 13981,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.12/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.12/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.12.apk",
+        "size": 109885060,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.12/whale-onebot-1.2.12.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "v1.2.11",
     "name": "v1.2.11 — 修掉 1.2.10 的登录回归（占位账号覆盖真机账号）",
     "prerelease": true,

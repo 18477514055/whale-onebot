@@ -468,6 +468,11 @@ final class DeployWizardScreen extends Screen {
                         });
                         Thread.sleep(600L);
                     }
+                    CoreManagerScreen.Download doneState = CoreManagerScreen.currentDownload();
+                    if (doneState != null && !doneState.running
+                            && doneState.label != null && !doneState.label.startsWith("已完成")) {
+                        err = doneState.label;
+                    }
                 }
             } catch (Throwable ex) {
                 err = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();

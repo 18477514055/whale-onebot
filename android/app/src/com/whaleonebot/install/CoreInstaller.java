@@ -32,6 +32,7 @@ public final class CoreInstaller {
   private final ReleaseCache cache;
   private final Environment environment;
   private final Map<String, Map<String, Object>> releases = new LinkedHashMap<>();
+  private final Map<String, Map<String, Map<String, Object>>> inlineCatalogs = new LinkedHashMap<>();
   private final String current;
 
   public static CoreInstaller open(Context ctx) throws Exception {
@@ -63,19 +64,104 @@ public final class CoreInstaller {
     cache = new ReleaseCache(files, transport);
     environment = env;
     Map<String, Object> index = json(cache.get("release-index", url, pin, -1, META_LIMIT, null));
-    require(
-        num(index, "schemaVersion") == 1 && num(index, "abi") == 1, "Unsupported release index");
-    current = tag(str(index, "current"));
-    List<?> rows = list(index, "releases");
-    require(!rows.isEmpty() && rows.size() <= 128, "Invalid release count");
-    for (Object val : rows) {
-      Map<String, Object> r = obj(val);
-      String v = tag(str(r, "version"));
-      ReleaseCache.origin(str(r, "catalogUrl"));
-      sha(str(r, "catalogSha256"));
-      require(releases.put(v, r) == null, "Duplicate release version");
+    long schema = num(index, "schemaVersion");
+    require(schema == 1 || schema == 2, "Unsupported release index");
+    if (schema == 1) {
+      require(num(index, "abi") == 1, "Unsupported release index");
+    } else if (index.containsKey("abi")) {
+      require(num(index, "abi") == 1, "Unsupported release index");
     }
-    require(releases.containsKey(current), "Unknown default release");
+    String declaredCurrent = index.containsKey("current") ? tag(str(index, "current")) : "";
+    List<String> v2CoreOrder = new ArrayList<>();
+    Map<String, Map<String, Object>> legacyReleases = new LinkedHashMap<>();
+    if (index.containsKey("releases")) {
+      List<?> rows = list(index, "releases");
+      require(
+          schema == 2 ? rows.size() <= 128 : (!rows.isEmpty() && rows.size() <= 128),
+          "Invalid release count");
+      for (Object val : rows) {
+        Map<String, Object> r = obj(val);
+        String v = tag(str(r, "version"));
+        ReleaseCache.origin(str(r, "catalogUrl"));
+        sha(str(r, "catalogSha256"));
+        require(legacyReleases.put(v, r) == null, "Duplicate release version");
+      }
+    } else {
+      require(schema == 2, "Missing array: releases");
+    }
+
+    if (schema == 2 && index.get("components") instanceof Map) {
+      Map<String, Object> comps = obj(index.get("components"));
+      Map<String, Object> defaultEnv = null;
+      if (comps.get("environment") instanceof List && !((List<?>) comps.get("environment")).isEmpty()) {
+        defaultEnv = obj(((List<?>) comps.get("environment")).get(0));
+      } else if (!legacyReleases.isEmpty()) {
+        defaultEnv = obj(legacyReleases.values().iterator().next().get("environment"));
+      }
+      if (defaultEnv != null) {
+        env(Collections.<String, Object>singletonMap("environment", defaultEnv));
+      }
+
+      Map<String, Map<String, Object>> latestPlugins = new LinkedHashMap<>();
+      if (comps.get("plugins") instanceof Map) {
+        Map<String, Object> pMap = obj(comps.get("plugins"));
+        for (Map.Entry<String, Object> pe : pMap.entrySet()) {
+          String pid = pe.getKey();
+          if (pid == null || !ModuleArchive.known(pid) || "core".equals(pid)) continue;
+          if (!(pe.getValue() instanceof List)) continue;
+          List<?> pList = (List<?>) pe.getValue();
+          if (pList.isEmpty()) continue;
+          Map<String, Object> pRaw = obj(pList.get(0));
+          Object pUrl = pRaw.get("url");
+          if (!(pUrl instanceof String) || ((String) pUrl).isEmpty()) continue;
+          ReleaseCache.origin((String) pUrl);
+          latestPlugins.put(pid, normalizeV2Artifact(pRaw, pid, "platform-plugin"));
+        }
+      }
+
+      if (comps.get("core") instanceof List) {
+        for (Object val : (List<?>) comps.get("core")) {
+          Map<String, Object> coreRaw = obj(val);
+          String v = tag(str(coreRaw, "version"));
+          Object cUrl = coreRaw.get("url");
+          if (!(cUrl instanceof String) || ((String) cUrl).isEmpty()) continue;
+          ReleaseCache.origin((String) cUrl);
+          Map<String, Object> coreArt = normalizeV2Artifact(coreRaw, "core", "core");
+          Map<String, Map<String, Object>> catalogRows = new LinkedHashMap<>();
+          catalogRows.put("core", coreArt);
+          catalogRows.putAll(latestPlugins);
+          inlineCatalogs.put(v, catalogRows);
+          v2CoreOrder.add(v);
+
+          Map<String, Object> syn = new LinkedHashMap<>();
+          Map<String, Object> legacySame = legacyReleases.get(v);
+          if (legacySame != null) syn.putAll(legacySame);
+          syn.put("version", v);
+          syn.put("abi", num(coreRaw, "abi"));
+          if (!syn.containsKey("environment") && defaultEnv != null) {
+            syn.put("environment", defaultEnv);
+          }
+          if (!releases.containsKey(v)) releases.put(v, syn);
+        }
+      }
+    }
+
+    for (Map.Entry<String, Map<String, Object>> e : legacyReleases.entrySet()) {
+      if (!releases.containsKey(e.getKey())) releases.put(e.getKey(), e.getValue());
+    }
+    current = ComponentIndex.defaultRelease(declaredCurrent, releases.keySet(), v2CoreOrder);
+  }
+
+  private static Map<String, Object> normalizeV2Artifact(
+      Map<String, Object> raw, String id, String kind) throws IOException {
+    Map<String, Object> copy = new LinkedHashMap<>(raw);
+    copy.put("id", id);
+    if (!copy.containsKey("schemaVersion")) copy.put("schemaVersion", 1L);
+    if (!copy.containsKey("kind")) copy.put("kind", kind);
+    if ("core".equals(id)) copy.put("requiresCoreAbi", null);
+    else if (!copy.containsKey("requiresCoreAbi")) copy.put("requiresCoreAbi", 1L);
+    ModuleArchive.row(copy);
+    return copy;
   }
 
   public String current() {
@@ -117,6 +203,12 @@ public final class CoreInstaller {
 
   private Map<String, Map<String, Object>> catalog(Map<String, Object> r) throws IOException {
     require(compatible(r), "版本不兼容；请先备份，不可直接切换");
+    String version = str(r, "version");
+    Map<String, Map<String, Object>> inline = inlineCatalogs.get(version);
+    if (inline != null) {
+      for (Map<String, Object> a : inline.values()) ModuleArchive.row(a);
+      return inline;
+    }
     Map<String, Object> c =
         json(
             cache.get(
@@ -311,11 +403,19 @@ public final class CoreInstaller {
       Map<String, Object> r, Map<String, Object> a, String id, File target, Progress p)
       throws IOException {
     require(a != null, "No release asset for " + id);
-    String base = str(r, "catalogUrl");
+    String url;
+    Object direct = a.get("url");
+    if (direct instanceof String && !((String) direct).isEmpty()) {
+      url = (String) direct;
+      ReleaseCache.origin(url);
+    } else {
+      String base = str(r, "catalogUrl");
+      url = base.substring(0, base.lastIndexOf('/') + 1) + str(a, "file");
+    }
     File zip =
         cache.get(
             id,
-            base.substring(0, base.lastIndexOf('/') + 1) + str(a, "file"),
+            url,
             str(a, "sha256"),
             num(a, "bytes"),
             MODULE_LIMIT,

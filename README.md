@@ -5,7 +5,7 @@
 一个 Android App 管住整个机器人（登录、配置、看板、更新），一个可以单独部署的 OneBot 11 协议端负责通信。
 你能只用 App 开箱即用，也能只拿协议端，把自己的机器人接进来。
 
-当前版本 **1.2.11**（`versionCode 12012`），下载见 [Releases](https://github.com/18477514055/whale-onebot/releases)。
+当前版本 **1.2.12**（`versionCode 12013`），下载见 [Releases](https://github.com/18477514055/whale-onebot/releases)。
 
 ---
 
@@ -148,6 +148,7 @@ node src/cli.mjs
 | **1.2.9** | 第三阶段记忆与画像：6 维立体人物画像（新替旧留痕、可一键恢复）、LivingMemory 演化闭环（越用越牢 / 久置沉底）、三层语义检索引擎（在线向量 → 离线轻量中文向量 → FTS5+RRF 垫底）、记忆与知识库都支持**从手机多选文件导入**；跨平台用户 ID 统一（QQ / B站 / 抖音） |
 | **1.2.10** | **止血版**：修掉表情包把 `stickers.json` 撑到 293 MB 导致的心跳假死（启动 `+484s` / RSS 1.39 GB）；新增掉线自愈看门狗（分级探活 + 只重启假死 agent、保登录态；`qr-ready` 期绝不自动重启防刷码）；协议端零 Hook 扩展（Cookie / 群列表 / 文件直链 / 加群审批 / Qzone / 群相册 / OCR 等）；**协议层 51 个 `.mjs` 随 APK 分发** |
 | **1.2.11** | **修 1.2.10 引入的登录回归**：脱敏占位版 `src/config/account.mjs`（`10000`/`10001`）会被随包释放并覆盖容器内的真实账号，导致快登匹配不上（一重启就刷码）、扫码成功后 3 秒 `unexpected-login-identity` 自杀退出。改为统一身份解析（env → 非占位 account.mjs → `identity.json` / agent 配置），任何时刻禁止登录主号，容器内已有真实账号时不再被占位符覆盖。**内置核心本版无改动（仍为 1.2.10）** |
+| **1.2.12** | **修 1.2.11 的索引语义 + 让「一键部署」认识 v2 索引**：current 之前被写成 App 版本，导致它不在核心版本表里 —— 现在一律钉成最新核心版本（components.core[0]），并加了兜底解析；CoreInstaller 同时支持 schemaVersion 1/2，会解析 components.{environment,core,plugins} 构造成内联目录，下载优先用部件自带 url（仍是全套 SHA-256 校验 + 镜像回退）⇒ **版本管理 / 一键部署向导不再报 Unsupported release index**。内置核心本版无改动（仍 1.2.10） |
 
 完整说明见 `docs/release-notes-*.md`，每个版本都写清「验证了什么 / 没验证什么」。
 
