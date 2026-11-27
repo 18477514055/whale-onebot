@@ -82,17 +82,72 @@ public class ContainerService extends Service {
         c.startService(new Intent(c, ContainerService.class).setAction(ACTION_STOP));
     }
 
-    /** 按需向单进程 container-bot.mjs 下发一次受控指令（原子写入 cmd.json，权限 0600，消费即删，绝不印密码）。 */
+    /** 按需向单进程 container-bot.mjs 下发一次受控指令（优先毫秒级回环控制口，不可达回退原子写 cmd.json，绝不印密码）。 */
     public static boolean sendBotCommand(Context c, org.json.JSONObject cmd) {
         if (c == null || cmd == null) return false;
         try {
             File files = new File("/data/data/" + c.getPackageName() + "/files");
             if (!files.isDirectory()) files = c.getFilesDir();
-            File qq = new File(files, "rootfs/opt/whale/qq-state");
+            final File qq = new File(files, "rootfs/opt/whale/qq-state");
             if (!qq.isDirectory()) qq.mkdirs();
+            final String payload = cmd.toString();
+            final File ctlFile = new File(qq, ".ctl.json");
+            if (ctlFile.isFile() && ctlFile.length() > 0 && ctlFile.length() < 4096) {
+                boolean onMain = android.os.Looper.myLooper() == android.os.Looper.getMainLooper();
+                if (onMain) {
+                    Thread t = new Thread(() -> {
+                        if (!postLocalControl(ctlFile, payload)) {
+                            writeCmdJsonFallback(qq, payload);
+                        }
+                    }, "whale-ctl-cmd");
+                    t.setDaemon(true);
+                    t.start();
+                    return true;
+                }
+                if (postLocalControl(ctlFile, payload)) {
+                    return true;
+                }
+            }
+            return writeCmdJsonFallback(qq, payload);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean postLocalControl(File ctlFile, String payload) {
+        java.net.HttpURLConnection conn = null;
+        try {
+            byte[] raw = java.nio.file.Files.readAllBytes(ctlFile.toPath());
+            org.json.JSONObject ctl = new org.json.JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+            int port = ctl.optInt("port", 0);
+            String token = ctl.optString("token", "");
+            if (port <= 0 || port > 65535 || token.isEmpty()) return false;
+            java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + "/cmd");
+            conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(800);
+            conn.setReadTimeout(1800);
+            conn.setDoOutput(true);
+            byte[] body = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(body.length);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body);
+            }
+            return conn.getResponseCode() == 200;
+        } catch (Throwable ignored) {
+            return false;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static boolean writeCmdJsonFallback(File qq, String payload) {
+        try {
             File tmp = new File(qq, "cmd.json.next");
             File dst = new File(qq, "cmd.json");
-            byte[] bytes = cmd.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] bytes = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             try (FileOutputStream os = new FileOutputStream(tmp)) {
                 os.write(bytes);
                 os.getFD().sync();
@@ -136,36 +191,45 @@ public class ContainerService extends Service {
         }
     }
 
-    /** 弹出高优先级系统通知（本地或远端设备掉线共用，点通知直达 QQ 上线页）。 */
+    /** 弹出高优先级系统通知（本地或远端设备掉线共用，点通知直达对应平台/QQ 上线页）。 */
     public static void postOfflineNotification(Context ctx, String title, String message, String peerId) {
+        postPlatformAlertNotification(ctx, "qq", title, message, peerId);
+    }
+
+    /** 三平台（QQ / B 站 / 抖音）统一高优先级离线/过期告警通知。 */
+    public static void postPlatformAlertNotification(Context ctx, String platform, String title, String message, String peerId) {
         if (ctx == null) return;
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(NOTIFICATION_SERVICE);
             if (nm == null) return;
             if (Build.VERSION.SDK_INT >= 26) {
                 NotificationChannel ch = new NotificationChannel(
-                        ALERT_CHANNEL, "QQ 离线与安全提醒", NotificationManager.IMPORTANCE_HIGH);
-                ch.setDescription("QQ 机器人掉线、被踢或需要滑块/扫码重新上线时立即提醒");
+                        ALERT_CHANNEL, "多平台离线与安全提醒", NotificationManager.IMPORTANCE_HIGH);
+                ch.setDescription("QQ、B 站或抖音机器人掉线、Cookie 过期或需要安全验证时立即提醒");
                 nm.createNotificationChannel(ch);
             }
             Intent open = new Intent(ctx, MainActivity.class);
             open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            open.putExtra("open_qq_login", true);
+            String plat = (platform == null || platform.isEmpty()) ? "qq" : platform;
+            open.putExtra("open_qq_login", "qq".equals(plat));
+            open.putExtra("open_platform_health", !"qq".equals(plat));
+            open.putExtra("open_platform", plat);
             if (peerId != null && !peerId.isEmpty()) open.putExtra("open_remote_peer", peerId);
+            int reqCode = 2027 + Math.abs(plat.hashCode() % 50) + (peerId == null ? 0 : Math.abs(peerId.hashCode() % 50));
             int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= 23) flags |= android.app.PendingIntent.FLAG_IMMUTABLE;
-            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(ctx, 2027, open, flags);
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(ctx, reqCode, open, flags);
             Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
                     ? new Notification.Builder(ctx, ALERT_CHANNEL)
                     : new Notification.Builder(ctx).setPriority(Notification.PRIORITY_HIGH);
-            Notification n = b.setContentTitle(title == null ? "QQ 机器人需要重新上线" : title)
-                    .setContentText(message == null ? "点击查看原因并一键重新上线" : message)
+            Notification n = b.setContentTitle(title == null ? "机器人账号需要重新上线" : title)
+                    .setContentText(message == null ? "点击查看原因并一键恢复在线" : message)
                     .setStyle(new Notification.BigTextStyle().bigText(message == null ? "" : message))
                     .setSmallIcon(android.R.drawable.stat_sys_warning)
                     .setAutoCancel(true)
                     .setContentIntent(pi)
                     .build();
-            nm.notify(ALERT_NOTIFY_ID + (peerId == null ? 0 : Math.abs(peerId.hashCode() % 100)), n);
+            nm.notify(ALERT_NOTIFY_ID + Math.abs((plat + "|" + (peerId == null ? "" : peerId)).hashCode() % 200), n);
         } catch (Throwable ignored) {}
     }
 
@@ -188,12 +252,15 @@ public class ContainerService extends Service {
 
     public static Runnable enrollBiliAccount(Context c,String bot,String slot,boolean fresh){return BiliProtocolControl.enroll(c,bot,slot,fresh);}
     public static void startBiliProtocol(Context c,String bot,String binding,String peer){BiliProtocolControl.start(c,bot,binding,peer);}
+    public static void restartBiliProtocol(Context c,String bot,String binding,String peer){BiliProtocolControl.restart(c,bot,binding,peer);}
     public static void stopBiliProtocol(String bot,String binding){BiliProtocolControl.stop(bot,binding);}
     public static org.json.JSONObject biliProtocolStatus(String bot,String binding){return BiliProtocolControl.status(bot,binding);}
     public static boolean hasBiliSession(Context c,String bot,String binding){return BiliProtocolControl.hasSaved(c,bot,binding);}
     public static boolean forgetBiliSession(Context c,String bot,String binding){return BiliProtocolControl.forget(c,bot,binding);}
     public static void reauthorizeBiliProtocol(Context c,String bot,String binding,String peer){BiliProtocolControl.reauthorize(c,bot,binding,peer);}
     public static String biliAuthorizationLink(String bot,String binding){return BiliProtocolControl.authorizationLink(bot,binding);}
+    public static String biliBlackboxLog(int lines){return BiliProtocolControl.blackboxLog(lines);}
+    public static org.json.JSONObject importBiliCookie(Context c,String bot,String binding,String expectedUid,boolean newSlot,String rawCookie,String acTimeValue){return BiliProtocolControl.importManualSession(c,bot,binding,expectedUid,newSlot,rawCookie,acTimeValue);}
     public static void setBindingToken(Context c,String bot,String binding,String token){ BindingControl.token(c,bot,binding,token); }
     public static void startBoundBot(Context c,String bot){SavedBindingStartup.onStart(c,bot); queueBoundBot(c,bot);}
     static void queueBoundBot(Context c,String bot){
@@ -334,7 +401,26 @@ public class ContainerService extends Service {
         if (p != null) { try { p.destroy(); } catch (Throwable ignored) {} }
     }
 
-    /** 仅重启当前 QQ 通道（关 QQ → 等 1.5s → 起 QQ），不影响同容器内的 B 站、其他受管核心与主容器。 */
+    /** 级别 1 · 进程内热重连 QQ 会话（不断 Node/proot、零影响 B 站与 Agent）；若未跑则自动冷拉起。 */
+    public static void hotReconnectQq(final Context c) {
+        if (c == null) return;
+        final Context app = c.getApplicationContext();
+        new Thread(() -> {
+            if (running && botRunning(app)) {
+                try {
+                    boolean sent = sendBotCommand(app, new org.json.JSONObject()
+                            .put("action", "hot_reconnect")
+                            .put("reason", "user_manual")
+                            .put("at", System.currentTimeMillis()));
+                    if (sent) return;
+                } catch (Throwable ignored) {}
+            }
+            if (!running) start(app);
+            else startBot(app);
+        }, "whale-hot-reconn").start();
+    }
+
+    /** 级别 2 · 仅重启当前 QQ 通道（关 QQ → 快速清残留 → 起 QQ），不影响同容器内的 B 站、其他受管核心与主容器。 */
     public static void restartQqOnly(final Context c) {
         if (c == null) return;
         final Context app = c.getApplicationContext();
@@ -342,7 +428,7 @@ public class ContainerService extends Service {
             @Override
             public void run() {
                 stopBot();
-                try { Thread.sleep(1500L); } catch (InterruptedException ignored) {}
+                waitStaleClear(800L);
                 if (!running) {
                     start(app);
                 } else {
@@ -352,7 +438,7 @@ public class ContainerService extends Service {
         }, "whale-restart-qq").start();
     }
 
-    /** 整容器全链路重启：关当前 QQ → 关容器 → 起容器 → 自动拉起当前 QQ（会短暂中断同容器内全部平台）。 */
+    /** 级别 4 · 整容器全链路重启：关当前 QQ → 关容器 → 起容器 → 自动拉起当前 QQ（会短暂中断同容器内全部平台）。 */
     public static void restartFullContainer(final Context c) {
         if (c == null) return;
         final Context app = c.getApplicationContext();
@@ -361,45 +447,15 @@ public class ContainerService extends Service {
             public void run() {
                 stopBot();
                 stop(app);
-                try { Thread.sleep(2200L); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(1200L); } catch (InterruptedException ignored) {}
                 start(app);
             }
         }, "whale-restart-all").start();
     }
 
-    /** 诊断当前网络出口（Wi-Fi/蜂窝、是否开启 VPN/Tailscale、是否存在 IPv6），供 QQ 状态页展示排查风控诱因。 */
+    /** 诊断当前网络出口（Wi-Fi/蜂窝、精准区分 Tailscale 内网组网与全局代理 TUN），供状态页展示排查风控诱因。 */
     public static String networkDiagnosticSummary(Context c) {
-        if (c == null) return "未知网络";
-        try {
-            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) c.getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return "未知网络";
-            boolean wifi = false, cell = false, vpn = false, hasV6 = false;
-            if (Build.VERSION.SDK_INT >= 23) {
-                android.net.Network active = cm.getActiveNetwork();
-                android.net.NetworkCapabilities nc = active == null ? null : cm.getNetworkCapabilities(active);
-                if (nc != null) {
-                    wifi = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI);
-                    cell = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR);
-                    vpn = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN);
-                }
-                for (android.net.Network n : cm.getAllNetworks()) {
-                    android.net.NetworkCapabilities cap = cm.getNetworkCapabilities(n);
-                    if (cap != null && cap.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) vpn = true;
-                    android.net.LinkProperties lp = cm.getLinkProperties(n);
-                    if (lp != null) {
-                        for (android.net.LinkAddress la : lp.getLinkAddresses()) {
-                            if (la.getAddress() instanceof java.net.Inet6Address && !la.getAddress().isLinkLocalAddress() && !la.getAddress().isLoopbackAddress()) {
-                                hasV6 = true;
-                            }
-                        }
-                    }
-                }
-            }
-            String net = wifi ? "Wi-Fi" : (cell ? "移动网络" : "其他网络");
-            return net + (vpn ? " · 检测到 VPN/Tailscale 活跃" : " · 直连无 VPN") + (hasV6 ? " · 双栈 IPv6" : " · 纯 IPv4");
-        } catch (Throwable ignored) {
-            return "网络状态不可读";
-        }
+        return com.whaleonebot.ui.NetworkRiskDetector.inspect(c).summary;
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -422,6 +478,7 @@ public class ContainerService extends Service {
         if (logFile != null) log("service onCreate");
         registerNetworkRecoveryCallback();
         startOfflineAlertWatcher();
+        DouyinSessionVerifier.ensureKeepAliveLoop(this);
         // [layer: shell-android] 原生远程被控宿主挂在 ContainerService（独立于 proot 容器生命周期，容器停机也能连）。
         try {
             com.whaleonebot.ui.RemoteHostDispatcher dispatcher = new com.whaleonebot.ui.RemoteHostDispatcher(this);
@@ -506,12 +563,12 @@ public class ContainerService extends Service {
                 if (p != null && p.isAlive()) { logLine("BOT: already running"); return; }
                 botStopRequested = false;
                 try {
-                    // 从 Android 侧精确清掉上一代的 bot / agent（容器里的 pkill 既不可靠又会误杀自己）。
+                    // 从 Android 侧精确清掉上一代的 bot / agent，仅在真有残留时最多轮询等待 600ms，消除固定 3s 空等。
                     int purged = purgeStale();
                     logLine("BOT: purged stale=" + purged);
-                    try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
-                    int left = purgeStale();
-                    if (left > 0) { logLine("BOT: 仍有 " + left + " 个残留未清掉"); try { Thread.sleep(1500); } catch (InterruptedException ignored) {} }
+                    if (purged > 0) {
+                        waitStaleClear(600L);
+                    }
                     final boolean isManagedEnv = new File(files, "rootfs/.whale-public-environment").isFile();
                     final Process np = spawnInContainerTo(files,
                             "cd /opt/whale && WHALE_FAKE_HOSTNAME=" + fakeHostname(files) + " LD_PRELOAD=/opt/whale/native/libwhale-device.so:/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
@@ -716,34 +773,49 @@ public class ContainerService extends Service {
             // 这样「出码 + 拉起手机 QQ」的改动只需重装 APK，不必重打 1.2GB 的 rootfs 包。
             File whaleDir = new File(rootfs, "opt/whale");
             mkdirs(whaleDir);
-            // ★ 2026-11-24 真机事故：登录脚本与 qq-state 必须**无条件**释放。以前它们被 !managedImage 挡住，
-            //   而内置环境（有 .whale-public-environment 回执）正好是 managedImage ⇒ 容器里根本没有
-            //   container-login.mjs ⇒ 点「扫码登录 QQ」永远等不到二维码。登录脚本与"是不是内置环境"无关。
             mkdirs(new File(whaleDir, "qq-state"));
-            extractAssetAlways("container-login.mjs", new File(whaleDir, "container-login.mjs"), 0644);
-            extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
-            extractAssetAlways("container-watchdog.mjs", new File(whaleDir, "container-watchdog.mjs"), 0644);
-            extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
-            extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
-            // [layer: environment] 设备身份伪造 shim：**无条件释放**（与上面几个脚本同理）。
-            // 它 hook gethostname()/uname()，把 localhost / 6.2.1-perf 换成看起来像一台普通 ARM64 Debian 的值。
-            // ★ 为什么必须无条件：测试机是 legacy 环境（没有 .whale-public-environment），
-            //   而 native/ 那一堆是在 if(managedImage) 里释放的 —— 放那儿等于永远不生效。
-            File whaleNativeDir = new File(whaleDir, "native");
-            mkdirs(whaleNativeDir);
-            try { extractAssetAlways("native/libwhale-device.so", new File(whaleNativeDir, "libwhale-device.so"), 0755); }
-            catch (Throwable t) { logLine("device shim: " + t); }
-            // ★ 2026-11-26 [layer: shell-android] 协议端胶水的**分发通路**补上（原缺口）：
-            //   container-bot.mjs 会 import /qq-onebot/src/bridge/native-bridge.mjs（原生收发/看图/看视频/戳一戳全在这），
-            //   但 src/ 这棵树**从来不在任何发布产物里** —— core.zip 只有 payload/src（核心层），APK assets 只有扁平的
-            //   container-*.mjs，真机上那份 src/bridge/native-bridge.mjs 是 11-23 手工塞进 rootfs 的（290848 B）。
-            //   于是「改了 native-bridge 却发不出去」：用户装新包也还是旧桥。这里随 APK 无条件释放，让它跟着版本走。
+            String apkStamp = currentApkStamp();
+            File stampFile = new File(whaleDir, ".whale-assets-stamp");
+            String prevStamp = "";
+            try {
+                if (stampFile.isFile()) {
+                    prevStamp = new String(java.nio.file.Files.readAllBytes(stampFile.toPath()), java.nio.charset.StandardCharsets.UTF_8).trim();
+                }
+            } catch (Throwable ignored) {}
             File bridgeDir = new File(new File(rootfs, "qq-onebot/src"), "bridge");
-            mkdirs(bridgeDir);
-            for(String n:new String[]{"error.mjs","native-bridge.mjs","qq-profile.mjs","rkey.mjs","web-cgi.mjs"}){
-                try { extractAssetAlways("bridge/"+n,new File(bridgeDir,n),0644); } catch (Throwable ignored) {}
+            boolean assetsIntact = !apkStamp.isEmpty() && apkStamp.equals(prevStamp)
+                    && new File(whaleDir, "container-bot.mjs").isFile()
+                    && new File(whaleDir, "container-watchdog.mjs").isFile()
+                    && new File(bridgeDir, "native-bridge.mjs").isFile()
+                    && new File(rootfs, "qq-onebot/src/service.mjs").isFile();
+            if (!assetsIntact) {
+                extractAssetAlways("container-login.mjs", new File(whaleDir, "container-login.mjs"), 0644);
+                extractAssetAlways("container-bot.mjs", new File(whaleDir, "container-bot.mjs"), 0644);
+                extractAssetAlways("container-watchdog.mjs", new File(whaleDir, "container-watchdog.mjs"), 0644);
+                extractAssetAlways("binding-host.mjs", new File(whaleDir,"binding-host.mjs"),0644);
+                extractAssetAlways("bili-protocol-host.mjs",new File(whaleDir,"bili-protocol-host.mjs"),0644);
+                File whaleNativeDir = new File(whaleDir, "native");
+                mkdirs(whaleNativeDir);
+                try { extractAssetAlways("native/libwhale-device.so", new File(whaleNativeDir, "libwhale-device.so"), 0755); }
+                catch (Throwable t) { logLine("device shim: " + t); }
+                mkdirs(bridgeDir);
+                for(String n:new String[]{"error.mjs","native-bridge.mjs","qq-profile.mjs","rkey.mjs","web-cgi.mjs"}){
+                    try { extractAssetAlways("bridge/"+n,new File(bridgeDir,n),0644); } catch (Throwable ignored) {}
+                }
+                extractAssetTree("qq-protocol", new File(rootfs, "qq-onebot/src"), 0644);
+                // 同步最新版本 B 站协议层核心至 legacy rootfs（与 ManagedBiliHost 保持同源）
+                File legacyBiliDir = new File(whaleDir, "bili-protocol/src/platforms/bilibili");
+                if (legacyBiliDir.isDirectory()) {
+                    try { extractAssetAlways("bili-client.mjs", new File(legacyBiliDir, "client.mjs"), 0644); } catch (Throwable ignored) {}
+                    try { extractAssetAlways("authorized-client.mjs", new File(legacyBiliDir, "authorized-client.mjs"), 0644); } catch (Throwable ignored) {}
+                    try { extractAssetAlways("bili-passport.mjs", new File(legacyBiliDir, "passport.mjs"), 0644); } catch (Throwable ignored) {}
+                }
+                if (!apkStamp.isEmpty()) {
+                    try { writeUtf8(stampFile, apkStamp + "\n"); } catch (Throwable ignored) {}
+                }
+            } else {
+                log("assets stamp matched (" + apkStamp + "), fast-skipped redundant copy");
             }
-            extractAssetTree("qq-protocol", new File(rootfs, "qq-onebot/src"), 0644);
             // ★ 2026-11-24 修正：native 桥与那 525 个图形库**只在「内置环境」这条路上释放**。
             //   legacy（debug 的老 Debian rootfs）本来就有这些，且版本更新；无条件覆盖会把它换成旧库，
             //   真机后果是 QQ 内核每收一条消息都打 `dlsym failed NodeContextifyContextMetrics1`，
@@ -1146,6 +1218,47 @@ public class ContainerService extends Service {
      *   而在容器里 `pkill -f` 又会因为「同一行命令里就含该字符串」把自己打死；
      *   这里读 /proc/<pid>/cmdline 逐个比对，全是本 App uid 的进程，直接 killProcess 即可。
      */
+    private String currentApkStamp() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return pi.versionCode + "-" + pi.lastUpdateTime;
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static void waitStaleClear(long maxWaitMs) {
+        long deadline = System.currentTimeMillis() + maxWaitMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (!hasStaleBotOrAgent()) return;
+            try { Thread.sleep(60L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+        }
+        purgeStale();
+    }
+
+    private static boolean hasStaleBotOrAgent() {
+        File[] all = new File("/proc").listFiles();
+        if (all == null) return false;
+        int self = android.os.Process.myPid();
+        for (File dir : all) {
+            String name = dir.getName();
+            if (name.isEmpty() || !Character.isDigit(name.charAt(0))) continue;
+            int pid;
+            try { pid = Integer.parseInt(name); } catch (Throwable t) { continue; }
+            if (pid == self) continue;
+            try (java.io.FileInputStream in = new java.io.FileInputStream(new File(dir, "cmdline"))) {
+                byte[] b = new byte[1024];
+                int n = in.read(b);
+                if (n <= 0) continue;
+                String cmd = new String(b, 0, n, "UTF-8").replace('\0', ' ');
+                if (!cmd.contains("--whale-binding-worker") && (cmd.contains("container-bot.mjs") || cmd.contains("agent-app/src/server.js"))) {
+                    return true;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
     static int purgeStale() {
         int killed = 0;
         File[] all = new File("/proc").listFiles();

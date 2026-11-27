@@ -89,7 +89,9 @@ export function createPassportChallenge({onApproved, fetchImpl = globalThis.fetc
           case 86090: status = 'scanned'; break;
           case 86038: return stop('expired');
           case 0:
-            await onApproved(approvedCookies(headers,now()));
+            await onApproved(approvedCookies(headers, now()), {
+              refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '',
+            });
             expire(); if (active()) stop('approved');
             break;
           default: return stop('failed');

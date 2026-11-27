@@ -259,8 +259,15 @@ final class ControlScreen extends Screen {
 
     private View statusCard() {
         boolean connected = ModelsScreen.U.truthy(BotConfigJson.get(statusTree, "onebot.connected"));
-        DashKit.Card c = DashKit.card(activity, t, "运行状态",
-                statusTree == null ? null : (connected ? "在线" : "离线"));
+        boolean contRun = host().containerRunning();
+        QqAuthState qqAuth = host().qqAuthState();
+        boolean qqUpstreamDown = contRun && (qqAuth.isMsfDisconnected()
+                || "degraded".equals(qqAuth.phase)
+                || qqAuth.isOfflineAlert());
+        boolean trulyOnline = connected && !qqUpstreamDown;
+        String cardBadge = statusTree == null ? null
+                : (trulyOnline ? "在线" : (connected && qqUpstreamDown ? "上游断开" : "离线"));
+        DashKit.Card c = DashKit.card(activity, t, "运行状态", cardBadge);
         if (statusTree == null) {
             c.body.addView(tip(fetching ? "读取中…" : "读不到数据"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
             return c.view;
@@ -272,7 +279,11 @@ final class ControlScreen extends Screen {
         String pauseReason = DashApi.str(statusTree, "pauseReason");
         String obError = DashApi.str(ob, "error");
 
-        DashKit.kv(activity, t, c.body, "协议端", connected ? "在线" : "离线");
+        DashKit.kv(activity, t, c.body, "协议端",
+                trulyOnline ? "在线" : (connected && qqUpstreamDown ? "上游断开（本机 WS 已连）" : "离线"));
+        if (contRun) {
+            DashKit.kv(activity, t, c.body, "QQ 通道", qqAuth.shortBadge(true));
+        }
         DashKit.kv(activity, t, c.body, "心跳", DashApi.ago((long) DashApi.num(ob, "lastHeartbeatAt")));
         DashKit.kv(activity, t, c.body, "最后事件", DashApi.ago((long) DashApi.num(ob, "lastEventAt")));
         DashKit.kv(activity, t, c.body, "协议错误", obError.length() == 0 ? "无" : DashKit.cut(obError, 40));

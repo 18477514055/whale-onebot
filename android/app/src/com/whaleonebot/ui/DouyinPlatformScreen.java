@@ -1,6 +1,7 @@
 package com.whaleonebot.ui;
 
 import android.content.Intent;
+import android.text.InputType;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -22,21 +23,16 @@ import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 /**
- * [layer: shell-android] 抖音（测试版）平台专属管理页。
- *
- * <p>严格对齐 2026-11-26 需求问答报告 Q11 / Q12：
- * <ul>
- *   <li>顶部明确标示「抖音 · 测试版」与实验性通道边界说明，不虚构未验证的实网个人号收发；</li>
- *   <li>提供内置实验性 WebView 网页登录抓 Cookie（仅私有目录 0600 存储，绝不回显明文）；</li>
- *   <li>6 项写操作（评论/点赞/收藏/关注/发图文/改资料）全部默认「需要授权」，可逐项切为「自主进行」；</li>
- *   <li>内置定时浏览周期与每日预算设置、本机审批台入口与公开作品链接候选队列管理。</li>
- * </ul>
+ * [layer: shell-android] 抖音平台专属管理页（完整可用闭环：硬件 Keystore 加密存储 + 自动识别真实 UID/昵称 +
+ * 低频只读保活 + 独立探活与黑匣子 + 全量双机远程控制）。
  */
 final class DouyinPlatformScreen extends Screen {
 
     private final BotRegistry.Bot bot;
     private final String tab;
     private LinearLayout content;
+    private ScrollView pageScroll;
+    private int savedScrollY = 0;
 
     DouyinPlatformScreen(AppShell shell, BotRegistry.Bot bot, String tab) {
         super(shell);
@@ -48,105 +44,140 @@ final class DouyinPlatformScreen extends Screen {
     void build() {
         root.removeAllViews();
 
-        ScrollView scroll = new ScrollView(activity);
-        scroll.setFillViewport(true);
-        scroll.setClipChildren(false);
-        root.addView(scroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        pageScroll = new ScrollView(activity);
+        pageScroll.setFillViewport(true);
+        pageScroll.setClipChildren(false);
+        root.addView(pageScroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
         content = Ui.column(activity);
         int p = dp(Theme.S4);
         content.setPadding(p, dp(Theme.S3 + 4), p, p);
-        scroll.addView(content, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        pageScroll.addView(content, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         render();
     }
 
     private void render() {
+        if (pageScroll != null) savedScrollY = pageScroll.getScrollY();
         content.removeAllViews();
         final String botId = bot == null ? "default" : bot.id;
         final String botName = bot == null || bot.name == null || bot.name.isEmpty() ? "抖音机器人" : bot.name;
+        final boolean remote = RemoteBridge.isRemote();
 
-        content.addView(header(botName + " · 抖音"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        content.addView(header(botName + " · 抖音" + (remote ? "（远程）" : "")), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // ---------------- 顶部实验配置预览声明卡 ----------------
-        LinearLayout betaCard = Ui.addCard(content, activity, t, Theme.S3);
-        LinearLayout betaHead = Ui.row(activity);
-        betaHead.addView(Ui.strong(activity, "抖音平台 · 本地配置预览", Theme.T_CARD, t.textPrimary),
-                new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        betaHead.addView(Ui.pill(activity, t, "实验预览", Ui.TONE_WARN));
-        betaCard.addView(betaHead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        betaCard.addView(Ui.text(activity,
-                "当前为实验配置预览页：保存的策略与候选链接暂存本机，尚未接入后台自动收发执行链；"
-                        + "所有写操作默认「需要主人授权」。"
-                        + (RemoteBridge.isRemote() ? "\n提示：当前处于远程控制模式，抖音本机配置需在被控机上直接查看与修改。" : ""),
-                Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S2)));
-
-        if (RemoteBridge.isRemote()) {
-            return;
-        }
-
-        // ---------------- 1. 账号与实验性网页登录 ----------------
-        content.addView(sectionLabel("账号登录（实验性 WebView）"));
+        // ---------------- 1. 账号登录与实时健康卡（本机 & 远程统一） ----------------
+        content.addView(sectionLabel("抖音账号登录与保活状态"));
         LinearLayout loginCard = Ui.addCard(content, activity, t, Theme.S1);
-        DouyinSettings.SessionSummary sum = DouyinSettings.sessionSummary(activity.getFilesDir(), botId);
+        final DouyinSettings.SessionSummary sum = RemoteBridge.douyinSummary(activity, botId);
 
         LinearLayout loginHead = Ui.row(activity);
-        loginHead.addView(Ui.strong(activity, "本机实验凭证状态", Theme.T_BODY, t.textPrimary),
+        String headTitle = "未登录";
+        if (sum.saved) {
+            if (!sum.nickname.isEmpty()) headTitle = sum.nickname + (sum.uid.isEmpty() ? "" : " (" + sum.uid + ")");
+            else if (!sum.uid.isEmpty()) headTitle = "UID " + sum.uid;
+            else headTitle = "已保存加密凭证";
+        }
+        loginHead.addView(Ui.strong(activity, headTitle, Theme.T_BODY, t.textPrimary),
                 new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        loginHead.addView(Ui.pill(activity, t,
-                sum.saved ? (sum.hasSessionId ? "已保存登录态" : "已保存基础 Cookie") : "未登录",
-                sum.saved ? Ui.TONE_OK : Ui.TONE_NEUTRAL));
+        String pillText = "未登录";
+        int pillTone = Ui.TONE_NEUTRAL;
+        if (sum.saved) {
+            if ("verified".equals(sum.state) || sum.verified) {
+                pillText = "已验真在线";
+                pillTone = Ui.TONE_OK;
+            } else if ("expired".equals(sum.state)) {
+                pillText = "已失效需重登";
+                pillTone = Ui.TONE_WARN;
+            } else if ("network_error".equals(sum.state)) {
+                pillText = "网络波动";
+                pillTone = Ui.TONE_WARN;
+            } else {
+                pillText = sum.hasSessionId ? "已存待核验" : "凭证不完整";
+                pillTone = sum.hasSessionId ? Ui.TONE_OK : Ui.TONE_WARN;
+            }
+        }
+        loginHead.addView(Ui.pill(activity, t, pillText, pillTone));
         loginCard.addView(loginHead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         if (sum.saved) {
-            String when = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(sum.savedAt));
-            loginCard.addView(Ui.text(activity,
-                    "已落盘于应用私有目录（仅本应用可读，共 " + sum.cookieFieldCount + " 项字段，更新于 " + when + "；明文永不打印）。",
-                    Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S1)));
+            SimpleDateFormat fmt = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
+            String savedStr = sum.savedAt > 0 ? fmt.format(new Date(sum.savedAt)) : "未知";
+            String checkStr = sum.lastCheckAt > 0 ? fmt.format(new Date(sum.lastCheckAt)) : "未探活";
+            String detail = "Keystore 硬件加密存储（" + sum.cookieFieldCount + " 项字段，更新 " + savedStr + " · 上次只读探活 " + checkStr + " · 每 45 分钟低频保活）";
+            if (!sum.lastError.isEmpty()) detail += "\n状态说明：" + sum.lastError;
+            loginCard.addView(Ui.text(activity, detail, Theme.T_CAP,
+                    "expired".equals(sum.state) ? (t.dark ? 0xFFFF8A80 : 0xFFC62828) : t.textSecondary), topMargin(dp(Theme.S1)));
         } else {
             loginCard.addView(Ui.text(activity,
-                    "点击下方按钮打开内置浏览器登录抖音网页端，登录完成后点「我已登录，保存凭证」。",
+                    "支持桌面扫码/短信网页自动捕获（防跳转拦截）或粘贴 Cookie 导入；"
+                            + (remote ? "在主力机网页登录后将通过端到端加密自动回传给被控机加密保存。" : "校验通过后自动加入 45 分钟低频保活。"),
                     Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S1)));
         }
 
         LinearLayout loginBtns = Ui.row(activity);
-        TextView webBtn = Ui.button(activity, t, sum.saved ? "重新网页登录" : "打开内置网页登录", true);
-        webBtn.setOnClickListener(v -> {
-            if (RemoteBridge.isRemote()) {
-                host().toast("网页登录需在被控机本机完成（凭证仅保留在被控机私有存储）");
-                return;
-            }
-            DouyinWebLogin.open(activity, botId, (saved, summary) -> {
-                host().toast(summary);
-                render();
-            });
-        });
-        loginBtns.addView(webBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
-        if (sum.saved) {
-            TextView forgetBtn = Ui.button(activity, t, "清除凭证", false);
-            forgetBtn.setOnClickListener(v -> PromptSheet.showConfirm(
-                    activity, "清除本机抖音实验凭证？",
-                    "将立即删除应用私有目录中的抖音 Cookie 文件，不影响机器人记忆库。",
-                    "清除", () -> {
-                        DouyinSettings.forgetWebSession(activity.getFilesDir(), botId);
-                        host().toast("已清除本地抖音凭证");
-                        render();
-                    }, "取消"));
-            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
-            flp.leftMargin = dp(Theme.S2);
-            loginBtns.addView(forgetBtn, flp);
-        }
+        TextView webBtn = Ui.button(activity, t, sum.saved ? "重新网页登录" : "内置网页登录（扫码/短信）", true);
+        webBtn.setOnClickListener(v -> DouyinWebLogin.open(activity, botId, rawCookie -> submitCookie(botId, rawCookie)));
+        loginBtns.addView(webBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1.3f));
+
+        TextView importBtn = Ui.button(activity, t, "导入 Cookie", false);
+        importBtn.setOnClickListener(v -> showImportCookieDialog(botId));
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 0.9f);
+        ilp.leftMargin = dp(Theme.S2);
+        loginBtns.addView(importBtn, ilp);
         loginCard.addView(loginBtns, topMargin(dp(Theme.S3)));
 
-        // 打开官方客户端手动核验（复用到 OwnerActivity）
-        TextView openOfficial = Ui.button(activity, t, "打开本机审批台 / 官方抖音 App", false);
-        openOfficial.setOnClickListener(v -> openOwnerDesk(botId));
-        loginCard.addView(openOfficial, topMargin(dp(Theme.S2)));
+        LinearLayout opsRow = Ui.row(activity);
+        TextView probeBtn = Ui.button(activity, t, sum.saved ? "立即核验 / 热重启" : "查看诊断黑匣子", false);
+        probeBtn.setOnClickListener(v -> {
+            if (!sum.saved) {
+                ModelsScreen.W.infoDialog(activity, t, "抖音探活黑匣子", RemoteBridge.douyinBlackbox(60));
+                return;
+            }
+            host().toast("正在只读核验抖音登录态…");
+            new Thread(() -> {
+                RemoteBridge.probeDouyin(activity, botId);
+                activity.runOnUiThread(this::render);
+            }, "dy-probe").start();
+        });
+        opsRow.addView(probeBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
+
+        if (sum.saved) {
+            TextView bbBtn = Ui.button(activity, t, "黑匣子", false);
+            bbBtn.setOnClickListener(v -> ModelsScreen.W.infoDialog(activity, t, "抖音探活黑匣子", RemoteBridge.douyinBlackbox(60)));
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 0.7f);
+            blp.leftMargin = dp(Theme.S2);
+            opsRow.addView(bbBtn, blp);
+
+            TextView forgetBtn = Ui.button(activity, t, "清除凭证", false);
+            forgetBtn.setOnClickListener(v -> PromptSheet.showConfirm(
+                    activity, "清除抖音加密凭证？",
+                    "将立即销毁硬件加密仓中的抖音 Cookie，不影响机器人记忆库与行为策略。",
+                    "清除", () -> {
+                        new Thread(() -> {
+                            RemoteBridge.forgetDouyin(activity, botId);
+                            activity.runOnUiThread(() -> {
+                                host().toast("已清除抖音凭证");
+                                render();
+                            });
+                        }, "dy-forget").start();
+                    }, "取消"));
+            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 0.8f);
+            flp.leftMargin = dp(Theme.S2);
+            opsRow.addView(forgetBtn, flp);
+        }
+        loginCard.addView(opsRow, topMargin(dp(Theme.S2)));
+
+        if (!remote) {
+            TextView openOfficial = Ui.button(activity, t, "打开本机审批台 / 官方抖音 App", false);
+            openOfficial.setOnClickListener(v -> openOwnerDesk(botId));
+            loginCard.addView(openOfficial, topMargin(dp(Theme.S2)));
+        }
 
         // ---------------- 2. 写操作分级权限（默认全部需要授权） ----------------
         content.addView(sectionLabel("写操作权限策略（安全默认：全部需要授权）"));
         LinearLayout permCard = Ui.addCard(content, activity, t, Theme.S1);
-        final DouyinSettings.Config cfg = DouyinSettings.loadConfig(activity.getFilesDir(), botId);
+        final DouyinSettings.Config cfg = RemoteBridge.loadDouyinConfig(activity, botId);
         permCard.addView(Ui.text(activity,
                 "开启开关 = 允许机器人自主执行该操作；关闭（默认）= 每次执行前必须经你在手机端明确授权。",
                 Theme.T_CAP, t.textSecondary));
@@ -170,7 +201,7 @@ final class DouyinPlatformScreen extends Screen {
             sw.setChecked(autonomous);
             sw.setOnCheckedChangeListener((btn, checked) -> {
                 cfg.actions.put(actionKey, checked ? DouyinSettings.MODE_AUTONOMOUS : DouyinSettings.MODE_APPROVAL);
-                DouyinSettings.saveConfig(activity.getFilesDir(), botId, cfg);
+                RemoteBridge.saveDouyinConfig(activity, botId, cfg);
                 stateHint.setText(checked ? "当前：自主进行（无需每次弹窗确认）" : "当前：需要授权（默认安全策略）");
                 stateHint.setTextColor(checked ? t.toneStrong : t.textSecondary);
                 host().toast(actionLabel + "：" + (checked ? "已切为自主进行" : "已恢复为需要授权"));
@@ -194,8 +225,8 @@ final class DouyinPlatformScreen extends Screen {
         browseSw.setChecked(cfg.browseEnabled);
         browseSw.setOnCheckedChangeListener((btn, checked) -> {
             cfg.browseEnabled = checked;
-            DouyinSettings.saveConfig(activity.getFilesDir(), botId, cfg);
-            host().toast(checked ? "已开启定时浏览计划（仅在存在有效通道时生效）" : "已暂停定时浏览");
+            RemoteBridge.saveDouyinConfig(activity, botId, cfg);
+            host().toast(checked ? "已开启定时浏览计划" : "已暂停定时浏览");
         });
         browseRow.addView(browseSw, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
         browseCard.addView(browseRow, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
@@ -204,10 +235,10 @@ final class DouyinPlatformScreen extends Screen {
         editQuota.setOnClickListener(v -> showQuotaEditor(botId, cfg));
         browseCard.addView(editQuota, topMargin(dp(Theme.S3)));
 
-        // ---------------- 4. 公开作品链接候选队列（支持系统分享直达） ----------------
+        // ---------------- 4. 公开作品链接候选队列 ----------------
         content.addView(sectionLabel("公开作品链接候选队列"));
         LinearLayout queueCard = Ui.addCard(content, activity, t, Theme.S1);
-        List<String> candidates = DouyinSettings.listCandidates(activity.getFilesDir(), botId);
+        List<String> candidates = RemoteBridge.listDouyinCandidates(activity, botId);
         queueCard.addView(Ui.text(activity,
                 "在抖音 App 点「分享 → 更多 → 接收抖音作品链接」，或在下方粘贴公开 HTTPS 作品链接提交给本机器人。",
                 Theme.T_CAP, t.textSecondary));
@@ -231,7 +262,7 @@ final class DouyinPlatformScreen extends Screen {
                 host().toast("仅支持单条公开抖音 HTTPS 链接（www.douyin.com/video/... 或 v.douyin.com/...）");
                 return;
             }
-            DouyinSettings.enqueueCandidate(activity.getFilesDir(), botId, valid);
+            RemoteBridge.enqueueDouyinCandidate(activity, botId, valid);
             host().toast("已加入候选队列");
             render();
         });
@@ -239,7 +270,7 @@ final class DouyinPlatformScreen extends Screen {
         if (!candidates.isEmpty()) {
             TextView clearBtn = Ui.button(activity, t, "清空 (" + candidates.size() + ")", false);
             clearBtn.setOnClickListener(v -> {
-                DouyinSettings.clearCandidates(activity.getFilesDir(), botId);
+                RemoteBridge.clearDouyinCandidates(activity, botId);
                 host().toast("已清空候选队列");
                 render();
             });
@@ -263,6 +294,46 @@ final class DouyinPlatformScreen extends Screen {
                         Theme.T_CAP, t.textTertiary), topMargin(dp(6)));
             }
         }
+
+        final int keepY = savedScrollY;
+        if (keepY > 0 && pageScroll != null) {
+            pageScroll.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, keepY); });
+        }
+    }
+
+    private void submitCookie(final String botId, final String rawCookie) {
+        host().toast("正在联网校验抖音账号并硬件加密保存…");
+        new Thread(() -> {
+            DouyinSettings.SessionSummary res = RemoteBridge.saveDouyinSession(activity, botId, rawCookie);
+            activity.runOnUiThread(() -> {
+                if (res != null && res.saved) {
+                    String who = !res.nickname.isEmpty() ? res.nickname : (!res.uid.isEmpty() ? res.uid : "已保存");
+                    host().toast("抖音凭证保存成功：" + who);
+                } else {
+                    host().toast(res != null && !res.lastError.isEmpty() ? res.lastError : "保存失败，请确认已完成账号登录");
+                }
+                render();
+            });
+        }, "dy-save-cookie").start();
+    }
+
+    private void showImportCookieDialog(final String botId) {
+        LinearLayout box = Ui.column(activity);
+        box.addView(Ui.text(activity, "粘贴含 sessionid=... 或 sid_tt=... 的抖音网页 Cookie（仅以 Keystore 密文存运行机，不接受纯游客 Cookie）。",
+                Theme.T_CAP, t.textSecondary));
+        final EditText et = new EditText(activity);
+        et.setHint("sessionid=...; sid_tt=...; uid_tt=...");
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        et.setMinLines(3);
+        Ui.styleInput(et, activity, t);
+        box.addView(et, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        PromptSheet.custom(activity, t, "导入抖音 Cookie", box,
+                "核验并保存", (d, b) -> {
+                    String raw = et.getText() == null ? "" : et.getText().toString().trim();
+                    if (raw.isEmpty()) { host().toast("请先粘贴 Cookie"); return; }
+                    d.dismiss();
+                    submitCookie(botId, raw);
+                }, null, null, "取消", (d, b) -> d.dismiss(), true, false, null, null);
     }
 
     private void openOwnerDesk(String botId) {
@@ -301,7 +372,7 @@ final class DouyinPlatformScreen extends Screen {
                         cfg.browseIntervalMin = Math.max(15, Math.min(1440, Integer.parseInt(etInterval.getText().toString().trim())));
                         cfg.dailyBrowseBudget = Math.max(1, Math.min(200, Integer.parseInt(etBrowse.getText().toString().trim())));
                         cfg.dailyWriteBudget = Math.max(0, Math.min(100, Integer.parseInt(etWrite.getText().toString().trim())));
-                        DouyinSettings.saveConfig(activity.getFilesDir(), botId, cfg);
+                        RemoteBridge.saveDouyinConfig(activity, botId, cfg);
                         d.dismiss();
                         host().toast("已保存抖音预算设置");
                         render();

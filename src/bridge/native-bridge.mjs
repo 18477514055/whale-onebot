@@ -850,6 +850,9 @@ export class NativeBridge extends EventEmitter {
       try { this.search = this.session.getSearchService?.(); } catch { this.search = undefined; }
       try { this.avatar = this.session.getAvatarService?.(); } catch { this.avatar = undefined; }
       try { this.app = this.session.getAppService?.(); } catch { this.app = undefined; }
+      try { this.msf = this.session.getMSFService?.(); } catch { this.msf = undefined; }
+      this.msfStatus = 'online';
+      this.msfDisconnected = false;
       this.#pskey = null;
       this.webCgi.clear();
       // 免 hook 事件面：notice 回调（撤回/掉线/灰条/入群/群公告…）。失败不影响消息流。
@@ -944,6 +947,9 @@ export class NativeBridge extends EventEmitter {
     this.search = undefined;
     this.avatar = undefined;
     this.app = undefined;
+    this.msf = undefined;
+    this.msfStatus = '';
+    this.msfDisconnected = false;
     this.#pskey = null;
     this.webCgi.clear();
     this.groupRequests.clear();
@@ -1609,21 +1615,67 @@ export class NativeBridge extends EventEmitter {
     return entry;
   }
 
-  async wakeSession() {
-    if (!this.attached) return { awake: false, reason: 'detached' };
+  setMsfStatus(status) {
+    const normalized = String(status ?? '').trim().toLowerCase();
+    this.msfStatus = normalized;
+    this.msfDisconnected = normalized === '2'
+      || normalized === 'disconnected'
+      || normalized === 'kdisconnected'
+      || normalized === 'login-disconnected';
+  }
+
+  /**
+   * 进程内原生会话唤醒与 MSF 传输层重连（实测核对 wrapper.node NAPI 符号表）：
+   * - 弃用不存在的 session.getAppService()；直接调用 session 与 session.getMSFService() 真实方法；
+   * - 严格检测目标方法为 function 才调用并计入 invoked，彻底杜绝空炮假成功。
+   */
+  async wakeSession(options = {}) {
+    if (!this.attached) return { awake: false, reason: 'detached', invoked: [] };
     const calls = [];
-    const tryCall = async (label, fn) => {
-      if (typeof fn !== 'function') return;
+    const failed = [];
+    const readMsf = () => {
       try {
-        await Promise.race([Promise.resolve(fn()), delay(2500)]);
-        calls.push(label);
-      } catch { /* 唤醒调用尽力而为，不抛出 */ }
+        if (typeof this.msf?.getMsfStatus === 'function') return this.msf.getMsfStatus();
+      } catch {}
+      return null;
     };
-    await tryCall('switchBackGround', () => this.app?.switchBackGround?.());
-    await tryCall('switchForeGround', () => this.app?.switchForeGround?.());
-    await tryCall('onLine', () => this.app?.onLine?.());
-    await tryCall('startMsgSync', () => this.msg?.startMsgSync?.());
-    return { awake: true, invoked: calls };
+    const msfBefore = readMsf();
+    const tryMethod = async (label, target, methodName, args = []) => {
+      if (!target || typeof target[methodName] !== 'function') return;
+      try {
+        await Promise.race([Promise.resolve(target[methodName](...args)), delay(2500)]);
+        calls.push(label);
+      } catch (err) {
+        failed.push(`${label}:${String(err?.message || err || 'err').slice(0, 60)}`);
+      }
+    };
+    // 1. 切前后台触发桌面内核轻量状态同步（优先真实 wrapper.node session.switchTo*，兼容旧版/测试 app.switch*）
+    if (typeof this.session?.switchToBackGround === 'function' || typeof this.session?.switchToFront === 'function') {
+      await tryMethod('session.switchToBackGround', this.session, 'switchToBackGround');
+      await tryMethod('session.switchToFront', this.session, 'switchToFront');
+    } else {
+      await tryMethod('app.switchBackGround', this.app, 'switchBackGround');
+      await tryMethod('app.switchForeGround', this.app, 'switchForeGround');
+    }
+    // 2. 可选：模拟系统网络切换事件，促使 MSFSDK::notifyNetworkChange 丢弃僵死半开连接重拨
+    const netStatus = Number.isInteger(options?.networkStatus) ? options.networkStatus : null;
+    if (options?.toggleNetwork === true && netStatus !== null) {
+      await tryMethod('session.setOnNetworkChanged(0)', this.session, 'setOnNetworkChanged', [0]);
+      await delay(300);
+      await tryMethod(`session.setOnNetworkChanged(${netStatus})`, this.session, 'setOnNetworkChanged', [netStatus]);
+    } else if (netStatus !== null) {
+      await tryMethod(`session.setOnNetworkChanged(${netStatus})`, this.session, 'setOnNetworkChanged', [netStatus]);
+    }
+    // 3. 直接拉起原生 MSF 长连接（NAPI 实测 NodeIKernelMSFService::online 为 0 参数；兼容回退 app.onLine）
+    if (typeof this.msf?.online === 'function') {
+      await tryMethod('msf.online', this.msf, 'online');
+    } else {
+      await tryMethod('app.onLine', this.app, 'onLine');
+    }
+    // 4. 补发一次消息同步
+    await tryMethod('msg.startMsgSync', this.msg, 'startMsgSync');
+    const msfAfter = readMsf();
+    return { awake: calls.length > 0, invoked: calls, failed, msfBefore, msfAfter };
   }
 
   async protocolReadiness() {

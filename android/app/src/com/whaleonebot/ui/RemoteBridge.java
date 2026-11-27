@@ -246,6 +246,166 @@ final class RemoteBridge {
         } catch (Throwable ignored) {}
     }
 
+    static void restartBili(Context ctx, String botId, String bindingId, String peer) {
+        if (!isRemote()) { ContainerService.restartBiliProtocol(ctx, botId, bindingId, peer); return; }
+        invalidateByMethod("bili.");
+        try {
+            rpcAsync("bili.restart", new JSONObject().put("botId", botId).put("bindingId", bindingId).put("peer", peer), 10000);
+        } catch (Throwable ignored) {}
+    }
+
+    static String biliBlackbox(int lines) {
+        if (!isRemote()) return ContainerService.biliBlackboxLog(lines);
+        try {
+            JSONObject r = rpcSwr("bili.blackbox", new JSONObject().put("lines", lines), 3000L, 5000);
+            if (r != null) return r.optString("log", "");
+        } catch (Throwable ignored) {}
+        return "（远端暂无 B 站黑匣子记录）";
+    }
+
+    static JSONObject importBiliCookie(Context ctx, String botId, String bindingId, String expectedUid,
+                                       boolean newSlot, String rawCookie, String acTimeValue) {
+        if (!isRemote()) {
+            return ContainerService.importBiliCookie(ctx, botId, bindingId, expectedUid, newSlot, rawCookie, acTimeValue);
+        }
+        invalidateByMethod("bili.");
+        try {
+            JSONObject p = new JSONObject()
+                    .put("botId", botId)
+                    .put("bindingId", bindingId)
+                    .put("expectedUid", expectedUid == null ? "" : expectedUid)
+                    .put("newSlot", newSlot)
+                    .put("rawCookie", rawCookie == null ? "" : rawCookie)
+                    .put("acTimeValue", acTimeValue == null ? "" : acTimeValue);
+            JSONObject r = rpcSync("bili.importCookie", p, 15000);
+            RemoteControlManager rm = mgr();
+            if (rm != null) rm.triggerSnapshotRefresh();
+            return r != null ? r : new JSONObject().put("ok", false).put("error", "远端导入无响应");
+        } catch (Throwable t) {
+            try { return new JSONObject().put("ok", false).put("error", t.getMessage()); } catch (Throwable ignored) {}
+            return new JSONObject();
+        }
+    }
+
+    // ------------------------------------------------------------------ 抖音全量本地与远程桥接
+
+    static DouyinSettings.SessionSummary douyinSummary(Context ctx, String botId) {
+        if (!isRemote()) return DouyinSettings.sessionSummary(ctx, botId);
+        try {
+            JSONObject r = rpcSwr("douyin.summary", new JSONObject().put("botId", botId), 3000L, 5000);
+            if (r != null) return DouyinSettings.SessionSummary.fromJson(r);
+        } catch (Throwable ignored) {}
+        return DouyinSettings.SessionSummary.fromJson(null);
+    }
+
+    static DouyinSettings.SessionSummary saveDouyinSession(Context ctx, String botId, String rawCookie) {
+        if (!isRemote()) {
+            com.whaleonebot.DouyinSessionStore.Summary s =
+                    com.whaleonebot.DouyinSessionVerifier.saveAndVerify(ctx, botId, rawCookie);
+            return new DouyinSettings.SessionSummary(s.saved, s.verified, s.savedAt, s.lastCheckAt,
+                    s.cookieFieldCount, s.hasSessionId, s.uid, s.nickname, s.state, s.lastError);
+        }
+        invalidateByMethod("douyin.");
+        try {
+            JSONObject r = rpcSync("douyin.importCookie",
+                    new JSONObject().put("botId", botId).put("rawCookie", rawCookie == null ? "" : rawCookie), 15000);
+            RemoteControlManager rm = mgr();
+            if (rm != null) rm.triggerSnapshotRefresh();
+            if (r != null) return DouyinSettings.SessionSummary.fromJson(r);
+        } catch (Throwable ignored) {}
+        return DouyinSettings.SessionSummary.fromJson(null);
+    }
+
+    static DouyinSettings.SessionSummary probeDouyin(Context ctx, String botId) {
+        if (!isRemote()) {
+            com.whaleonebot.DouyinSessionStore.Summary s =
+                    com.whaleonebot.DouyinSessionVerifier.probeOnce(ctx, botId);
+            return new DouyinSettings.SessionSummary(s.saved, s.verified, s.savedAt, s.lastCheckAt,
+                    s.cookieFieldCount, s.hasSessionId, s.uid, s.nickname, s.state, s.lastError);
+        }
+        invalidateByMethod("douyin.");
+        try {
+            JSONObject r = rpcSync("douyin.probe", new JSONObject().put("botId", botId), 12000);
+            if (r != null) return DouyinSettings.SessionSummary.fromJson(r);
+        } catch (Throwable ignored) {}
+        return DouyinSettings.SessionSummary.fromJson(null);
+    }
+
+    static void forgetDouyin(Context ctx, String botId) {
+        if (!isRemote()) { DouyinSettings.forgetWebSession(ctx, botId); return; }
+        invalidateByMethod("douyin.");
+        try { rpcSync("douyin.forget", new JSONObject().put("botId", botId), 8000); } catch (Throwable ignored) {}
+    }
+
+    static String douyinBlackbox(int lines) {
+        if (!isRemote()) return com.whaleonebot.DouyinSessionVerifier.blackboxLog(lines);
+        try {
+            JSONObject r = rpcSwr("douyin.blackbox", new JSONObject().put("lines", lines), 3000L, 5000);
+            if (r != null) return r.optString("log", "");
+        } catch (Throwable ignored) {}
+        return "（远端暂无抖音诊断黑匣子记录）";
+    }
+
+    static DouyinSettings.Config loadDouyinConfig(Context ctx, String botId) {
+        if (!isRemote()) return DouyinSettings.loadConfig(ctx.getFilesDir(), botId);
+        try {
+            JSONObject r = rpcSwr("douyin.configGet", new JSONObject().put("botId", botId), 4000L, 5000);
+            if (r != null) return DouyinSettings.Config.fromJson(r);
+        } catch (Throwable ignored) {}
+        return new DouyinSettings.Config();
+    }
+
+    static void saveDouyinConfig(Context ctx, String botId, DouyinSettings.Config cfg) {
+        if (!isRemote()) { DouyinSettings.saveConfig(ctx.getFilesDir(), botId, cfg); return; }
+        invalidateByMethod("douyin.config");
+        try {
+            rpcAsync("douyin.configSet", new JSONObject().put("botId", botId).put("config", cfg.toJson()), 8000);
+        } catch (Throwable ignored) {}
+    }
+
+    static List<String> listDouyinCandidates(Context ctx, String botId) {
+        if (!isRemote()) return DouyinSettings.listCandidates(ctx.getFilesDir(), botId);
+        List<String> out = new ArrayList<>();
+        try {
+            JSONObject r = rpcSwr("douyin.queueGet", new JSONObject().put("botId", botId), 4000L, 5000);
+            JSONArray arr = r == null ? null : r.optJSONArray("items");
+            if (arr != null) for (int i = 0; i < arr.length(); i++) out.add(arr.optString(i, ""));
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
+    static void enqueueDouyinCandidate(Context ctx, String botId, String url) {
+        if (!isRemote()) { DouyinSettings.enqueueCandidate(ctx.getFilesDir(), botId, url); return; }
+        invalidateByMethod("douyin.queue");
+        try { rpcAsync("douyin.queueAdd", new JSONObject().put("botId", botId).put("url", url), 8000); } catch (Throwable ignored) {}
+    }
+
+    static void clearDouyinCandidates(Context ctx, String botId) {
+        if (!isRemote()) { DouyinSettings.clearCandidates(ctx.getFilesDir(), botId); return; }
+        invalidateByMethod("douyin.queue");
+        try { rpcAsync("douyin.queueClear", new JSONObject().put("botId", botId), 8000); } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------------ 四级重启通用入口
+
+    static void hotReconnectQq(Context ctx) {
+        if (!isRemote()) { ContainerService.hotReconnectQq(ctx); return; }
+        rpcAsync("container.hotReconnectQq", null, 10000);
+    }
+
+    static void restartAgentOnly(Context ctx) {
+        if (!isRemote()) {
+            new Thread(() -> {
+                try {
+                    int port = DashApi.localPort(ctx);
+                    DashApi.postLocal(port, "/api/config/reload", "{}", 10000);
+                } catch (Throwable ignored) {}
+            }, "agent-reload").start();
+            return;
+        }
+        rpcAsync("container.restartAgent", null, 12000);
+    }
+
     static void stopBili(String botId, String bindingId) {
         if (!isRemote()) { ContainerService.stopBiliProtocol(botId, bindingId); return; }
         invalidateByMethod("bili.");

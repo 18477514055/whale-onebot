@@ -24,7 +24,7 @@ const TEST_DIR = path.join(ROOT, 'test/java');
 const OUT = path.join(ROOT, '.tmp/java-logic-test');
 
 // 被测的纯逻辑类（都刻意不 import Android）
-const LOGIC = ['Theme.java', 'BotConfigJson.java', 'WhitelistModel.java', 'ArchiveImporter.java', 'QqAuthState.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java','QqClientFiles.java','SetupState.java'];
+const LOGIC = ['Theme.java', 'BotConfigJson.java', 'WhitelistModel.java', 'ArchiveImporter.java', 'QqAuthState.java', 'NetworkRiskLogic.java', 'RuntimeIndexLogic.java', 'RuntimeArchivePick.java', 'RootfsLayout.java', 'BotRegistry.java', 'BotStore.java', 'CoreInventory.java', 'CoreRegistration.java', 'BindingPresentation.java', 'BiliPlatformState.java','ModulePlan.java','RuntimeSurfaces.java','RuntimeUiLink.java','InstallerJson.java','QqOfficialRelease.java','QqDebArchive.java','QqClientFiles.java','SetupState.java'];
 const REMOTE_LOGIC = ['RemoteCrypto.java', 'StunClient.java', 'MqttSignaling.java', 'NostrSignaling.java', 'RemoteTransport.java', 'NostrRelayChannel.java', 'RemoteStore.java', 'QrDecoder.java'];
 const QRGEN_LOGIC = ['BitBuffer.java', 'DataTooLongException.java', 'QrCode.java', 'QrSegment.java'];
 // P14：v2 部件索引的读取器也刻意不 import Android，所以进纯逻辑测试

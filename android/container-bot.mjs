@@ -11,11 +11,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   createNativeWatchdogState,
   createAgentConsoleWatchdogState,
   isMsfTicketInvalidError,
+  isMsfDisconnectedStatus,
+  extractLoginChallengeFields,
   classifyLoginError,
   sanitizeVerifyUrl,
   sanitizeQrUrl,
@@ -34,6 +36,7 @@ const SLOT_ARG = (process.argv.find((a) => a.startsWith('--slot=')) || '').slice
 const STATE = SLOT_ARG ? path.join('/opt/whale/qq-state-slots', SLOT_ARG) : '/opt/whale/qq-state';
 const GLOBAL = path.join(STATE, 'global');
 const CMD_FILE = path.join(STATE, 'cmd.json');
+const CTL_FILE = path.join(STATE, '.ctl.json');
 const BLACKBOX_FILE = path.join(STATE, 'blackbox.log');
 const PROJECT = '/qq-onebot';
 const RUNTIME = SLOT_ARG ? path.join(STATE, 'runtime') : path.join(PROJECT, 'runtime');
@@ -239,7 +242,14 @@ function ensureSingleInstance() {
   }
   if (victims.length) {
     log('单实例清理：killed ' + victims.join(','));
-    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000); } catch {}
+    const deadline = Date.now() + 600;
+    while (Date.now() < deadline) {
+      const alive = victims.some((pid) => {
+        try { return fs.existsSync('/proc/' + pid); } catch { return false; }
+      });
+      if (!alive) break;
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); } catch { break; }
+    }
   }
   return victims;
 }
@@ -307,11 +317,13 @@ process.on('unhandledRejection', e => {
   die('unhandled-rejection', e);
 });
 
-let originalChat, onebot, onebotToken, agentProc;
+let originalChat, onebot, onebotToken, agentProc, ctlServer;
 async function shutdown() {
   if (finished) return;
   finished = true;
   save('stopping');
+  try { fs.unlinkSync(CTL_FILE); } catch {}
+  try { ctlServer?.close?.(); } catch {}
   try { agentProc?.kill('SIGTERM'); } catch {}
   try { originalChat?.close(); } catch {}
   try { await onebot?.close?.(); } catch {}
@@ -349,6 +361,12 @@ log('engine init ok ver=' + CLIENT_VER + ' host=' + os.hostname() + ' rel=' + os
 const startup = w.NodeIQQNTStartupSessionWrapper.create();
 const session = w.NodeIQQNTWrapperSession.getNTWrapperSession('nt_1');
 log('startup/session ok');
+
+// 注：proot 容器内缺少宿主机 NetworkManager/D-Bus，直接调用 NodeIQQNTWrapperNetwork::openNetworkService 会触发原生 SIGSEGV；
+// 唤醒时直接返回 Wi-Fi 网络枚举（1 = kReachableViaWiFi）供 session.setOnNetworkChanged 使用。
+function currentWrapperNetworkStatus() {
+  return 1;
+}
 
 const login = w.NodeIKernelLoginService.get();
 login.initConfig({
@@ -499,51 +517,73 @@ async function performPasswordLogin(rawUin, rawPassword, captchaExtra = null) {
     enterManualOffline({ code: 'empty_password', phase: 'waiting-manual-login', message: '密码不能为空' });
     return;
   }
-  pendingPwdLogin = { uin, passwordMd5: md5 };
+  const prev = (pendingPwdLogin && pendingPwdLogin.uin === uin) ? pendingPwdLogin : null;
+  const step = Number.isInteger(captchaExtra?.step)
+    ? captchaExtra.step
+    : (captchaExtra ? ((prev?.step ?? 0) + 1) : 0);
+  const nextRand = String(captchaExtra?.randStr || prev?.proofWaterRand || '').trim();
+  const nextSid = String(captchaExtra?.sid || prev?.proofWaterSid || '').trim();
+  const nextNewDevSig = String(captchaExtra?.newDeviceLoginSig || prev?.newDeviceLoginSig || '').trim();
+  const nextUnusualSig = String(captchaExtra?.unusualDeviceCheckSig || prev?.unusualDeviceCheckSig || '').trim();
+  const nextRegSig = String(captchaExtra?.registerSucceedSig || prev?.registerSucceedSig || '').trim();
+
+  pendingPwdLogin = {
+    uin,
+    passwordMd5: md5,
+    step,
+    proofWaterRand: nextRand,
+    proofWaterSid: nextSid,
+    newDeviceLoginSig: nextNewDevSig,
+    unusualDeviceCheckSig: nextUnusualSig,
+    registerSucceedSig: nextRegSig
+  };
   clearQrArtifacts();
   save('pwd-logging-in', {
     needsManualLogin: true,
     offlineReason: '',
-    offlineMessage: '正在向 QQ 提交账密登录…',
+    offlineMessage: captchaExtra ? '正在提交安全验证并继续账密登录…' : '正在向 QQ 提交账密登录…',
     verifyUrl: '',
     verifyAt: 0
   });
-  log('passwordLogin attempting uin=' + uin + (captchaExtra ? ' (with captcha ticket)' : ''));
+  log('passwordLogin attempting uin=' + uin + ' step=' + step + (captchaExtra ? ' (with captcha/device sig)' : ''));
   try {
     if (!loginConnected) {
       try { login.connect(); } catch {}
     }
-    // ★ 2026-11-27 真机 wrapper.node 符号表核对后的精确 LoginInfo 字段：
+    // ★ 2026-11-27/28 真机 wrapper.node 符号表核对后的精确 LoginInfo 字段：
     //   uin / passwordMd5 / step / proofWaterSig / proofWaterRand / proofWaterSid /
     //   newDeviceLoginSig / unusualDeviceCheckSig / registerSucceedSig
     const req = {
       uin,
       passwordMd5: md5,
-      step: captchaExtra ? 1 : 0,
+      step,
       proofWaterSig: captchaExtra?.ticket ? String(captchaExtra.ticket) : '',
-      proofWaterRand: captchaExtra?.randStr ? String(captchaExtra.randStr) : '',
-      proofWaterSid: captchaExtra?.sid ? String(captchaExtra.sid) : '',
-      newDeviceLoginSig: '',
-      unusualDeviceCheckSig: '',
-      registerSucceedSig: ''
+      proofWaterRand: nextRand,
+      proofWaterSid: nextSid,
+      newDeviceLoginSig: nextNewDevSig,
+      unusualDeviceCheckSig: nextUnusualSig,
+      registerSucceedSig: nextRegSig
     };
     const r = await login.passwordLogin(req);
-    const resCode = String(r?.result ?? '');
-    const errInfo = r?.loginErrorInfo || {};
-    const errMsg = String(errInfo?.errMsg ?? r?.errMsg ?? '');
-    const vUrl = sanitizeVerifyUrl(
-      errInfo?.proofWaterUrl || errInfo?.verifyUrl || errInfo?.jumpUrl
-      || r?.proofWaterUrl || r?.verifyUrl || ''
-    );
-    if (resCode === '0' && !errMsg && !vUrl) {
+    const ch = extractLoginChallengeFields(r);
+    if (ch.result === '0' && !ch.errMsg && !ch.verifyUrl) {
       log('passwordLogin accepted uin=' + uin);
       return;
     }
+    // 保留服务端下发的新设备/滑块辅助签名以供下一轮 step 递进携带
+    if (pendingPwdLogin && pendingPwdLogin.uin === uin) {
+      if (ch.proofWaterRand) pendingPwdLogin.proofWaterRand = ch.proofWaterRand;
+      if (ch.proofWaterSid) pendingPwdLogin.proofWaterSid = ch.proofWaterSid;
+      if (ch.newDeviceLoginSig) pendingPwdLogin.newDeviceLoginSig = ch.newDeviceLoginSig;
+      if (ch.unusualDeviceCheckSig) pendingPwdLogin.unusualDeviceCheckSig = ch.unusualDeviceCheckSig;
+      if (ch.registerSucceedSig) pendingPwdLogin.registerSucceedSig = ch.registerSucceedSig;
+    }
     log('passwordLogin result=' + JSON.stringify(r?.result ?? null)
-      + ' errMsg=' + JSON.stringify(errMsg.slice(0, 120))
-      + ' hasVerify=' + Boolean(vUrl)
-      + ' errKeys=' + JSON.stringify(Object.keys(errInfo)));
-    enterManualOffline(classifyLoginError(resCode, errMsg, vUrl));
+      + ' errMsg=' + JSON.stringify(ch.errMsg.slice(0, 120))
+      + ' hasVerify=' + Boolean(ch.verifyUrl)
+      + ' hasNewDevSig=' + Boolean(ch.newDeviceLoginSig)
+      + ' hasUnusualSig=' + Boolean(ch.unusualDeviceCheckSig));
+    enterManualOffline(classifyLoginError(ch.result, ch.errMsg, ch.verifyUrl));
   } catch (e) {
     log('passwordLogin threw ' + e.message);
     enterManualOffline(classifyLoginError('', e?.message || '账密登录调用异常'));
@@ -554,7 +594,12 @@ async function handleSubmitCaptcha(cmd) {
   const ticket = String(cmd?.ticket ?? '').trim();
   const randStr = String(cmd?.randStr ?? '').trim();
   const sid = String(cmd?.sid ?? '').trim();
-  log('submit_captcha received hasTicket=' + Boolean(ticket) + ' hasRand=' + Boolean(randStr));
+  const newDeviceLoginSig = String(cmd?.newDeviceLoginSig ?? '').trim();
+  const unusualDeviceCheckSig = String(cmd?.unusualDeviceCheckSig ?? '').trim();
+  log('submit_captcha received hasTicket=' + Boolean(ticket)
+    + ' hasRand=' + Boolean(randStr)
+    + ' hasNewDev=' + Boolean(newDeviceLoginSig)
+    + ' hasUnusual=' + Boolean(unusualDeviceCheckSig));
   if (typeof login.verifyCaptchaTicket === 'function' && ticket) {
     try {
       await login.verifyCaptchaTicket({ ticket, randstr: randStr, randStr, sid });
@@ -563,8 +608,14 @@ async function handleSubmitCaptcha(cmd) {
       log('verifyCaptchaTicket threw ' + e.message);
     }
   }
-  if (pendingPwdLogin && ticket) {
-    await performPasswordLogin(pendingPwdLogin.uin, '', { ticket, randStr, sid });
+  if (pendingPwdLogin && (ticket || newDeviceLoginSig || unusualDeviceCheckSig)) {
+    await performPasswordLogin(pendingPwdLogin.uin, '', {
+      ticket,
+      randStr,
+      sid,
+      newDeviceLoginSig,
+      unusualDeviceCheckSig
+    });
   } else {
     save('waiting-manual-login', {
       verifyUrl: '',
@@ -671,8 +722,15 @@ const listener = {
   onPasswordLoginFailed(err) {
     log('password-login-failed ' + JSON.stringify(err ?? null));
     if (!authenticated) {
-      const vUrl = sanitizeVerifyUrl(err?.verifyUrl || err?.loginErrorInfo?.verifyUrl || '');
-      enterManualOffline(classifyLoginError(err?.result ?? err?.errCode ?? '', err?.errMsg ?? err?.loginErrorInfo?.errMsg ?? '', vUrl));
+      const ch = extractLoginChallengeFields(err);
+      if (pendingPwdLogin) {
+        if (ch.proofWaterRand) pendingPwdLogin.proofWaterRand = ch.proofWaterRand;
+        if (ch.proofWaterSid) pendingPwdLogin.proofWaterSid = ch.proofWaterSid;
+        if (ch.newDeviceLoginSig) pendingPwdLogin.newDeviceLoginSig = ch.newDeviceLoginSig;
+        if (ch.unusualDeviceCheckSig) pendingPwdLogin.unusualDeviceCheckSig = ch.unusualDeviceCheckSig;
+        if (ch.registerSucceedSig) pendingPwdLogin.registerSucceedSig = ch.registerSucceedSig;
+      }
+      enterManualOffline(classifyLoginError(ch.result, ch.errMsg || '账密登录失败', ch.verifyUrl));
     }
   },
   onLoginConnected() {
@@ -743,14 +801,20 @@ async function executeCommand(cmd) {
   if (action === 'wake_session') {
     if (authenticated && originalChat) {
       try {
-        const info = await originalChat.wakeSession?.();
+        const info = await originalChat.wakeSession?.({
+          networkStatus: currentWrapperNetworkStatus(),
+          toggleNetwork: isMsfDisconnectedStatus(state.msfStatus)
+        });
         state.lastWakeAt = Date.now();
         log('CMD_WAKE_SESSION ' + JSON.stringify(info ?? {}));
       } catch (e) {
         log('CMD_WAKE_SESSION_ERR ' + (e?.message ?? e));
       }
     }
-    return;
+    return { ok: true, mode: 'wake' };
+  }
+  if (action === 'hot_reconnect') {
+    return await hotReconnectInProcess(String(cmd?.reason || 'manual'));
   }
   if (action === 'safe_logout' || action === 'switch_account' || action === 'force_relogin') {
     const prevUin = state.uin || BOT_UIN;
@@ -779,14 +843,162 @@ async function executeCommand(cmd) {
       message: action === 'switch_account'
         ? '已安全退出旧账号（聊天与记忆数据已完整保留），请选择新账号重新登录'
         : (action === 'force_relogin'
-          ? '已释放旧连接，请选择一键拉起 QQ、扫码或账密重新上线'
+          ? '已释放旧连接，请选择扫码或账密重新上线'
           : '已安全下线（聊天与记忆数据已完整保留），需要时随时可重新上线')
     });
     if (action === 'force_relogin' && cmd.mode === 'qr') {
       requestQrOnce('force_relogin');
     }
+    return { ok: true, action };
   }
+  return { ok: true };
 }
+
+/**
+ * L1 进程内真实原生热重连（不断 Node/proot，不惊动 Agent 与 B 站，且严禁污染已初始化的 nt_1 单例）：
+ * 1) 第一轮：调用真实 NAPI（switchToBackGround/switchToFront/setOnNetworkChanged/msf.online/startMsgSync）并联网探活；
+ * 2) 第二轮：模拟网络切换（setOnNetworkChanged(0 -> current) + msf.online）促使 MSFSDK 丢弃僵死连接重拨并复探；
+ * 3) 若两轮传输层重连均失败且确认本地有可用快登条目（非 140022015/1006501）：
+ *    不盲目在同进程对已初始化单例 nt_1 二次 session.init()，而是平滑落盘并走干净进程级快登重建。
+ */
+async function hotReconnectInProcess(reason = 'manual') {
+  log('HOT_RECONNECT start reason=' + reason + ' auth=' + authenticated + ' phase=' + state.phase + ' msf=' + state.msfStatus);
+  if (state.offlineReason === 'kicked_1006501' || state.offlineReason === 'token_expired_140022015') {
+    enterManualOffline(classifyLoginError(state.offlineReason === 'kicked_1006501' ? '1006501' : '140022015'));
+    return { ok: false, reason: state.offlineReason };
+  }
+  const probeOnce = async (timeoutMs = 5000) => {
+    const targetUid = /^\d{5,15}$/.test(String(BOT_UIN || state.uin || '')) ? Number(BOT_UIN || state.uin) : 0;
+    return await probeOneBotAction(
+      onebot.address.port,
+      onebotToken,
+      targetUid > 0 ? { action: 'get_stranger_info', params: { user_id: targetUid } } : { action: 'get_robot_uin_range', params: {} },
+      timeoutMs
+    );
+  };
+  if (authenticated && originalChat && onebot) {
+    for (const toggleNetwork of [false, true]) {
+      try {
+        const wakeInfo = await originalChat.wakeSession?.({
+          networkStatus: currentWrapperNetworkStatus(),
+          toggleNetwork
+        });
+        state.lastWakeAt = Date.now();
+        log('HOT_RECONNECT_WAKE toggleNet=' + toggleNetwork + ' ' + JSON.stringify(wakeInfo ?? {}));
+        await new Promise((r) => setTimeout(r, toggleNetwork ? 3500 : 2500));
+        const probe = await probeOnce(6000);
+        if (probe && probe.status === 'ok') {
+          state.lastHealthyAt = Date.now();
+          state.lastMsfError = '';
+          msfDisconnectedSince = 0;
+          if (msfDisconnectTimer) { clearTimeout(msfDisconnectTimer); msfDisconnectTimer = null; }
+          originalChat.setMsfStatus?.('online');
+          save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
+            offlineReason: '', offlineMessage: '', needsManualLogin: false, msfStatus: 'online'
+          });
+          log('HOT_RECONNECT_WARM_OK mode=' + (toggleNetwork ? 'net-toggle-msf-online' : 'msf-online'));
+          return { ok: true, mode: toggleNetwork ? 'net-toggle-msf-online' : 'msf-online' };
+        }
+      } catch (e) {
+        log('HOT_RECONNECT_WARM_MISS toggleNet=' + toggleNetwork + ' ' + (e?.message ?? e));
+      }
+    }
+  }
+  const ql = await probeQuickLoginAvailable();
+  if (!ql.available) {
+    enterManualOffline({
+      code: 'no_quick_login_entry',
+      phase: 'waiting-manual-login',
+      message: '未检测到可用的本地快登票据，已停止自动重试，请手动重新上线'
+    });
+    return { ok: false, reason: 'no_quick_login_entry' };
+  }
+  // 未经初始化前允许直接同进程快登；若 nt_1 单例已经初始化过，改走干净进程快登重建，避免二次 session.init() 污染原生 C++ 单例
+  if (!initStarted) {
+    clearQrArtifacts();
+    save('quick-login', {
+      needsManualLogin: false,
+      offlineReason: '',
+      offlineMessage: '正在进程内快登重连 QQ 会话…'
+    });
+    try {
+      if (!loginConnected) login.connect();
+    } catch {}
+    const accepted = await tryQuickLogin();
+    log('HOT_RECONNECT_QUICK accepted=' + accepted);
+    return { ok: accepted, mode: 'in-process-quick-login' };
+  }
+  save('recovering', {
+    needsManualLogin: false,
+    offlineReason: 'hot_reconnect_clean_rebuild',
+    offlineMessage: '原生传输层重连未恢复，正在走干净免扫码快登重建 QQ 会话…'
+  });
+  await checkpointLoginDb('watchdog-restart');
+  dumpBlackbox('hot-reconnect-clean-rebuild-reason-' + reason);
+  log('HOT_RECONNECT_CLEAN_REBUILD exiting for clean quick-login session rebuild');
+  setTimeout(() => process.exit(1), 150).unref();
+  return { ok: true, mode: 'clean-quick-login-rebuild' };
+}
+
+/** 启动仅监听回环网卡的受控毫秒级控制接口，替代 500ms 文件轮询延迟。 */
+function startLocalControlServer() {
+  const ctlToken = randomBytes(24).toString('hex');
+  const expectedBuf = Buffer.from(ctlToken, 'utf8');
+  ctlServer = http.createServer(async (req, res) => {
+    const reply = (code, obj) => {
+      if (res.destroyed) return;
+      res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(obj));
+    };
+    const auth = String(req.headers.authorization || '');
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const tokBuf = Buffer.from(token, 'utf8');
+    if (tokBuf.length !== expectedBuf.length || !timingSafeEqual(tokBuf, expectedBuf)) {
+      return reply(401, { ok: false, error: 'unauthorized' });
+    }
+    if (req.method === 'GET' && req.url === '/health') {
+      return reply(200, {
+        ok: true,
+        phase: state.phase,
+        uin: state.uin,
+        canQuickLogin: state.canQuickLogin,
+        msfStatus: state.msfStatus,
+        lastHealthyAt: state.lastHealthyAt
+      });
+    }
+    if (req.method === 'POST' && req.url === '/cmd') {
+      try {
+        let len = 0;
+        const chunks = [];
+        for await (const c of req) {
+          len += c.length;
+          if (len > 32 * 1024) return reply(413, { ok: false, error: 'too_large' });
+          chunks.push(c);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const out = await executeCommand(body);
+        return reply(200, out || { ok: true });
+      } catch (e) {
+        return reply(400, { ok: false, error: e?.message || 'bad_request' });
+      }
+    }
+    reply(404, { ok: false, error: 'not_found' });
+  });
+  ctlServer.listen(0, '127.0.0.1', () => {
+    const addr = ctlServer.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    if (port > 0) {
+      try {
+        const tmp = CTL_FILE + '.next';
+        fs.writeFileSync(tmp, JSON.stringify({ port, token: ctlToken, pid: process.pid }), { mode: 0o600 });
+        fs.renameSync(tmp, CTL_FILE);
+        log('LOCAL_CTL_READY port=' + port);
+      } catch {}
+    }
+  });
+  ctlServer.unref?.();
+}
+startLocalControlServer();
 
 let cmdBusy = false;
 setInterval(() => {
@@ -815,6 +1027,57 @@ setInterval(() => {
 
 // ------------------------------------------------------------------ 会话初始化
 let initStarted = false, initAccepted = false, readyTimer = null;
+let msfDisconnectTimer = null;
+let msfDisconnectedSince = 0;
+
+function scheduleMsfDisconnectRecovery(rawStatus) {
+  if (!msfDisconnectedSince) msfDisconnectedSince = Date.now();
+  // 立刻落盘 msfStatus，彻底消除 6 分钟绿灯盲窗
+  save(state.phase, { msfStatus: rawStatus });
+  if (msfDisconnectTimer) return;
+  msfDisconnectTimer = setTimeout(async () => {
+    msfDisconnectTimer = null;
+    if (finished || !authenticated || !isMsfDisconnectedStatus(state.msfStatus)) return;
+    log('MSF_DISCONNECT_DEBOUNCE_FIRED status=' + state.msfStatus + ' -> marking degraded & running native wake');
+    save('degraded', {
+      msfStatus: state.msfStatus,
+      needsManualLogin: false,
+      offlineReason: 'msf_disconnected',
+      offlineMessage: 'QQ 长连接（MSF）已断开，正在尝试原生重连…'
+    });
+    if (!originalChat) return;
+    try {
+      const wakeInfo = await originalChat.wakeSession?.({
+        networkStatus: currentWrapperNetworkStatus(),
+        toggleNetwork: true
+      });
+      state.lastWakeAt = Date.now();
+      log('MSF_FAST_WAKE ' + JSON.stringify(wakeInfo ?? {}));
+      if (onebot) {
+        await new Promise((r) => setTimeout(r, 3500));
+        if (finished || !authenticated) return;
+        const targetUid = /^\d{5,15}$/.test(String(BOT_UIN || state.uin || '')) ? Number(BOT_UIN || state.uin) : 0;
+        const payload = targetUid > 0
+          ? { action: 'get_stranger_info', params: { user_id: targetUid } }
+          : { action: 'get_robot_uin_range', params: {} };
+        const probe = await probeOneBotAction(onebot.address.port, onebotToken, payload, 8000);
+        if (probe && probe.status === 'ok') {
+          msfDisconnectedSince = 0;
+          state.lastHealthyAt = Date.now();
+          state.lastMsfError = '';
+          originalChat.setMsfStatus?.('online');
+          save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
+            msfStatus: 'online', offlineReason: '', offlineMessage: '', needsManualLogin: false
+          });
+          log('MSF_FAST_WAKE_RECOVERED probe=ok');
+        }
+      }
+    } catch (e) {
+      log('MSF_FAST_WAKE_ERR ' + (e?.message ?? e));
+    }
+  }, 15_000);
+  msfDisconnectTimer.unref?.();
+}
 
 function initializeSession() {
   if (finished || !authenticated || initStarted) return;
@@ -841,10 +1104,30 @@ function initializeSession() {
     onRegisterProxyOnlineResp: (info) => {
       log('MSF onRegisterProxyOnlineResp ' + JSON.stringify(info ?? null));
       state.msfStatus = 'proxy-online';
+      msfDisconnectedSince = 0;
+      if (msfDisconnectTimer) { clearTimeout(msfDisconnectTimer); msfDisconnectTimer = null; }
+      originalChat?.setMsfStatus?.('online');
     },
     onMSFStatusChange: (status) => {
       log('MSF onMSFStatusChange ' + JSON.stringify(status ?? null));
-      state.msfStatus = typeof status === 'object' ? JSON.stringify(status) : String(status ?? '');
+      const s = typeof status === 'object' ? JSON.stringify(status) : String(status ?? '');
+      state.msfStatus = s;
+      originalChat?.setMsfStatus?.(s);
+      if (isMsfDisconnectedStatus(s)) {
+        scheduleMsfDisconnectRecovery(s);
+      } else if (s === '1' || s === 'online' || s === 'connected') {
+        msfDisconnectedSince = 0;
+        if (msfDisconnectTimer) { clearTimeout(msfDisconnectTimer); msfDisconnectTimer = null; }
+        state.lastHealthyAt = Date.now();
+        state.lastMsfError = '';
+        originalChat?.setMsfStatus?.('online');
+        if (authenticated && state.phase === 'degraded') {
+          save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
+            msfStatus: 'online', offlineReason: '', offlineMessage: '', needsManualLogin: false
+          });
+          log('MSF_RECOVERED_ONLINE status=' + s);
+        }
+      }
     },
     onMSFSsoError: (err) => {
       const msg = typeof err === 'object' ? JSON.stringify(err) : String(err ?? '');
@@ -987,7 +1270,12 @@ async function startBot() {
     if (!finished) { try { startBiliWorker(); } catch (e) { log('bili worker check failed: ' + e.message); } }
     const d = state.diag ?? {};
     let phase = state.phase;
-    if (authenticated && phase !== 'degraded') {
+    const msfDownSustained = isMsfDisconnectedStatus(state.msfStatus)
+      && msfDisconnectedSince > 0
+      && (Date.now() - msfDisconnectedSince >= 15_000);
+    if (authenticated && msfDownSustained) {
+      phase = 'degraded';
+    } else if (authenticated && phase !== 'degraded') {
       if (agentProc && agentProc.exitCode === null && agentProc.signalCode === null) phase = 'agent-running';
       else if (onebot) phase = 'onebot-ready';
     }
@@ -1000,10 +1288,17 @@ async function startBot() {
     } });
   }, 3000);
 
-  // ① 原生通道零误杀+票据自愈看门狗（每 90s 探活；无可用快登绝不重启，有可用快登且遇 MSF -10004/-10003 或持续失联时限频免扫码快登重建会话）
+  // ① 原生通道零误杀+票据/MSF断链自愈看门狗（每 90s 探活；无可用快登绝不重启；
+  //    遇 MSF -10004/-10003 或持续 MSF=2 断链且 L1 原生重连失败时，在严格退避与每小时限频内自动免扫码快登重建）
   const processBootAt = Date.now();
   const restartStampFile = path.join(STATE, 'watchdog-restarts.json');
-  const nativeWatchdog = createNativeWatchdogState({ allowRestart: false, allowQuickLoginRestart: true });
+  const nativeWatchdog = createNativeWatchdogState({
+    allowRestart: false,
+    allowQuickLoginRestart: true,
+    allowMsfDisconnectRecovery: true,
+    maxRestartsPerHour: 2,
+    restartBackoffScheduleMs: [2 * 60_000, 10 * 60_000]
+  });
   let nativeCheckInFlight = false;
   if (nativeWatchdogTimer) clearInterval(nativeWatchdogTimer);
   nativeWatchdogTimer = setInterval(async () => {
@@ -1019,7 +1314,10 @@ async function startBot() {
         nativeWatchdog.recordSuccess(Date.now());
         state.lastHealthyAt = Date.now();
         state.lastMsfError = '';
-        if (state.phase === 'degraded') {
+        msfDisconnectedSince = 0;
+        if (msfDisconnectTimer) { clearTimeout(msfDisconnectTimer); msfDisconnectTimer = null; }
+        originalChat?.setMsfStatus?.('online');
+        if (state.phase === 'degraded' || isMsfDisconnectedStatus(state.msfStatus)) {
           save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
             offlineReason: '', offlineMessage: '', needsManualLogin: false, msfStatus: 'online'
           });
@@ -1029,6 +1327,7 @@ async function startBot() {
         const ql = await probeQuickLoginAvailable();
         const recent = readRestartHistory(restartStampFile, now);
         const msfTicketInvalid = isMsfTicketInvalidError(state.lastMsfError);
+        const msfDisconnected = isMsfDisconnectedStatus(state.msfStatus);
         const decision = nativeWatchdog.recordFailure({
           phase: state.phase,
           uptimeMs: now - processBootAt,
@@ -1036,17 +1335,21 @@ async function startBot() {
           recentRestarts: recent,
           canQuickLogin: ql.available,
           offlineReason: state.offlineReason,
-          msfTicketInvalid
+          msfTicketInvalid,
+          msfDisconnected
         });
         log('NATIVE_WATCHDOG_FAIL count=' + nativeWatchdog.snapshot().consecutiveFails
           + ' decision=' + decision + ' canQuick=' + ql.available
-          + ' msfInvalid=' + msfTicketInvalid
+          + ' msfInvalid=' + msfTicketInvalid + ' msfDown=' + msfDisconnected
           + ' detail=' + String(probe?.error || probe?.retcode || 'unknown'));
         if (decision === 'wake') {
           try {
-            const wakeInfo = await originalChat?.wakeSession?.();
+            const wakeInfo = await originalChat?.wakeSession?.({
+              networkStatus: currentWrapperNetworkStatus(),
+              toggleNetwork: msfDisconnected
+            });
             state.lastWakeAt = Date.now();
-            log('NATIVE_WATCHDOG_WAKE ' + JSON.stringify(wakeInfo ?? { invoked: true }));
+            log('NATIVE_WATCHDOG_WAKE ' + JSON.stringify(wakeInfo ?? { invoked: [] }));
           } catch (e) {
             log('NATIVE_WATCHDOG_WAKE_ERR ' + (e?.message ?? e));
           }
@@ -1054,28 +1357,42 @@ async function startBot() {
           try { recordRestartTimestamp(restartStampFile, now); } catch {}
           save('recovering', {
             needsManualLogin: false,
-            offlineReason: msfTicketInvalid ? ('msf_ticket_invalid_' + state.lastMsfError) : 'native_probe_failed',
+            offlineReason: msfTicketInvalid
+              ? ('msf_ticket_invalid_' + state.lastMsfError)
+              : (msfDisconnected ? 'msf_disconnected_rebuild' : 'native_probe_failed'),
             offlineMessage: msfTicketInvalid
               ? '检测到 QQ 会话票据失效（' + state.lastMsfError + '），正在自动免扫码快登重建连接…'
-              : 'QQ 原生通道持续无响应，正在自动免扫码快登重建连接…'
+              : (msfDisconnected
+                ? 'QQ 长连接（MSF）断开且原生唤醒未恢复，正在自动免扫码快登重建连接…'
+                : 'QQ 原生通道持续无响应，正在自动免扫码快登重建连接…')
           });
-          await checkpointLoginDb('watchdog-quick-restart');
-          log('NATIVE_WATCHDOG_QUICK_RESTART triggering guarded quick-login recovery msfErr=' + String(state.lastMsfError || ''));
-          dumpBlackbox('watchdog-' + decision + '-msf-' + String(state.lastMsfError || 'none'));
+          await checkpointLoginDb('watchdog-restart');
+          log('NATIVE_WATCHDOG_QUICK_RESTART triggering guarded quick-login recovery msfErr='
+            + String(state.lastMsfError || '') + ' msfStatus=' + String(state.msfStatus || ''));
+          dumpBlackbox('watchdog-' + decision + '-msf-' + String(state.lastMsfError || state.msfStatus || 'none'));
           process.exit(1);
         } else if (decision === 'notify_offline') {
           dumpBlackbox('watchdog-notify-offline-' + String(probe?.error || probe?.retcode || 'unknown'));
-          // 不能快登、非票据失效网络半开或限频预算用尽：立即发高优告警（绝不盲目杀进程推进 140022015！）
+          if (!ql.available) state.canQuickLogin = false;
+          const budgetHit = recent.length >= 2 || (recent.length > 0 && (now - Math.max(...recent)) < 10 * 60_000);
+          // 不能快登、普通网络半开或限频预算用尽：立即发高优告警（绝不盲目杀进程推进 140022015！）
           save('degraded', {
-            needsManualLogin: true,
+            canQuickLogin: Boolean(ql.available),
+            needsManualLogin: !ql.available,
             offlineReason: msfTicketInvalid
               ? ('msf_ticket_invalid_' + state.lastMsfError)
-              : (ql.available ? 'native_probe_failed' : 'session_expired_no_quick_login'),
+              : (msfDisconnected
+                ? 'msf_disconnected'
+                : (ql.available ? 'native_probe_failed' : 'session_expired_no_quick_login')),
             offlineMessage: msfTicketInvalid
               ? 'QQ 会话票据已失效（' + state.lastMsfError + '）且自动快登恢复受限，请点此重新上线'
-              : (ql.available
-                ? 'QQ 原生通道持续异常且本小时自动恢复已达上限，请检查网络或点此重连'
-                : 'QQ 原生连接已断开且本机无可用快登票据，已暂停自动重启，请手动重新上线')
+              : (!ql.available
+                ? 'QQ 原生连接已断开且本机无可用快登票据，已暂停自动重启，请手动重新上线'
+                : (budgetHit
+                  ? 'QQ 原生通道持续异常且本小时自动恢复已达冷却/上限，请检查网络或点此热重连'
+                  : (msfDisconnected
+                    ? 'QQ 长连接（MSF）持续断开且原生唤醒未恢复，请检查网络或点此热重连'
+                    : 'QQ 原生通道探活连续超时（已保护快登票据未重启），请检查网络或点此热重连')))
           });
         }
       }

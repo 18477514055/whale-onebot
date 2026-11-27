@@ -277,6 +277,8 @@ export function createOriginalChatBridge({ session, identity, isCurrent, onUpdat
   raw.on('offline', () => { publishReady = false; buffered.length = 0; facade.emit('offline'); diagnostics(); });
   raw.on('bridge-ready', () => facade.emit('bridge-ready'));
   Object.defineProperty(facade, 'attached', { get: () => !closed && raw.attached });
+  Object.defineProperty(facade, 'msfDisconnected', { get: () => !closed && raw.msfDisconnected === true });
+  facade.setMsfStatus = (status) => { if (!closed && typeof raw.setMsfStatus === 'function') raw.setMsfStatus(status); };
   facade.attach = async () => {
     if (attachAttempted || closed) throw fail('ATTACH_ALREADY_ATTEMPTED');
     attachAttempted = true;
@@ -292,7 +294,7 @@ export function createOriginalChatBridge({ session, identity, isCurrent, onUpdat
     proof(); publishReady = true; flush(); return value;
   };
   facade.capabilities = () => !closed && raw.attached ? raw.capabilities() : [];
-  facade.wakeSession = () => !closed && raw.attached ? raw.wakeSession() : Promise.resolve({ awake: false, reason: 'detached' });
+  facade.wakeSession = (options) => !closed && raw.attached ? raw.wakeSession(options) : Promise.resolve({ awake: false, reason: 'detached', invoked: [] });
   facade.call = async (action, params, options = {}) => {
     proof();
     try { return await raw.call(action, params, options); }

@@ -23,10 +23,10 @@ class StartupClient extends BiliClient {
   }
 }
 async function checked(options, cookie, fetchImpl, owned) {
-  const {selfId,peerId,deviceId,signal}=options;
+  const {selfId,peerId,deviceId,signal,refreshMeta,onPersist,onRefreshMeta}=options;
   if (signal?.aborted) throw Error('cancelled');
   const Client = owned ? StartupClient : BiliClient;
-  const client = new Client({selfId,peerId,deviceId,cookie,fetchImpl:(url,init)=>
+  const client = new Client({selfId,peerId,deviceId,cookie,refreshMeta,onPersist,onRefreshMeta,fetchImpl:(url,init)=>
     fetchImpl(url,signal ? {...init,signal:AbortSignal.any([signal,init.signal])} : init)});
   if (owned) await client.verify(); else await client.identity();
   if (signal?.aborted) throw Error('cancelled');
@@ -53,11 +53,14 @@ export async function openOwnedBiliClient(options, deps={}) {
 async function interactive(options,{fetchImpl = globalThis.fetch, now = Date.now, wait = sleep} = {},owned) {
   const {onQr,signal}=options;
   if (typeof onQr !== 'function' || signal?.aborted) throw Error('Bilibili authorization unavailable');
-  let verified, minimum, confirmedId;
+  let verified, minimum, confirmedId, capturedRefreshToken = '';
   // Only first-time, explicitly interactive enrollment may discover the account.
   // The passport hint is never proof: checked() still verifies it against authenticated nav.
   const enroll=owned && options.enroll===true && options.selfId==null && options.peerId==null;
-  const challenge = createPassportChallenge({fetchImpl,now,async onApproved(cookie) {
+  const challenge = createPassportChallenge({fetchImpl,now,async onApproved(cookie, extra) {
+    if (extra && typeof extra.refreshToken === 'string' && extra.refreshToken) {
+      capturedRefreshToken = extra.refreshToken;
+    }
     if (owned) minimum=minimumCookie(cookie);
     let target=options;
     if(enroll){const hint=cookie.split('; ').find(p=>p.startsWith('DedeUserID='))?.slice('DedeUserID='.length);
@@ -76,13 +79,18 @@ async function interactive(options,{fetchImpl = globalThis.fetch, now = Date.now
       await wait(PASSPORT_POLL_MS,undefined,{signal});
       const {status}=await challenge.poll();
       if (status==='approved' && verified && !signal?.aborted) {
-        if (owned) await options.onPersist(minimum,confirmedId);
+        if (owned) {
+          await options.onPersist(minimum,confirmedId);
+          if (capturedRefreshToken && typeof options.onRefreshMeta === 'function') {
+            await options.onRefreshMeta({ refreshToken: capturedRefreshToken }, confirmedId);
+          }
+        }
         if (!signal?.aborted) return verified;
         break;
       }
       if (status!=='waiting' && status!=='scanned') { end=status; break; }
     }
   } catch { /* Never forward errors, response text, or URLs across the host boundary. */ }
-  finally { minimum=undefined; signal?.removeEventListener('abort',cancel); cancel(); }
+  finally { minimum=undefined; capturedRefreshToken=''; signal?.removeEventListener('abort',cancel); cancel(); }
   throw Error(`Bilibili authorization ${signal?.aborted?'cancelled':end}`);
 }

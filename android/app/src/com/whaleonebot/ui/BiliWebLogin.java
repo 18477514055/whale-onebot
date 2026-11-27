@@ -33,6 +33,11 @@ public final class BiliWebLogin {
     private static boolean isolated, busy;
     private BiliWebLogin() {}
 
+    public interface SessionCallback {
+        void onSessionCaptured(String rawCookie, String acTimeValue);
+        void onCancelled();
+    }
+
     /** Strict initial-link policy: no arbitrary return URL or other user-controlled parameters. */
     public static boolean accepts(String url) {
         if (START.equals(url)) return true;
@@ -59,6 +64,200 @@ public final class BiliWebLogin {
             URI u = URI.create(url);
             return "https".equals(u.getScheme()) && (ORIGIN.equals(u.getRawAuthority()) || "account.bilibili.com".equals(u.getRawAuthority()));
         } catch (IllegalArgumentException invalid) { return false; }
+    }
+
+    private static boolean allowedSessionHost(String url) {
+        if (url == null || url.length() > 8192 || url.indexOf('\\') >= 0) return false;
+        try {
+            URI u = URI.create(url);
+            if (!"https".equalsIgnoreCase(u.getScheme())) return false;
+            String host = u.getRawAuthority();
+            if (host == null) return false;
+            String low = host.toLowerCase(java.util.Locale.ROOT);
+            return low.equals("bilibili.com") || low.endsWith(".bilibili.com")
+                    || low.endsWith(".bilivideo.com") || low.endsWith(".hdslb.com");
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    /**
+     * 打开 B 站官网网页登录窗（支持账密 / 手机短信验证码 / 扫码），登录成功后自动安全提取完整 Cookie
+     * 及 localStorage 中的 ac_time_value（用于永久无感续期）。
+     */
+    public static boolean openForSession(final Activity a, final String expectedUid, final SessionCallback cb) {
+        if (Looper.myLooper() != Looper.getMainLooper() || a == null || a.isFinishing() || a.isDestroyed()) return false;
+        if (busy) {
+            Toast.makeText(a, "登录窗口已在打开状态", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        busy = true;
+        final WebView web;
+        try {
+            web = new WebView(a);
+        } catch (Throwable ex) {
+            busy = false;
+            Toast.makeText(a, "系统 WebView 不可用，请更新 Android System WebView", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        web.setSaveEnabled(false);
+        web.setSaveFromParentEnabled(false);
+        web.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setSafeBrowsingEnabled(true);
+        s.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+
+        final CookieManager cm = CookieManager.getInstance();
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(web, true);
+
+        final boolean[] finished = {false};
+        final Dialog[] dialogRef = new Dialog[1];
+        final android.os.Handler poller = new android.os.Handler(Looper.getMainLooper());
+
+        final Runnable cleanup = () -> {
+            poller.removeCallbacksAndMessages(null);
+            try { if (dialogRef[0] != null && dialogRef[0].isShowing()) dialogRef[0].dismiss(); } catch (Throwable ignored) {}
+            try {
+                if (web.getParent() instanceof ViewGroup) ((ViewGroup) web.getParent()).removeView(web);
+                web.stopLoading();
+                web.clearHistory();
+                web.clearCache(true);
+                web.destroy();
+            } catch (Throwable ignored) {}
+            try {
+                WebStorage.getInstance().deleteAllData();
+                cm.removeAllCookies(r -> busy = false);
+            } catch (Throwable ignored) { busy = false; }
+        };
+
+        final Runnable checkCookie = new Runnable() {
+            @Override
+            public void run() {
+                if (finished[0] || a.isFinishing() || a.isDestroyed()) return;
+                cm.flush();
+                String c1 = cm.getCookie("https://www.bilibili.com/");
+                String c2 = cm.getCookie("https://passport.bilibili.com/");
+                String c3 = cm.getCookie("https://api.bilibili.com/");
+                String merged = mergeBiliCookies(c1, c2, c3);
+                if (merged.contains("SESSDATA=") && merged.contains("bili_jct=")) {
+                    // 验证是否已满足 expectedUid（若有指定）
+                    if (expectedUid != null && !expectedUid.isEmpty()) {
+                        String dede = extractCookieField(merged, "DedeUserID");
+                        if (!dede.isEmpty() && !expectedUid.equals(dede)) {
+                            Toast.makeText(a, "当前登录的 UID(" + dede + ") 与绑定 UID(" + expectedUid + ") 不一致，请切换账号", Toast.LENGTH_LONG).show();
+                            cm.removeAllCookies(null);
+                            web.loadUrl(START);
+                            poller.postDelayed(this, 1600L);
+                            return;
+                        }
+                    }
+                    finished[0] = true;
+                    try {
+                        web.evaluateJavascript("(function(){try{return localStorage.getItem('ac_time_value')||'';}catch(e){return '';}})()", val -> {
+                            String ac = val == null ? "" : val.trim();
+                            if (ac.startsWith("\"") && ac.endsWith("\"") && ac.length() >= 2) ac = ac.substring(1, ac.length() - 1);
+                            if ("null".equals(ac) || "undefined".equals(ac)) ac = "";
+                            cleanup.run();
+                            if (cb != null) cb.onSessionCaptured(merged, ac);
+                        });
+                    } catch (Throwable ignored) {
+                        cleanup.run();
+                        if (cb != null) cb.onSessionCaptured(merged, "");
+                    }
+                    return;
+                }
+                poller.postDelayed(this, 1500L);
+            }
+        };
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onConsoleMessage(ConsoleMessage message) { return true; }
+        });
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                String u = req == null || req.getUrl() == null ? "" : req.getUrl().toString();
+                return req != null && req.isForMainFrame() && !allowedSessionHost(u);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                poller.post(checkCookie);
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
+                if (!finished[0]) {
+                    finished[0] = true;
+                    cleanup.run();
+                    if (cb != null) cb.onCancelled();
+                }
+                return true;
+            }
+        });
+
+        Theme t = PromptSheet.currentTheme(a);
+        String title = (expectedUid == null || expectedUid.isEmpty())
+                ? "B 站官网登录（自动提取续期凭证）"
+                : ("B 站官网登录 · UID " + expectedUid);
+        dialogRef[0] = PromptSheet.custom(
+                a, t, title, web,
+                "我已登录，立即提取", (d, btn) -> poller.post(checkCookie),
+                "刷新页面", (d, btn) -> web.reload(),
+                "取消", (d, btn) -> {
+                    if (!finished[0]) {
+                        finished[0] = true;
+                        cleanup.run();
+                        if (cb != null) cb.onCancelled();
+                    }
+                },
+                true, true, d -> {
+                    if (!finished[0]) {
+                        finished[0] = true;
+                        cleanup.run();
+                        if (cb != null) cb.onCancelled();
+                    }
+                }, null
+        );
+        cm.removeAllCookies(removed -> {
+            if (finished[0] || a.isDestroyed() || a.isFinishing()) return;
+            web.loadUrl(START);
+            poller.postDelayed(checkCookie, 1800L);
+        });
+        return true;
+    }
+
+    private static String mergeBiliCookies(String... sources) {
+        java.util.LinkedHashMap<String, String> map = new java.util.LinkedHashMap<>();
+        for (String src : sources) {
+            if (src == null) continue;
+            for (String part : src.split(";")) {
+                String p = part.trim();
+                int eq = p.indexOf('=');
+                if (eq > 0) map.put(p.substring(0, eq).trim(), p.substring(eq + 1).trim());
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<String, String> e : map.entrySet()) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.toString();
+    }
+
+    private static String extractCookieField(String cookie, String key) {
+        if (cookie == null || key == null) return "";
+        for (String part : cookie.split(";")) {
+            String p = part.trim();
+            if (p.startsWith(key + "=")) return p.substring(key.length() + 1).trim();
+        }
+        return "";
     }
 
     /** UI thread; true means the official login window opened, never 'authenticated'. */

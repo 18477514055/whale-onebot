@@ -60,7 +60,10 @@ final class BiliAuthorizationDialog {
                 a, t, "B 站官方授权", box,
                 "用本机哔哩哔哩确认", (d, btn) -> {
                     if (BiliLocalConfirmation.open(a, challenge)) d.dismiss();
-                    else note.setText("请截取二维码，在哔哩哔哩扫一扫中选择相册。不要转发此码。");
+                    else {
+                        note.setText("未授权 B 站默认打开链接：可改用「官网网页登录」或截图相册扫码。");
+                        BiliLocalConfirmation.openAppLinksSettings(a);
+                    }
                 },
                 "返回查看状态", (d, btn) -> d.dismiss(),
                 "取消本次授权", (d, btn) -> { d.dismiss(); if (cancel != null) cancel.run(); },

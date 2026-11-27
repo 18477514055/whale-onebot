@@ -26,6 +26,8 @@ final class HomeScreen extends Screen {
     private LinearLayout col;
     private final java.util.Map<String,TextView> platformCounts = new java.util.LinkedHashMap<>();
     private TextView qqAlertPill;
+    private TextView healthSummaryText;
+    private TextView healthScorePill;
     private View fab;
     private LinearLayout devicePill;
     private View deviceDot;
@@ -104,6 +106,9 @@ final class HomeScreen extends Screen {
 
         // ---------- 新手指引（第一次用才出现，点「知道了」或仅遥控模式可收起） ----------
         if (!Onboarding.seen(activity)) addGuide(col);
+
+        // ---------- 顶部三平台登录健康与保活总览条（一键直达登录健康中心） ----------
+        addLoginHealthStrip(col);
 
         // ---------- 分区标签 ----------
         TextView label = Ui.text(activity, "平台", Theme.T_CAP, t.textSecondary);
@@ -494,7 +499,7 @@ final class HomeScreen extends Screen {
         if (qqAlertPill != null) {
             boolean contRun = host().containerRunning();
             QqAuthState st = host().qqAuthState();
-            boolean showAlert = contRun && (st.isOfflineAlert() || "degraded".equals(st.phase));
+            boolean showAlert = contRun && (st.isOfflineAlert() || "degraded".equals(st.phase) || st.isMsfDisconnected());
             if (showAlert) {
                 String badge = st.shortBadge(true);
                 if (!badge.contentEquals(qqAlertPill.getText())) qqAlertPill.setText(badge);
@@ -505,5 +510,92 @@ final class HomeScreen extends Screen {
                 qqAlertPill.setVisibility(View.GONE);
             }
         }
+        refreshLoginHealthStrip();
+    }
+
+    private void addLoginHealthStrip(LinearLayout parent) {
+        FrameLayout strip = Ui.card(activity, t);
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(dp(Theme.S3), dp(Theme.S2 + 2), dp(Theme.S3), dp(Theme.S2 + 2));
+        strip.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        LinearLayout left = Ui.column(activity);
+        left.addView(Ui.strong(activity, "登录健康与系统保活中心", Theme.T_BODY, t.textPrimary));
+        healthSummaryText = Ui.text(activity, "正在检测三端登录状态与网络出口…", Theme.T_CAP, t.textSecondary);
+        LinearLayout.LayoutParams slp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        slp.topMargin = dp(2);
+        left.addView(healthSummaryText, slp);
+        LinearLayout.LayoutParams llp = Ui.llp(0, WRAP_CONTENT);
+        llp.weight = 1f;
+        row.addView(left, llp);
+
+        healthScorePill = Ui.pill(activity, t, "健康中心", Ui.TONE_NEUTRAL);
+        LinearLayout.LayoutParams plp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        plp.leftMargin = dp(8);
+        row.addView(healthScorePill, plp);
+
+        strip.setClickable(true);
+        strip.setFocusable(true);
+        Ui.press(strip, 0.985f);
+        strip.setOnClickListener(v -> shell.pushLoginHealth());
+
+        LinearLayout.LayoutParams clp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        clp.bottomMargin = dp(Theme.S3);
+        parent.addView(strip, clp);
+    }
+
+    private void refreshLoginHealthStrip() {
+        if (healthSummaryText == null || healthScorePill == null) return;
+        boolean contRun = host().containerRunning();
+        QqAuthState qq = host().qqAuthState();
+        String qqState = !contRun ? "未启" : (qq.isOnline() ? "在线" : (qq.isOfflineAlert() ? "需上线" : "波动"));
+
+        int biliTotal = 0, biliOk = 0;
+        int dySaved = 0, dyExpired = 0;
+        for (BotRegistry.Bot b : BotRegistry.list()) {
+            for (BotRegistry.Binding row : b.bindings) {
+                if (row.hostedBili()) {
+                    biliTotal++;
+                    org.json.JSONObject bs = RemoteBridge.biliStatus(b.id, row.id);
+                    if (BiliPlatformState.verified(bs.optString("state"), row.accountId, bs.optString("selfId"))) biliOk++;
+                }
+            }
+            DouyinSettings.SessionSummary dy = RemoteBridge.douyinSummary(activity, b.id);
+            if (dy.saved) {
+                dySaved++;
+                if ("expired".equals(dy.state)) dyExpired++;
+            }
+        }
+        String biliState = biliTotal == 0 ? "未绑" : (biliOk + "/" + biliTotal);
+        String dyState = dySaved == 0 ? "未登" : (dyExpired > 0 ? "过期" : "已保存");
+
+        boolean proxyWarn;
+        int score;
+        String netBadge;
+        if (RemoteBridge.isRemote()) {
+            com.whaleonebot.remote.RemoteControlManager rm = RemoteBridge.mgr();
+            com.whaleonebot.remote.RemoteControlManager.RemoteSnapshot snap = rm == null ? null : rm.activeSnapshot();
+            proxyWarn = snap != null && snap.netProxyHijack;
+            score = snap == null ? 100 : snap.keepAliveScore;
+            netBadge = (snap == null || snap.netRiskBadge.isEmpty()) ? "远端" : snap.netRiskBadge;
+        } else {
+            NetworkRiskLogic.Report net = NetworkRiskDetector.inspect(activity);
+            proxyWarn = net.isWarn();
+            KeepAliveInspector.Summary ks = KeepAliveInspector.inspect(activity);
+            score = ks.score;
+            netBadge = net.badge;
+        }
+
+        String line = "QQ:" + qqState + "  ·  B站:" + biliState + "  ·  抖音:" + dyState + "  ·  " + netBadge;
+        if (!line.contentEquals(healthSummaryText.getText())) healthSummaryText.setText(line);
+
+        boolean warn = proxyWarn || score < 70 || (contRun && qq.isOfflineAlert()) || dyExpired > 0;
+        String pillText = proxyWarn ? "⚠ 代理劫持" : ("保活 " + score + "分");
+        if (!pillText.contentEquals(healthScorePill.getText())) healthScorePill.setText(pillText);
+        healthScorePill.setBackground(Drawables.round(
+                warn ? 0x28D9534F : Ui.alpha(t.accent, 0.16f),
+                warn ? 0x99D9534F : t.ghostStroke,
+                dp(1), dp(Theme.R_PILL)));
+        healthScorePill.setTextColor(warn ? (t.dark ? 0xFFFF8A80 : 0xFFC62828) : t.toneStrong);
     }
 }

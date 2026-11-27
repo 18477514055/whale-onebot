@@ -21,5 +21,22 @@ final class BiliLocalConfirmation {
             activity.startActivity(view);return true;
         }catch(Exception unavailable){return false;}
     }
+
+    /** 引导前往系统 B 站应用详情页开启「默认打开受支持的链接」(App Links)。 */
+    static void openAppLinksSettings(Activity activity) {
+        if (activity == null) return;
+        try {
+            Intent i = new Intent(android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
+                    Uri.parse("package:" + APP));
+            activity.startActivity(i);
+            return;
+        } catch (Throwable ignored) {}
+        try {
+            Intent i = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + APP));
+            activity.startActivity(i);
+        } catch (Throwable ignored) {}
+    }
+
     private BiliLocalConfirmation(){}
 }

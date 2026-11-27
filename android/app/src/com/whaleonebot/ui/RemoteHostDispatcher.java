@@ -74,6 +74,15 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
             case "container.restartQq":
                 ContainerService.restartQqOnly(ctx);
                 return "{\"ok\":true}";
+            case "container.hotReconnectQq":
+                ContainerService.hotReconnectQq(ctx);
+                return "{\"ok\":true}";
+            case "container.restartAgent":
+                try {
+                    int port = DashApi.localPort(ctx);
+                    DashApi.postLocal(port, "/api/config/reload", "{}", 10000);
+                } catch (Throwable ignored) {}
+                return "{\"ok\":true}";
             case "container.restartFull":
                 ContainerService.restartFullContainer(ctx);
                 return "{\"ok\":true}";
@@ -139,6 +148,21 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
             case "bili.start":
                 ContainerService.startBiliProtocol(ctx, p.optString("botId"), p.optString("bindingId"), p.optString("peer"));
                 return "{\"ok\":true}";
+            case "bili.restart":
+                ContainerService.restartBiliProtocol(ctx, p.optString("botId"), p.optString("bindingId"), p.optString("peer"));
+                return "{\"ok\":true}";
+            case "bili.blackbox":
+                return new JSONObject().put("log", ContainerService.biliBlackboxLog(p.optInt("lines", 80))).toString();
+            case "bili.importCookie":
+                return ContainerService.importBiliCookie(
+                        ctx,
+                        p.optString("botId"),
+                        p.optString("bindingId"),
+                        p.optString("expectedUid", ""),
+                        p.optBoolean("newSlot", false),
+                        p.optString("rawCookie", ""),
+                        p.optString("acTimeValue", "")
+                ).toString();
             case "bili.stop":
                 ContainerService.stopBiliProtocol(p.optString("botId"), p.optString("bindingId"));
                 return "{\"ok\":true}";
@@ -155,6 +179,46 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
                 return "{\"ok\":true}";
             case "bili.actionLog":
                 return handleBiliActionLog(p);
+
+            // ---- 抖音全量远程登录、保活校验与策略 ----
+            case "douyin.summary":
+                return DouyinSettings.sessionSummary(ctx, p.optString("botId", "default")).toJson().toString();
+            case "douyin.importCookie": {
+                com.whaleonebot.DouyinSessionStore.Summary s =
+                        com.whaleonebot.DouyinSessionVerifier.saveAndVerify(
+                                ctx, p.optString("botId", "default"), p.optString("rawCookie", ""));
+                return new DouyinSettings.SessionSummary(s.saved, s.verified, s.savedAt, s.lastCheckAt,
+                        s.cookieFieldCount, s.hasSessionId, s.uid, s.nickname, s.state, s.lastError).toJson().toString();
+            }
+            case "douyin.probe": {
+                com.whaleonebot.DouyinSessionStore.Summary s =
+                        com.whaleonebot.DouyinSessionVerifier.probeOnce(ctx, p.optString("botId", "default"));
+                return new DouyinSettings.SessionSummary(s.saved, s.verified, s.savedAt, s.lastCheckAt,
+                        s.cookieFieldCount, s.hasSessionId, s.uid, s.nickname, s.state, s.lastError).toJson().toString();
+            }
+            case "douyin.forget":
+                return new JSONObject().put("ok", DouyinSettings.forgetWebSession(ctx, p.optString("botId", "default"))).toString();
+            case "douyin.blackbox":
+                return new JSONObject().put("log", com.whaleonebot.DouyinSessionVerifier.blackboxLog(p.optInt("lines", 60))).toString();
+            case "douyin.configGet":
+                return DouyinSettings.loadConfig(ctx.getFilesDir(), p.optString("botId", "default")).toJson().toString();
+            case "douyin.configSet":
+                return new JSONObject().put("ok", DouyinSettings.saveConfig(
+                        ctx.getFilesDir(), p.optString("botId", "default"),
+                        DouyinSettings.Config.fromJson(p.optJSONObject("config")))).toString();
+            case "douyin.queueGet": {
+                JSONArray arr = new JSONArray();
+                for (String item : DouyinSettings.listCandidates(ctx.getFilesDir(), p.optString("botId", "default"))) {
+                    arr.put(item);
+                }
+                return new JSONObject().put("items", arr).toString();
+            }
+            case "douyin.queueAdd":
+                return new JSONObject().put("ok", DouyinSettings.enqueueCandidate(
+                        ctx.getFilesDir(), p.optString("botId", "default"), p.optString("url", ""))).toString();
+            case "douyin.queueClear":
+                return new JSONObject().put("ok", DouyinSettings.clearCandidates(
+                        ctx.getFilesDir(), p.optString("botId", "default"))).toString();
 
             // ---- 运行端配置（端到端加密完整读写含 API Key，严禁打日志） ----
             case "config.load":
@@ -348,6 +412,39 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
             o.put("botsJson", botsJson);
             o.put("coresJson", "");
         }
+        try {
+            NetworkRiskLogic.Report nr = NetworkRiskDetector.inspect(ctx);
+            o.put("netRisk", new JSONObject()
+                    .put("level", nr.level)
+                    .put("badge", nr.badge)
+                    .put("summary", nr.summary)
+                    .put("proxyHijack", nr.proxyHijack));
+            KeepAliveInspector.Summary ka = KeepAliveInspector.inspect(ctx);
+            o.put("keepAlive", new JSONObject()
+                    .put("score", ka.score)
+                    .put("badge", ka.badge));
+            // 扫描三平台异常告警摘要推往主力机
+            for (BotRegistry.Bot bot : BotRegistry.list()) {
+                for (BotRegistry.Binding row : bot.bindings) {
+                    if (row.hostedBili() && !row.accountId.isEmpty()) {
+                        JSONObject bs = ContainerService.biliProtocolStatus(bot.id, row.id);
+                        String bState = bs.optString("state", "");
+                        if ("reauth_required".equals(bState) || "expired".equals(bState)) {
+                            o.put("biliAlert", new JSONObject()
+                                    .put("title", "B 站账号需要重新授权（UID " + row.accountId + "）")
+                                    .put("message", "登录态已过期，原有配置已保留，点击前往重新上线"));
+                            break;
+                        }
+                    }
+                }
+                DouyinSettings.SessionSummary dy = DouyinSettings.sessionSummary(ctx, bot.id);
+                if (dy.saved && "expired".equals(dy.state)) {
+                    o.put("douyinAlert", new JSONObject()
+                            .put("title", "抖音账号登录已失效")
+                            .put("message", dy.lastError.isEmpty() ? "请重新扫码或短信登录" : dy.lastError));
+                }
+            }
+        } catch (Throwable ignored) {}
         return o.toString();
     }
 
@@ -424,6 +521,8 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
                 .put("ticket", p.optString("ticket", ""))
                 .put("randStr", p.optString("randStr", ""))
                 .put("sid", p.optString("sid", ""))
+                .put("newDeviceLoginSig", p.optString("newDeviceLoginSig", ""))
+                .put("unusualDeviceCheckSig", p.optString("unusualDeviceCheckSig", ""))
                 .put("at", System.currentTimeMillis());
         boolean sent = ContainerService.sendBotCommand(ctx, cmd);
         return new JSONObject().put("ok", sent)
@@ -461,6 +560,15 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
         JSONObject st = ContainerService.biliProtocolStatus(botId, bindingId);
         st.put("authLink", nz(ContainerService.biliAuthorizationLink(botId, bindingId)));
         st.put("hasSaved", ContainerService.hasBiliSession(ctx, botId, bindingId));
+        BotRegistry.Bot bot = BotRegistry.get(botId);
+        if (bot != null) {
+            for (BotRegistry.Binding row : bot.bindings) {
+                if (bindingId.equals(row.id) && !row.accountId.isEmpty()) {
+                    st.put("refreshSummary", com.whaleonebot.BiliRefreshStore.shortStatus(ctx, botId, bindingId, row.accountId));
+                    break;
+                }
+            }
+        }
         return st.toString();
     }
 

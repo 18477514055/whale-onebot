@@ -81,6 +81,7 @@ Write-Host ("[0/6] bundled src/ protocol tree ({0} files -> assets/qq-protocol)"
 
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/client.mjs') (Join-Path $assetsDir 'bili-client.mjs') -Force
 Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/authorized-client.mjs') (Join-Path $assetsDir 'authorized-client.mjs') -Force
+Copy-Item (Join-Path $PSScriptRoot '../src/platforms/bilibili/passport.mjs') (Join-Path $assetsDir 'bili-passport.mjs') -Force
 
 $work = Join-Path $PSScriptRoot ('.build-' + [guid]::NewGuid().ToString('N'))
 $classes = Join-Path $work 'classes'

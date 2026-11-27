@@ -1,8 +1,20 @@
-import { createHash } from 'node:crypto';
+import { createHash, publicEncrypt, constants as cryptoConstants } from 'node:crypto';
 
 // Community web contract, not a public developer API:
 // https://github.com/SocialSisterYi/bilibili-API-collect/blob/917a90a/docs/message/private_msg.md
 const NAV = 'https://api.bilibili.com/x/web-interface/nav';
+const SPI_FINGER = 'https://api.bilibili.com/x/frontend/finger/spi';
+const COOKIE_INFO = 'https://passport.bilibili.com/x/passport-login/web/cookie/info';
+const CORRESPOND_BASE = 'https://www.bilibili.com/correspond/1/';
+const COOKIE_REFRESH = 'https://passport.bilibili.com/x/passport-login/web/cookie/refresh';
+const COOKIE_CONFIRM = 'https://passport.bilibili.com/x/passport-login/web/confirm/refresh';
+const BILI_CORRESPOND_PUBKEY =
+  '-----BEGIN PUBLIC KEY-----\n'
+  + 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDLgd2OAkcGVtoE3ThUREbio0Eg\n'
+  + 'Uc/prcajMKXvkCKFCWhJYJcLkcM2DKKcSeFpD/j6Boy538YXnR6VhcuUJOhH2x71\n'
+  + 'nzPjfdTcqMz7djHum0qSZA0AyCBDABUqCrfNgCiJ00Ra7GmRj+YCK1NJEuewlb40\n'
+  + 'JNrRuoEUXpabUzGB8QIDAQAB\n'
+  + '-----END PUBLIC KEY-----';
 const IM = 'https://api.vc.bilibili.com/';
 const HISTORY = IM + 'svr_sync/v1/svr_sync/fetch_session_msgs';
 const SEND = IM + 'web_im/v1/web_im/send_msg';
@@ -80,7 +92,8 @@ function signedQuery(params, key) {
 
 export class BiliClient {
   #fetch; #cookie; #csrf; #self; #peer; #device; #verified = false; #key; #stopCode;
-  constructor({ cookie, selfId, peerId, deviceId, fetchImpl = globalThis.fetch }) {
+  #refreshMeta; #onPersist; #onRefreshMeta;
+  constructor({ cookie, selfId, peerId, deviceId, fetchImpl = globalThis.fetch, refreshMeta = null, onPersist = null, onRefreshMeta = null }) {
     this.#self = decimal(selfId); this.#peer = decimal(peerId);
     if (!this.#self || (peerId != null && !this.#peer) || this.#self === this.#peer) throw problem('invalid account or peer');
     if (typeof fetchImpl !== 'function') throw problem('fetch unavailable');
@@ -94,6 +107,17 @@ export class BiliClient {
     if (!part('SESSDATA')) throw problem('missing login');
     if (deviceId != null && !UUID4.test(deviceId)) throw problem('invalid device id');
     this.#csrf = part('bili_jct'); this.#cookie = cookie; this.#device = deviceId; this.#fetch = fetchImpl;
+    this.#refreshMeta = refreshMeta && typeof refreshMeta === 'object' ? { ...refreshMeta } : null;
+    this.#onPersist = typeof onPersist === 'function' ? onPersist : null;
+    this.#onRefreshMeta = typeof onRefreshMeta === 'function' ? onRefreshMeta : null;
+  }
+  #outboundCookie() {
+    if (!this.#refreshMeta) return this.#cookie;
+    const extra = [];
+    if (this.#refreshMeta.buvid3 && /^[\x21-\x7e]{8,256}$/.test(this.#refreshMeta.buvid3)) extra.push(`buvid3=${this.#refreshMeta.buvid3}`);
+    if (this.#refreshMeta.buvid4 && /^[\x21-\x7e]{8,256}$/.test(this.#refreshMeta.buvid4)) extra.push(`buvid4=${this.#refreshMeta.buvid4}`);
+    if (this.#refreshMeta.biliTicket && /^[\x21-\x7e]{8,512}$/.test(this.#refreshMeta.biliTicket)) extra.push(`bili_ticket=${this.#refreshMeta.biliTicket}`);
+    return extra.length ? `${this.#cookie}; ${extra.join('; ')}` : this.#cookie;
   }
   #stop(message, outcome, code) {
     this.#stopCode ??= code;
@@ -109,7 +133,7 @@ export class BiliClient {
     let response;
     try {
       response = await this.#fetch(url, {
-        method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { Cookie: this.#cookie, ...headers }, body,
+        method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { Cookie: this.#outboundCookie(), ...headers }, body,
       });
     } catch { throw problem('transport failed', uncertain); }
     if (!response.ok) {
@@ -266,5 +290,152 @@ export class BiliClient {
       throw problem('unconfirmed send receipt', 'unknown');
     }
     return { msg_key: String(data.msg_key) };
+  }
+
+  /** 补全 Web 指纹（buvid3 / buvid4）以显著降低 -352/-412 风控概率。 */
+  async ensureFingerprints() {
+    this.#active();
+    this.#refreshMeta ??= {};
+    if (this.#refreshMeta.buvid3 && this.#refreshMeta.buvid4) {
+      return { updated: false, meta: { ...this.#refreshMeta } };
+    }
+    const res = await this.#fetch(SPI_FINGER, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: { Cookie: this.#outboundCookie(), Referer: 'https://www.bilibili.com/' }
+    });
+    if (!res.ok) return { updated: false, meta: { ...this.#refreshMeta } };
+    const body = await res.json();
+    const b3 = typeof body?.data?.b_3 === 'string' ? body.data.b_3.trim() : '';
+    const b4 = typeof body?.data?.b_4 === 'string' ? body.data.b_4.trim() : '';
+    let updated = false;
+    if (b3 && b3 !== this.#refreshMeta.buvid3) { this.#refreshMeta.buvid3 = b3; updated = true; }
+    if (b4 && b4 !== this.#refreshMeta.buvid4) { this.#refreshMeta.buvid4 = b4; updated = true; }
+    if (updated && this.#onRefreshMeta) {
+      await this.#onRefreshMeta({ ...this.#refreshMeta });
+    }
+    return { updated, meta: { ...this.#refreshMeta } };
+  }
+
+  /** 检查并执行 B 站官方 Web Cookie 无感续期（依赖 refresh_token / ac_time_value）。 */
+  async maintainSession({ forceCheck = false } = {}) {
+    this.#active();
+    await this.ensureFingerprints().catch(() => {});
+    const refreshToken = typeof this.#refreshMeta?.refreshToken === 'string'
+      ? this.#refreshMeta.refreshToken.trim()
+      : '';
+    if (!refreshToken) {
+      return { refreshed: false, reason: 'no_refresh_token' };
+    }
+    const infoRes = await this.#fetch(`${COOKIE_INFO}?csrf=${encodeURIComponent(this.#csrf)}`, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: { Cookie: this.#outboundCookie(), Referer: 'https://www.bilibili.com/' }
+    });
+    if (!infoRes.ok) return { refreshed: false, reason: `info_http_${infoRes.status}` };
+    const infoBody = await infoRes.json();
+    if (infoBody?.code !== 0 || !infoBody?.data) {
+      return { refreshed: false, reason: `info_code_${infoBody?.code}` };
+    }
+    const needRefresh = infoBody.data.refresh === true;
+    const ts = Number(infoBody.data.timestamp) || Date.now();
+    if (!needRefresh && !forceCheck) {
+      return { refreshed: false, reason: 'not_needed', timestamp: ts };
+    }
+    if (!needRefresh) {
+      return { refreshed: false, reason: 'not_needed', timestamp: ts };
+    }
+
+    // 1. 生成 RSA-OAEP SHA-256 correspondPath
+    const encrypted = publicEncrypt(
+      {
+        key: BILI_CORRESPOND_PUBKEY,
+        padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha256',
+      },
+      Buffer.from(`refresh_${ts}`, 'utf8')
+    );
+    const correspondPath = encrypted.toString('hex');
+
+    // 2. 拉取 correspond HTML 提取 refresh_csrf
+    const corrRes = await this.#fetch(`${CORRESPOND_BASE}${correspondPath}`, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: { Cookie: this.#outboundCookie(), Referer: 'https://www.bilibili.com/' }
+    });
+    if (!corrRes.ok) return { refreshed: false, reason: `correspond_http_${corrRes.status}` };
+    const html = await corrRes.text();
+    const csrfMatch = /<div\s+id=["']1-name["'][^>]*>([^<]+)<\/div>/i.exec(html);
+    const refreshCsrf = csrfMatch ? csrfMatch[1].trim() : '';
+    if (!refreshCsrf) return { refreshed: false, reason: 'missing_refresh_csrf' };
+
+    // 3. 提交刷新 Cookie
+    const oldRefreshToken = refreshToken;
+    const form = new URLSearchParams({
+      csrf: this.#csrf,
+      refresh_csrf: refreshCsrf,
+      source: 'main_web',
+      refresh_token: oldRefreshToken,
+    });
+    const refRes = await this.#fetch(COOKIE_REFRESH, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        Cookie: this.#outboundCookie(),
+        Referer: 'https://www.bilibili.com/',
+        Origin: 'https://www.bilibili.com',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: form
+    });
+    if (!refRes.ok) return { refreshed: false, reason: `refresh_http_${refRes.status}` };
+    const refBody = await refRes.json();
+    if (refBody?.code !== 0 || !refBody?.data?.refresh_token) {
+      return { refreshed: false, reason: `refresh_code_${refBody?.code}` };
+    }
+
+    const nextMap = new Map();
+    for (const field of refRes.headers.getSetCookie()) {
+      const pair = field.split(';')[0].trim();
+      const eq = pair.indexOf('=');
+      if (eq > 0) {
+        const k = pair.slice(0, eq).trim();
+        const v = pair.slice(eq + 1).trim();
+        if (k === 'SESSDATA' || k === 'bili_jct') nextMap.set(k, v);
+      }
+    }
+    const nextSess = nextMap.get('SESSDATA');
+    const nextCsrf = nextMap.get('bili_jct');
+    const nextRefresh = String(refBody.data.refresh_token).trim();
+    if (!nextSess || !nextCsrf || !nextRefresh) {
+      return { refreshed: false, reason: 'incomplete_refresh_cookies' };
+    }
+
+    const nextCookie = `SESSDATA=${nextSess}; bili_jct=${nextCsrf}`;
+    this.#cookie = nextCookie;
+    this.#csrf = nextCsrf;
+    this.#refreshMeta = { ...this.#refreshMeta, refreshToken: nextRefresh, refreshedAt: Date.now() };
+
+    // 4. 确认刷新并吊销旧 refresh_token（失败不回滚新凭据，优先保存新凭据）
+    await this.#fetch(COOKIE_CONFIRM, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        Cookie: this.#outboundCookie(),
+        Referer: 'https://www.bilibili.com/',
+        Origin: 'https://www.bilibili.com',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({ csrf: nextCsrf, refresh_token: oldRefreshToken })
+    }).catch(() => {});
+
+    if (this.#onPersist) await this.#onPersist(nextCookie, this.#self);
+    if (this.#onRefreshMeta) await this.#onRefreshMeta({ ...this.#refreshMeta });
+    return { refreshed: true, cookie: nextCookie, meta: { ...this.#refreshMeta } };
   }
 }

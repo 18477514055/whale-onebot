@@ -191,6 +191,18 @@ final class SettingsScreen extends Screen {
         });
         g3.addView(groupSwitchRow(IconView.POWER, "自动重启保活", watchdogValue, watchdogSwitch, remote));
 
+        g3.addView(Ui.divider(activity, t));
+        int kaScore = remote ? rm.activeSnapshot().keepAliveScore : KeepAliveInspector.inspect(activity).score;
+        String kaBadge = remote ? (rm.activeSnapshot().netProxyHijack ? "代理风险" : (kaScore + " 分"))
+                : (kaScore + " 分");
+        g3.addView(groupRow(
+                IconView.SHIELD,
+                "登录健康与系统保活自检仪",
+                "逐项检查电池白名单、自启动、精确闹钟与 VPN 代理劫持",
+                kaBadge,
+                kaScore < 70 || (remote && rm.activeSnapshot().netProxyHijack) ? Ui.TONE_WARN : Ui.TONE_OK,
+                v -> shell.pushLoginHealth()));
+
         // ---------------- 分组 4：高级与开发者维护（折叠收纳，避免新手困惑） ----------------
         col.addView(groupLabel("高级与开发者维护"));
         LinearLayout g4 = Ui.addCard(col, activity, t, 0);

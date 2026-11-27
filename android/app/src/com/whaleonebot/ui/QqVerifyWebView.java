@@ -30,6 +30,10 @@ public final class QqVerifyWebView {
 
     public interface Callback {
         void onVerified(String ticket, String randStr, String sid);
+        default void onExtendedVerified(String ticket, String randStr, String sid,
+                                        String newDeviceLoginSig, String unusualDeviceCheckSig) {
+            onVerified(ticket, randStr, sid);
+        }
         void onCancelled();
     }
 
@@ -98,8 +102,31 @@ public final class QqVerifyWebView {
             final String finalSid = sid;
             activity.runOnUiThread(() -> {
                 cleanup.run();
-                if (callback != null) callback.onVerified(ticket == null ? "" : ticket,
-                        randStr == null ? "" : randStr, finalSid);
+                if (callback != null) callback.onExtendedVerified(
+                        ticket == null ? "" : ticket,
+                        randStr == null ? "" : randStr,
+                        finalSid, "", "");
+            });
+        };
+
+        final java.util.function.Consumer<String[]> finishExtended = (parts) -> {
+            if (done[0] || parts == null) return;
+            done[0] = true;
+            String tkt = parts.length > 0 && parts[0] != null ? parts[0] : "";
+            String rnd = parts.length > 1 && parts[1] != null ? parts[1] : "";
+            String sid = parts.length > 2 && parts[2] != null ? parts[2] : "";
+            if (sid.isEmpty()) {
+                try {
+                    String qSid = Uri.parse(verifyUrl).getQueryParameter("sid");
+                    if (qSid != null) sid = qSid;
+                } catch (Throwable ignored) {}
+            }
+            final String fSid = sid;
+            final String fNewDev = parts.length > 3 && parts[3] != null ? parts[3] : "";
+            final String fUnusual = parts.length > 4 && parts[4] != null ? parts[4] : "";
+            activity.runOnUiThread(() -> {
+                cleanup.run();
+                if (callback != null) callback.onExtendedVerified(tkt, rnd, fSid, fNewDev, fUnusual);
             });
         };
 
@@ -108,6 +135,21 @@ public final class QqVerifyWebView {
             public void onCapResult(String ticket, String randStr) {
                 if (ticket != null && !ticket.trim().isEmpty()) {
                     finishWithTicket.accept(ticket.trim(), randStr == null ? "" : randStr.trim());
+                }
+            }
+
+            @JavascriptInterface
+            public void onDeviceResult(String ticket, String randStr, String sid, String newDeviceSig, String unusualSig) {
+                if ((ticket != null && !ticket.trim().isEmpty())
+                        || (newDeviceSig != null && !newDeviceSig.trim().isEmpty())
+                        || (unusualSig != null && !unusualSig.trim().isEmpty())) {
+                    finishExtended.accept(new String[]{
+                            ticket == null ? "" : ticket.trim(),
+                            randStr == null ? "" : randStr.trim(),
+                            sid == null ? "" : sid.trim(),
+                            newDeviceSig == null ? "" : newDeviceSig.trim(),
+                            unusualSig == null ? "" : unusualSig.trim()
+                    });
                 }
             }
         }, "WhaleCaptchaBridge");
@@ -122,7 +164,7 @@ public final class QqVerifyWebView {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String u = request == null || request.getUrl() == null ? "" : request.getUrl().toString();
-                if (checkUrlForTicket(u, finishWithTicket)) return true;
+                if (checkUrlForTicket(u, finishExtended)) return true;
                 if (request != null && request.isForMainFrame()) {
                     return !QqAuthState.isSafeHttpsTencentUrl(u);
                 }
@@ -131,14 +173,26 @@ public final class QqVerifyWebView {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (checkUrlForTicket(url, finishWithTicket)) return;
-                // 监听腾讯防水墙常见回调，若页面调用 mqq.ui.popBack / jsbridge 传回 ticket 则自动捕获
+                if (checkUrlForTicket(url, finishExtended)) return;
+                // 监听腾讯防水墙与安全中心多种回调（postMessage / capDestroy / mqq.ui.popBack / webkit handler）
                 view.evaluateJavascript(
                         "(function(){try{"
-                                + "var orig=window.capDestroy||function(){};"
                                 + "if(!window.__whaleHooked){window.__whaleHooked=1;"
-                                + "window.addEventListener('message',function(e){try{var d=typeof e.data==='string'?JSON.parse(e.data):e.data;"
-                                + "if(d&&d.ticket&&window.WhaleCaptchaBridge){window.WhaleCaptchaBridge.onCapResult(String(d.ticket),String(d.randstr||d.randStr||''));}}catch(_){}});"
+                                + "var emit=function(d){try{if(!d)return;"
+                                + "if(typeof d==='string'){try{d=JSON.parse(d);}catch(_){return;}}"
+                                + "var b=window.WhaleCaptchaBridge;if(!b)return;"
+                                + "var t=d.ticket||d.sig||d.proofWaterSig||'';"
+                                + "var r=d.randstr||d.randStr||d.proofWaterRand||'';"
+                                + "var s=d.sid||d.proofWaterSid||'';"
+                                + "var nd=d.newDeviceLoginSig||d.new_device_login_sig||'';"
+                                + "var ud=d.unusualDeviceCheckSig||d.unusual_device_check_sig||'';"
+                                + "if(t||nd||ud){b.onDeviceResult(String(t),String(r),String(s),String(nd),String(ud));}"
+                                + "}catch(_){}};"
+                                + "window.addEventListener('message',function(e){emit(e.data);});"
+                                + "var origPop=window.mqq&&window.mqq.ui&&window.mqq.ui.popBack;"
+                                + "if(window.mqq&&window.mqq.ui){window.mqq.ui.popBack=function(arg){emit(arg);if(origPop)return origPop.apply(this,arguments);};}"
+                                + "var origCap=window.capDestroy;"
+                                + "window.capDestroy=function(arg){emit(arg);if(origCap)return origCap.apply(this,arguments);};"
                                 + "}}catch(_){}})();", null);
             }
 
@@ -179,19 +233,28 @@ public final class QqVerifyWebView {
         return true;
     }
 
-    private static boolean checkUrlForTicket(String url, java.util.function.BiConsumer<String, String> sink) {
+    private static boolean checkUrlForTicket(String url, java.util.function.Consumer<String[]> sink) {
         if (url == null || url.isEmpty()) return false;
         try {
             Uri u = Uri.parse(url);
-            String ticket = u.getQueryParameter("ticket");
-            if (ticket == null || ticket.isEmpty()) ticket = u.getQueryParameter("sig");
-            if (ticket != null && !ticket.trim().isEmpty()) {
-                String rand = u.getQueryParameter("randstr");
-                if (rand == null) rand = u.getQueryParameter("randStr");
-                sink.accept(ticket.trim(), rand == null ? "" : rand.trim());
+            String ticket = firstParam(u, "ticket", "sig", "proofWaterSig");
+            String rand = firstParam(u, "randstr", "randStr", "proofWaterRand");
+            String sid = firstParam(u, "sid", "proofWaterSid");
+            String newDev = firstParam(u, "newDeviceLoginSig", "new_device_login_sig");
+            String unusual = firstParam(u, "unusualDeviceCheckSig", "unusual_device_check_sig");
+            if (!ticket.isEmpty() || !newDev.isEmpty() || !unusual.isEmpty()) {
+                sink.accept(new String[]{ticket, rand, sid, newDev, unusual});
                 return true;
             }
         } catch (Throwable ignored) {}
         return false;
+    }
+
+    private static String firstParam(Uri u, String... keys) {
+        for (String k : keys) {
+            String v = u.getQueryParameter(k);
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        }
+        return "";
     }
 }

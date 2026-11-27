@@ -1,5 +1,9 @@
 package com.whaleonebot.ui;
 
+import android.content.Context;
+
+import com.whaleonebot.DouyinSessionStore;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -14,14 +18,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * [layer: shell-android] 抖音（测试版）每机器人独立配置、实验性网页凭证与本地候选队列存储。
+ * [layer: shell-android] 抖音每机器人独立配置、硬件加密凭证桥接与本地候选队列存储。
  *
  * <p>安全与隐私约束：
  * <ul>
  *   <li>所有写操作（评论 / 点赞 / 收藏 / 关注 / 发图文 / 改资料）默认均为 {@link #MODE_APPROVAL}（需要主人审批）；</li>
- *   <li>实验性 WebView 抓取的 Cookie 仅落盘于应用私有目录 {@code douyin-sessions/<botId>.json}，权限 {@code 0600}，
- *       绝不打印到日志、绝不回显明文；</li>
- *   <li>当前为实验性测试版接口，本类诚实反映本地配置与凭证状态，不虚构未验证的实网收发状态。</li>
+ *   <li>网页 Cookie 全面托管给 {@link DouyinSessionStore} 使用 Android Keystore AES-256-GCM 硬件加密存储，
+ *       并兼容自动迁移与擦除旧明文 JSON，绝不打印或回显明文。</li>
  * </ul>
  */
 public final class DouyinSettings {
@@ -51,19 +54,100 @@ public final class DouyinSettings {
                 actions.put(row[0], MODE_APPROVAL);
             }
         }
+
+        public JSONObject toJson() {
+            JSONObject obj = new JSONObject();
+            try {
+                JSONObject acts = new JSONObject();
+                for (String[] row : WRITE_ACTIONS) {
+                    String v = actions.get(row[0]);
+                    acts.put(row[0], MODE_AUTONOMOUS.equals(v) ? MODE_AUTONOMOUS : MODE_APPROVAL);
+                }
+                obj.put("actions", acts);
+                obj.put("browseEnabled", browseEnabled);
+                obj.put("browseIntervalMin", Math.max(15, Math.min(1440, browseIntervalMin)));
+                obj.put("dailyBrowseBudget", Math.max(1, Math.min(200, dailyBrowseBudget)));
+                obj.put("dailyWriteBudget", Math.max(0, Math.min(100, dailyWriteBudget)));
+            } catch (Throwable ignored) {}
+            return obj;
+        }
+
+        public static Config fromJson(JSONObject obj) {
+            Config c = new Config();
+            if (obj == null) return c;
+            JSONObject acts = obj.optJSONObject("actions");
+            if (acts != null) {
+                for (String[] row : WRITE_ACTIONS) {
+                    String v = acts.optString(row[0], MODE_APPROVAL);
+                    c.actions.put(row[0], MODE_AUTONOMOUS.equals(v) ? MODE_AUTONOMOUS : MODE_APPROVAL);
+                }
+            }
+            c.browseEnabled = obj.optBoolean("browseEnabled", false);
+            c.browseIntervalMin = Math.max(15, Math.min(1440, obj.optInt("browseIntervalMin", 60)));
+            c.dailyBrowseBudget = Math.max(1, Math.min(200, obj.optInt("dailyBrowseBudget", 20)));
+            c.dailyWriteBudget = Math.max(0, Math.min(100, obj.optInt("dailyWriteBudget", 5)));
+            return c;
+        }
     }
 
     public static final class SessionSummary {
         public final boolean saved;
+        public final boolean verified;
         public final long savedAt;
+        public final long lastCheckAt;
         public final int cookieFieldCount;
         public final boolean hasSessionId;
+        public final String uid;
+        public final String nickname;
+        public final String state;
+        public final String lastError;
 
-        SessionSummary(boolean saved, long savedAt, int cookieFieldCount, boolean hasSessionId) {
+        SessionSummary(boolean saved, boolean verified, long savedAt, long lastCheckAt,
+                       int cookieFieldCount, boolean hasSessionId, String uid, String nickname,
+                       String state, String lastError) {
             this.saved = saved;
+            this.verified = verified;
             this.savedAt = savedAt;
+            this.lastCheckAt = lastCheckAt;
             this.cookieFieldCount = cookieFieldCount;
             this.hasSessionId = hasSessionId;
+            this.uid = uid == null ? "" : uid;
+            this.nickname = nickname == null ? "" : nickname;
+            this.state = state == null ? "stopped" : state;
+            this.lastError = lastError == null ? "" : lastError;
+        }
+
+        public JSONObject toJson() {
+            JSONObject o = new JSONObject();
+            try {
+                o.put("saved", saved);
+                o.put("verified", verified);
+                o.put("savedAt", savedAt);
+                o.put("lastCheckAt", lastCheckAt);
+                o.put("cookieFieldCount", cookieFieldCount);
+                o.put("hasSessionId", hasSessionId);
+                o.put("uid", uid);
+                o.put("nickname", nickname);
+                o.put("state", state);
+                o.put("lastError", lastError);
+            } catch (Throwable ignored) {}
+            return o;
+        }
+
+        public static SessionSummary fromJson(JSONObject o) {
+            if (o == null) return new SessionSummary(false, false, 0L, 0L, 0, false, "", "", "stopped", "");
+            return new SessionSummary(
+                    o.optBoolean("saved", false),
+                    o.optBoolean("verified", false),
+                    o.optLong("savedAt", 0L),
+                    o.optLong("lastCheckAt", 0L),
+                    o.optInt("cookieFieldCount", 0),
+                    o.optBoolean("hasSessionId", false),
+                    o.optString("uid", ""),
+                    o.optString("nickname", ""),
+                    o.optString("state", "stopped"),
+                    o.optString("lastError", "")
+            );
         }
     }
 
@@ -80,108 +164,80 @@ public final class DouyinSettings {
         return new File(new File(filesDir, "douyin-config"), safeId(botId) + ".json");
     }
 
-    private static File sessionFile(File filesDir, String botId) {
-        return new File(new File(filesDir, "douyin-sessions"), safeId(botId) + ".json");
-    }
-
     private static File queueFile(File filesDir, String botId) {
         return new File(new File(filesDir, "douyin-candidates"), safeId(botId) + ".json");
     }
 
     public static Config loadConfig(File filesDir, String botId) {
-        Config c = new Config();
-        if (filesDir == null) return c;
+        if (filesDir == null) return new Config();
         File f = cfgFile(filesDir, botId);
-        if (!f.isFile()) return c;
+        if (!f.isFile()) return new Config();
         try {
-            JSONObject obj = new JSONObject(readUtf8(f));
-            JSONObject acts = obj.optJSONObject("actions");
-            if (acts != null) {
-                for (String[] row : WRITE_ACTIONS) {
-                    String v = acts.optString(row[0], MODE_APPROVAL);
-                    c.actions.put(row[0], MODE_AUTONOMOUS.equals(v) ? MODE_AUTONOMOUS : MODE_APPROVAL);
-                }
-            }
-            c.browseEnabled = obj.optBoolean("browseEnabled", false);
-            c.browseIntervalMin = Math.max(15, Math.min(1440, obj.optInt("browseIntervalMin", 60)));
-            c.dailyBrowseBudget = Math.max(1, Math.min(200, obj.optInt("dailyBrowseBudget", 20)));
-            c.dailyWriteBudget = Math.max(0, Math.min(100, obj.optInt("dailyWriteBudget", 5)));
+            return Config.fromJson(new JSONObject(readUtf8(f)));
         } catch (Throwable ignored) {
+            return new Config();
         }
-        return c;
     }
 
     public static boolean saveConfig(File filesDir, String botId, Config c) {
         if (filesDir == null || c == null) return false;
         try {
-            JSONObject obj = new JSONObject();
-            JSONObject acts = new JSONObject();
-            for (String[] row : WRITE_ACTIONS) {
-                String v = c.actions.get(row[0]);
-                acts.put(row[0], MODE_AUTONOMOUS.equals(v) ? MODE_AUTONOMOUS : MODE_APPROVAL);
-            }
-            obj.put("actions", acts);
-            obj.put("browseEnabled", c.browseEnabled);
-            obj.put("browseIntervalMin", Math.max(15, Math.min(1440, c.browseIntervalMin)));
-            obj.put("dailyBrowseBudget", Math.max(1, Math.min(200, c.dailyBrowseBudget)));
-            obj.put("dailyWriteBudget", Math.max(0, Math.min(100, c.dailyWriteBudget)));
-            return writePrivateUtf8(cfgFile(filesDir, botId), obj.toString(2));
+            return writePrivateUtf8(cfgFile(filesDir, botId), c.toJson().toString(2));
         } catch (Throwable ignored) {
             return false;
         }
     }
 
-    /** 保存实验性网页登录抓到的 Cookie（只存私有目录 0600，绝不打日志）。 */
-    public static boolean saveWebSession(File filesDir, String botId, String rawCookie) {
-        if (filesDir == null || rawCookie == null || rawCookie.trim().isEmpty()) return false;
-        String cookie = rawCookie.trim();
-        int fields = 0;
-        boolean hasSid = false;
-        for (String part : cookie.split(";")) {
-            String p = part.trim();
-            if (p.contains("=")) {
-                fields++;
-                String k = p.substring(0, p.indexOf('=')).trim().toLowerCase(java.util.Locale.ROOT);
-                if (k.contains("sessionid") || k.equals("sid_tt") || k.equals("passport_csrf_token") || k.equals("ttwid")) {
-                    hasSid = true;
-                }
-            }
-        }
-        try {
-            JSONObject obj = new JSONObject();
-            obj.put("savedAt", System.currentTimeMillis());
-            obj.put("fieldCount", fields);
-            obj.put("hasSessionId", hasSid);
-            obj.put("cookie", cookie);
-            return writePrivateUtf8(sessionFile(filesDir, botId), obj.toString());
-        } catch (Throwable ignored) {
-            return false;
-        }
+    /** 兼容旧签名入口：如传入有效 Context 则走硬件 Keystore 加密存储。 */
+    public static boolean saveWebSession(Context ctx, String botId, String rawCookie) {
+        if (ctx == null) return false;
+        return DouyinSessionStore.save(ctx, botId, rawCookie, false, "", "", "saved", "");
     }
 
-    /** 读取凭证摘要（绝不向 UI 暴露明文 Cookie）。 */
+    public static SessionSummary sessionSummary(Context ctx, String botId) {
+        DouyinSessionStore.Summary s = DouyinSessionStore.summary(ctx, botId);
+        return new SessionSummary(s.saved, s.verified, s.savedAt, s.lastCheckAt,
+                s.cookieFieldCount, s.hasSessionId, s.uid, s.nickname, s.state, s.lastError);
+    }
+
     public static SessionSummary sessionSummary(File filesDir, String botId) {
-        if (filesDir == null) return new SessionSummary(false, 0L, 0, false);
-        File f = sessionFile(filesDir, botId);
-        if (!f.isFile()) return new SessionSummary(false, 0L, 0, false);
-        try {
-            JSONObject obj = new JSONObject(readUtf8(f));
-            String c = obj.optString("cookie", "");
-            if (c.trim().isEmpty()) return new SessionSummary(false, 0L, 0, false);
-            return new SessionSummary(true, obj.optLong("savedAt", f.lastModified()),
-                    obj.optInt("fieldCount", 0), obj.optBoolean("hasSessionId", false));
-        } catch (Throwable ignored) {
-            return new SessionSummary(false, 0L, 0, false);
+        // 兼容无 Context 旧调用（仅在无法拿到 Context 时读 meta 文件）
+        if (filesDir == null) return SessionSummary.fromJson(null);
+        File mf = new File(new File(filesDir, "douyin-meta"), safeId(botId) + ".json");
+        if (mf.isFile()) {
+            try {
+                JSONObject o = new JSONObject(readUtf8(mf));
+                return new SessionSummary(
+                        true,
+                        o.optBoolean("verified", false),
+                        o.optLong("savedAt", mf.lastModified()),
+                        o.optLong("lastCheckAt", 0L),
+                        o.optInt("fieldCount", 0),
+                        o.optBoolean("hasSessionId", false),
+                        o.optString("uid", ""),
+                        o.optString("nickname", ""),
+                        o.optString("state", "saved"),
+                        o.optString("lastError", "")
+                );
+            } catch (Throwable ignored) {}
         }
+        return SessionSummary.fromJson(null);
+    }
+
+    public static boolean forgetWebSession(Context ctx, String botId) {
+        return DouyinSessionStore.forget(ctx, botId);
     }
 
     public static boolean forgetWebSession(File filesDir, String botId) {
         if (filesDir == null) return false;
-        File f = sessionFile(filesDir, botId);
-        return !f.exists() || f.delete();
+        File leg = new File(new File(filesDir, "douyin-sessions"), safeId(botId) + ".json");
+        File mf = new File(new File(filesDir, "douyin-meta"), safeId(botId) + ".json");
+        boolean ok = true;
+        if (leg.exists()) ok &= leg.delete();
+        if (mf.exists()) ok &= mf.delete();
+        return ok;
     }
 
-    /** 追加一条由系统分享页或用户手动提交的公开作品链接候选（最多保留最近 50 条）。 */
     public static synchronized boolean enqueueCandidate(File filesDir, String botId, String url) {
         if (filesDir == null || url == null || url.trim().isEmpty()) return false;
         try {
@@ -208,8 +264,7 @@ public final class DouyinSettings {
                 String v = arr.optString(i, "").trim();
                 if (!v.isEmpty()) out.add(v);
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
         return out;
     }
 

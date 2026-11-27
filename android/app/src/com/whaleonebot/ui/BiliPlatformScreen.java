@@ -119,7 +119,11 @@ final class BiliPlatformScreen extends Screen {
             titles.put(row, titleView);
 
             boolean saved = row.hostedBili() && RemoteBridge.hasBiliSession(activity, bot.id, row.id);
-            box.addView(Ui.text(activity, saved ? "已保存登录（仅本机）" : "未保存登录", Theme.T_CAP, t.textSecondary), padTight());
+            String refSummary = row.hostedBili() && snap != null ? snap.optString("refreshSummary", "") : "";
+            box.addView(Ui.text(activity,
+                    (saved ? "已保存登录（仅本机 Keystore）" : "未保存登录")
+                            + (refSummary.isEmpty() ? "" : " · " + refSummary),
+                    Theme.T_CAP, t.textSecondary), padTight());
             String verifyText = row.hostedBili()
                     ? BiliPlatformState.label(snap == null ? "" : snap.optString("state"), row.accountId, snap == null ? "" : snap.optString("selfId"))
                     : (row.accountId.isEmpty() ? "尚未登录" : "外部协议端");
@@ -148,10 +152,25 @@ final class BiliPlatformScreen extends Screen {
                 TextView line = note(box, "");
                 statuses.put(row, line);
                 if (row.hostedBili()) {
-                    starts.put(row, button(box, saved ? "快速登录" : "授权登录", true, () -> start(row)));
+                    starts.put(row, button(box, saved ? "快速登录 / 重连" : "授权登录", true, () -> start(row)));
                     TextView link = button(box, "查看本次授权二维码", false, () -> open(row));
                     link.setVisibility(View.GONE);
                     links.put(row, link);
+                    LinearLayout biliActRow = Ui.row(activity);
+                    TextView reauthMenuBtn = Ui.button(activity, t, "多通道重登 / 导入", false);
+                    reauthMenuBtn.setOnClickListener(v -> showReauthChannels(row));
+                    TextView restartBiliBtn = Ui.button(activity, t, "独立热重启", false);
+                    restartBiliBtn.setOnClickListener(v -> {
+                        loginFeedback.remove(row.id);
+                        setRowFeedback(row, "正在独立热重启 B 站协议端…");
+                        RemoteBridge.restartBili(activity, bot.id, row.id, row.peerId);
+                        refresh();
+                    });
+                    biliActRow.addView(reauthMenuBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1.15f));
+                    LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+                    rbLp.leftMargin = dp(Theme.S2);
+                    biliActRow.addView(restartBiliBtn, rbLp);
+                    box.addView(biliActRow, pad());
                     button(box, "停止此账号", false, () -> {
                         loginFeedback.remove(row.id);
                         RemoteBridge.stopBili(bot.id, row.id);
@@ -367,7 +386,7 @@ final class BiliPlatformScreen extends Screen {
             note(addSectionCard(col, "待审评论"), "未开启「发送前先审」。生成后直接发。");
         }
 
-        // 4) 动作流水卡
+        // 4) 动作流水卡 + B 站诊断黑匣子入口
         LinearLayout logBox = addSectionCard(col, "动作流水");
         logListBox = Ui.column(activity);
         logBox.addView(logListBox, pad());
@@ -379,6 +398,8 @@ final class BiliPlatformScreen extends Screen {
             logPage = 0;
             renderLogPage();
         });
+        button(logBox, "查看 B 站诊断黑匣子", false, () ->
+                ModelsScreen.W.infoDialog(activity, t, "B 站连接与续期黑匣子", RemoteBridge.biliBlackbox(80)));
         renderLogPage();
     }
 
@@ -836,6 +857,65 @@ final class BiliPlatformScreen extends Screen {
                     refresh();
                 },
                 null, null, "取消");
+    }
+
+    private void showReauthChannels(final BotRegistry.Binding row) {
+        String[] choices = new String[]{
+                "官网网页登录（账密 / 手机短信，自动提取续期凭证）",
+                "按需扫码重新授权",
+                "手动粘贴导入 Cookie（SESSDATA + bili_jct）"
+        };
+        PromptSheet.choose(activity, t, "B 站多通道重新上线 · UID " + row.accountId, choices, idx -> {
+            if (idx == 0) {
+                BiliWebLogin.openForSession(activity, row.accountId, new BiliWebLogin.SessionCallback() {
+                    @Override public void onSessionCaptured(String rawCookie, String acTimeValue) {
+                        submitBiliCookieImport(row, rawCookie, acTimeValue);
+                    }
+                    @Override public void onCancelled() {
+                        host().toast("已取消 B 站官网登录");
+                    }
+                });
+            } else if (idx == 1) {
+                setRowFeedback(row, "正在准备扫码授权…");
+                RemoteBridge.reauthBili(activity, bot.id, row.id, row.peerId);
+                refresh();
+            } else if (idx == 2) {
+                LinearLayout box = Ui.column(activity);
+                box.addView(Ui.text(activity, "粘贴完整 Cookie（含 SESSDATA=...; bili_jct=...；如附带 ac_time_value 可开启无感续期）。", Theme.T_CAP, t.textSecondary));
+                final EditText et = new EditText(activity);
+                et.setHint("SESSDATA=...; bili_jct=...; ac_time_value=...");
+                et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+                et.setMinLines(3);
+                Ui.styleInput(et, activity, t);
+                box.addView(et, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                PromptSheet.custom(activity, t, "导入 B 站 Cookie · UID " + row.accountId, box,
+                        "核验并保存", (d, b) -> {
+                            String raw = et.getText() == null ? "" : et.getText().toString().trim();
+                            if (raw.isEmpty()) { host().toast("请输入 Cookie"); return; }
+                            d.dismiss();
+                            submitBiliCookieImport(row, raw, "");
+                        }, null, null, "取消", (d, b) -> d.dismiss(), true, false, null, null);
+            }
+        }, null, null);
+    }
+
+    private void submitBiliCookieImport(final BotRegistry.Binding row, final String rawCookie, final String acTimeValue) {
+        setRowFeedback(row, "正在联网校验 UID 并补全指纹…");
+        new Thread(() -> {
+            JSONObject r = RemoteBridge.importBiliCookie(activity, bot.id, row.id, row.accountId, false, rawCookie, acTimeValue);
+            activity.runOnUiThread(() -> {
+                if (r != null && r.optBoolean("ok", false)) {
+                    setRowFeedback(row, "导入并验真成功（" + r.optString("uname", "") + "），正在启动…");
+                    RemoteBridge.startBili(activity, bot.id, row.id, row.peerId);
+                    host().toast("B 站登录已更新" + (r.optBoolean("hasRefresh", false) ? "（支持自动续期）" : ""));
+                } else {
+                    String err = r == null ? "导入失败" : r.optString("error", "导入失败");
+                    setRowFeedback(row, "导入失败：" + err);
+                    host().toast(err);
+                }
+                refresh();
+            });
+        }, "bili-cookie-import").start();
     }
 
     private void open(BotRegistry.Binding row) {

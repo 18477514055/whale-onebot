@@ -94,6 +94,16 @@ public final class RemoteControlManager {
         public volatile String botsHash = "";
         public volatile String loginLogHash = "";
         public volatile String containerLogHash = "";
+        public volatile int netRiskLevel = 1;
+        public volatile String netRiskBadge = "";
+        public volatile String netRiskSummary = "";
+        public volatile boolean netProxyHijack = false;
+        public volatile int keepAliveScore = 100;
+        public volatile String keepAliveBadge = "";
+        public volatile String biliAlertTitle = "";
+        public volatile String biliAlertMsg = "";
+        public volatile String douyinAlertTitle = "";
+        public volatile String douyinAlertMsg = "";
         public volatile long updatedAt = 0;
     }
 
@@ -504,7 +514,29 @@ public final class RemoteControlManager {
                 snap.qrMtime = 0;
                 snap.qrUrl = "";
             }
-            // 主力机实时离线告警：远端一旦跃迁到被踢/票据过期/待滑块/断连需人工态，立刻在主力机弹高优先级通知
+            if (o.has("netRisk")) {
+                JSONObject nr = o.optJSONObject("netRisk");
+                if (nr != null) {
+                    snap.netRiskLevel = nr.optInt("level", 1);
+                    snap.netRiskBadge = nr.optString("badge", "");
+                    snap.netRiskSummary = nr.optString("summary", "");
+                    snap.netProxyHijack = nr.optBoolean("proxyHijack", false);
+                }
+            }
+            if (o.has("keepAlive")) {
+                JSONObject ka = o.optJSONObject("keepAlive");
+                if (ka != null) {
+                    snap.keepAliveScore = ka.optInt("score", 100);
+                    snap.keepAliveBadge = ka.optString("badge", "");
+                }
+            }
+            JSONObject ba = o.optJSONObject("biliAlert");
+            snap.biliAlertTitle = ba == null ? "" : ba.optString("title", "");
+            snap.biliAlertMsg = ba == null ? "" : ba.optString("message", "");
+            JSONObject da = o.optJSONObject("douyinAlert");
+            snap.douyinAlertTitle = da == null ? "" : da.optString("title", "");
+            snap.douyinAlertMsg = da == null ? "" : da.optString("message", "");
+            // 主力机实时离线告警：远端一旦跃迁到被踢/票据过期/待滑块/断连需人工态（含 QQ/B站/抖音），立刻在主力机弹高优先级通知
             checkRemoteOfflineAlert(id, snap);
             snap.setupEnv = o.optBoolean("setupEnv", false);
             snap.setupQq = o.optBoolean("setupQq", false);
@@ -530,27 +562,51 @@ public final class RemoteControlManager {
     }
 
     private void checkRemoteOfflineAlert(String peerId, RemoteSnapshot snap) {
-        if (peerId == null || snap == null || !snap.containerRunning) return;
-        com.whaleonebot.ui.QqAuthState st = com.whaleonebot.ui.QqAuthState.parseBotJson(snap.botStateJson);
-        if (st.isOnline()) {
-            lastPeerOfflineAlert.remove(peerId);
-            return;
+        if (peerId == null || snap == null) return;
+        RemoteStore.PairedPeer peer = store.getPeer(peerId);
+        String name = peer == null ? "远端设备" : peer.displayName();
+        if (snap.containerRunning) {
+            com.whaleonebot.ui.QqAuthState st = com.whaleonebot.ui.QqAuthState.parseBotJson(snap.botStateJson);
+            if (st.isOnline()) {
+                lastPeerOfflineAlert.remove(peerId + "|qq");
+            } else if ("kicked-offline".equals(st.phase)
+                    || "token-expired".equals(st.phase)
+                    || "verify-required".equals(st.phase)
+                    || ("degraded".equals(st.phase) && st.needsManualLogin)) {
+                String sig = st.phase + "|" + st.offlineReason + "|" + st.verifyAt;
+                String prev = lastPeerOfflineAlert.put(peerId + "|qq", sig);
+                if (!sig.equals(prev)) {
+                    com.whaleonebot.ContainerService.postPlatformAlertNotification(
+                            ctx, "qq",
+                            "远端「" + name + "」" + st.shortBadge(true),
+                            st.detailMessage(true),
+                            peerId);
+                }
+            }
         }
-        if ("kicked-offline".equals(st.phase)
-                || "token-expired".equals(st.phase)
-                || "verify-required".equals(st.phase)
-                || ("degraded".equals(st.phase) && st.needsManualLogin)) {
-            String sig = st.phase + "|" + st.offlineReason + "|" + st.verifyAt;
-            String prev = lastPeerOfflineAlert.put(peerId, sig);
-            if (!sig.equals(prev)) {
-                RemoteStore.PairedPeer peer = store.getPeer(peerId);
-                String name = peer == null ? "远端设备" : peer.displayName();
-                com.whaleonebot.ContainerService.postOfflineNotification(
-                        ctx,
-                        "远端「" + name + "」" + st.shortBadge(true),
-                        st.detailMessage(true),
+        if (snap.biliAlertTitle != null && !snap.biliAlertTitle.isEmpty()) {
+            String prev = lastPeerOfflineAlert.put(peerId + "|bili", snap.biliAlertTitle);
+            if (!snap.biliAlertTitle.equals(prev)) {
+                com.whaleonebot.ContainerService.postPlatformAlertNotification(
+                        ctx, "bilibili",
+                        "远端「" + name + "」" + snap.biliAlertTitle,
+                        snap.biliAlertMsg,
                         peerId);
             }
+        } else {
+            lastPeerOfflineAlert.remove(peerId + "|bili");
+        }
+        if (snap.douyinAlertTitle != null && !snap.douyinAlertTitle.isEmpty()) {
+            String prev = lastPeerOfflineAlert.put(peerId + "|douyin", snap.douyinAlertTitle);
+            if (!snap.douyinAlertTitle.equals(prev)) {
+                com.whaleonebot.ContainerService.postPlatformAlertNotification(
+                        ctx, "douyin",
+                        "远端「" + name + "」" + snap.douyinAlertTitle,
+                        snap.douyinAlertMsg,
+                        peerId);
+            }
+        } else {
+            lastPeerOfflineAlert.remove(peerId + "|douyin");
         }
     }
 

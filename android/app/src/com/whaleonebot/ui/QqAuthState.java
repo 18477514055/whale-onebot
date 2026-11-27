@@ -79,8 +79,19 @@ public final class QqAuthState {
         }
     }
 
-    /** 当前是否真正处于已登录在线态（不再轻信磁盘陈旧 identity.json）。 */
+    /** 原生 MSF 长连接是否处于明确断开态（onMSFStatusChange 2 = kDisconnected / login-disconnected）。 */
+    public boolean isMsfDisconnected() {
+        if (msfStatus.isEmpty()) return false;
+        String low = msfStatus.toLowerCase(java.util.Locale.ROOT);
+        return "2".equals(low)
+                || "disconnected".equals(low)
+                || "kdisconnected".equals(low)
+                || "login-disconnected".equals(low);
+    }
+
+    /** 当前是否真正处于已登录在线态（不再轻信磁盘陈旧 identity.json，且 MSF 明确断开时不报假在线）。 */
     public boolean isOnline() {
+        if (isMsfDisconnected()) return false;
         return !uin.isEmpty() && ("authenticated".equals(phase)
                 || "initializing-session".equals(phase)
                 || "starting-session".equals(phase)
@@ -110,8 +121,8 @@ public final class QqAuthState {
     public int healthLevel(boolean containerRunning) {
         if (!containerRunning) return LEVEL_OFFLINE_ACTION;
         if (isOnline()) return LEVEL_ONLINE;
-        if ("degraded".equals(phase)) return LEVEL_DEGRADED;
         if (isOfflineAlert()) return LEVEL_OFFLINE_ACTION;
+        if ("degraded".equals(phase) || isMsfDisconnected()) return LEVEL_DEGRADED;
         return LEVEL_CONNECTING;
     }
 
@@ -119,7 +130,6 @@ public final class QqAuthState {
     public String shortBadge(boolean containerRunning) {
         if (!containerRunning) return "容器未启动";
         if (isOnline()) return "在线 · " + uin;
-        if ("degraded".equals(phase)) return "连接波动 · 重连中";
         if ("kicked-offline".equals(phase)) return "已掉线 · 被踢下线";
         if ("token-expired".equals(phase)) return "已掉线 · 票据过期";
         if ("verify-required".equals(phase)) return "待安全滑块验证";
@@ -128,6 +138,8 @@ public final class QqAuthState {
         if ("pwd-logging-in".equals(phase)) return "账密登录中…";
         if ("quick-login".equals(phase)) return "免扫码快登中…";
         if ("waiting-manual-login".equals(phase)) return "已掉线 · 待重新上线";
+        if (isMsfDisconnected()) return "长连接断开 · 重连中";
+        if ("degraded".equals(phase)) return "连接波动 · 重连中";
         return "启动中…";
     }
 
@@ -139,8 +151,9 @@ public final class QqAuthState {
             return "QQ 原生会话在线（" + uin + "），支持免扫码快登：" + (canQuickLogin ? "是" : "待刷新");
         }
         if ("kicked-offline".equals(phase)) return "账号被 QQ 安全中心或异地终端踢下线，已停止自动重登，请核查网络后手动重新上线。";
-        if ("token-expired".equals(phase)) return "QQ 快登令牌已过期（140022015），请选择一键拉起 QQ、按需扫码或账密重新上线。";
+        if ("token-expired".equals(phase)) return "QQ 快登令牌已过期（140022015），请选择按需扫码或账密重新上线。";
         if ("verify-required".equals(phase)) return "腾讯安全中心要求完成滑块或新设备校验，请点击下方按钮打开验证页。";
+        if (isMsfDisconnected()) return "QQ 原生通道（MSF）已断开，正在尝试原生重连，也可点击「L1 · QQ 进程内热重连」立即恢复。";
         if ("degraded".equals(phase)) return "QQ 原生通道探活波动，已保留当前会话并进行温和重连（绝不盲杀重启）。";
         if ("waiting-manual-login".equals(phase)) return "当前未登录 QQ，按需选择下方任意上线方式（已关闭后台自动刷码）。";
         return "正在初始化 QQ 原生环境…";

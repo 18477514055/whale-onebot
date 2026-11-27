@@ -83,20 +83,20 @@ export class OneBotCore extends EventEmitter {
       // Session permission has an explicit lifecycle, not a human-message lease.
       // Online telemetry remains independent, and stale telemetry becomes unknown.
       const ready = this.#sessionAuthorized && !this.#closed;
+      const msfDown = this.#bridge?.msfDisconnected === true;
       const known = ready && this.#onlineKnown && this.clock()-this.#verifiedAt<this.proofMaxAgeMs;
       const platformOnline = known && this.#online;
       // ★ `online` 在 native-session 模式下按 OneBot 惯例 = **机器人此刻能不能干活**
-      //   （会话已授权且未关闭），而不是"腾讯侧显示在线"——后者我们只能观测到 unknown。
-      //   以前这里返回 known && #online，导致会话完全可用时 get_status.online 恒为 false，
-      //   外部工具（含我们自己的验收探针）据此判定"不在线"而拒绝行动（2026-11-17 实测踩到）。
-      //   平台侧的真实在线状态仍然诚实保留在 platform_state（unknown/online/offline），不混进来。
-      const online = ready;
-      return { online, good: ready, service_ready: ready, session_authorized: ready,
+      //   （会话已授权、未关闭且原生 MSF 长连接未处于明确断链态）。
+      //   当宿主通过 onMSFStatusChange(2) 标记 MSF 断开时，如实返回 online:false / platform_state:'msf_disconnected'，
+      //   消除「MSF 已断链但 get_status 仍报全绿」的失明窗口。
+      const online = ready && !msfDown;
+      return { online, good: online, service_ready: ready, session_authorized: ready,
         // ★ 外发优先（用户 2026-11-19 口径）：未知结果只记账，不再关闭写闸。
         //   以前的 `!this.#uncertain` 让一次拿不到回执的发送把整个机器人静默到重启为止，
         //   代价（永久不说话）远大于重复一条。未知仍记录在 metrics 与 runtime/outcomes 里留证。
-        write_ready: ready && !this.#readOnly && (!this.#freezeOnUnknown || !this.#uncertain),
-        online_known: ready, platform_state: !known ? 'unknown' : platformOnline ? 'online' : 'offline',
+        write_ready: online && !this.#readOnly && (!this.#freezeOnUnknown || !this.#uncertain),
+        online_known: ready, platform_state: msfDown ? 'msf_disconnected' : (!known ? 'unknown' : platformOnline ? 'online' : 'offline'),
         // Which action froze the write gate. Without it the only visible symptom is
         // write_ready:false, which does not say what to reconcile.
         lastUnknownAction: this.metrics.lastUnknownAction,

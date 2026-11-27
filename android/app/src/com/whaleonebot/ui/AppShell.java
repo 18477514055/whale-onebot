@@ -80,6 +80,10 @@ public class AppShell {
         default void quickSavedPasswordLogin() {}
         default void forgetSavedPassword() {}
         default void submitCaptcha(String ticket, String randStr, String sid) {}
+        default void submitCaptcha(String ticket, String randStr, String sid,
+                                   String newDeviceLoginSig, String unusualDeviceCheckSig) {
+            submitCaptcha(ticket, randStr, sid);
+        }
         default void qqSessionAction(String action, boolean clearSavedCred, String mode) {}
         default void wakeQqSession() {}
         default void openMobileQqAuth(String qrUrl) {}
@@ -198,6 +202,8 @@ public class AppShell {
     static final int P_WEB_SEARCH = 67;
     /** 独立「创建/编辑人设」10 段结构化编辑器。 */
     static final int P_PERSONA_EDIT = 68;
+    /** 多平台登录健康、网络防劫持、保活自检与四级重启统一中心。 */
+    static final int P_LOGIN_HEALTH = 69;
     void externalAccount(String bot,String binding){push(P_EXTERNAL_ACCOUNT,bot,binding==null?"":binding);}
     void corePage(String mode,String coreId){push(P_CORE_MANAGER,mode,coreId);}
 
@@ -208,6 +214,7 @@ public class AppShell {
     void pushModelLibrary() { push(P_MODEL_LIBRARY, null); }
     void pushWebSearch() { push(P_WEB_SEARCH, null); }
     void pushPersonaEdit(String personaId) { push(P_PERSONA_EDIT, personaId); }
+    void pushLoginHealth() { push(P_LOGIN_HEALTH, null); }
 
     final Activity activity;
     final Host host;
@@ -290,6 +297,21 @@ public class AppShell {
             pushBotStart(primary.id);
         } else {
             pushPlatformBots(BotRegistry.P_QQ);
+        }
+    }
+
+    /** 点击 B 站 / 抖音 / 多平台告警通知后，直达对应平台或登录健康中心。 */
+    public void openPlatformHealth(String platform, String peerId) {
+        if (peerId != null && !peerId.isEmpty()) {
+            switchTargetDevice(peerId);
+        }
+        BotRegistry.Bot primary = BotRegistry.primary();
+        if ("bilibili".equals(platform) && primary != null) {
+            pushBiliAccounts(primary.id, "start");
+        } else if ("douyin".equals(platform) && primary != null) {
+            pushDouyinPlatform(primary.id, "start");
+        } else {
+            pushLoginHealth();
         }
     }
 
@@ -746,7 +768,7 @@ public class AppShell {
 
     private Screen create(Entry e) {
         // 仅拦截自定义第三方外部运行端（不含内置托管核心）：托管核心现已打通看板与知识库面板。
-        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_DEPLOY_WIZARD && e.kind!=P_DOUYIN_ACCOUNT && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
+        if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_DEPLOY_WIZARD && e.kind!=P_DOUYIN_ACCOUNT && e.kind!=P_LOGIN_HEALTH && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
             BotRegistry.Bot owner=BotRegistry.get(currentBotId());
             if(owner!=null && !RuntimeSurfaces.builtin(owner)) {
                 Screen neutral=new CustomRuntimeScreen(this,owner,e.kind==P_BILI_ACCOUNT?BotRegistry.P_BILIBILI:platformOfStack());neutral.build();return neutral;
@@ -890,13 +912,16 @@ public class AppShell {
                 case P_PERSONA_EDIT:
                     s = new PersonaEditScreen(this, (BotConfigHost) activity, arg);
                     break;
+                case P_LOGIN_HEALTH:
+                    s = new LoginHealthScreen(this);
+                    break;
                 default:
                     s = new HomeScreen(this);
                     break;
             }
             s.build();
             // 不缓存写配置页与动态状态页，防止子页保存后返回父页用内存旧副本覆写丢失 API Key 或陷入 P_NEWBOT 空态死锁
-            if (e != null && kind != P_BOTLIST && kind != P_NEWBOT && kind != P_ENV && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_DOUYIN_ACCOUNT && kind != P_DEPLOY_WIZARD && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION && kind != P_MODELS && kind != P_MODELPICK && kind != P_PROVIDER && kind != P_PERGROUP && kind != P_PERSONATPL && kind != P_KB && kind != P_NATIVE_MANAGE && kind != P_MODEL_LIBRARY && kind != P_WEB_SEARCH && kind != P_PERSONA_EDIT) screenCache.put(e, s);
+            if (e != null && kind != P_BOTLIST && kind != P_NEWBOT && kind != P_ENV && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_DOUYIN_ACCOUNT && kind != P_DEPLOY_WIZARD && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION && kind != P_MODELS && kind != P_MODELPICK && kind != P_PROVIDER && kind != P_PERGROUP && kind != P_PERSONATPL && kind != P_KB && kind != P_NATIVE_MANAGE && kind != P_MODEL_LIBRARY && kind != P_WEB_SEARCH && kind != P_PERSONA_EDIT && kind != P_LOGIN_HEALTH) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。

@@ -37,6 +37,12 @@ export function isMsfTicketInvalidError(code) {
   return s === '-10003' || s === '-10004';
 }
 
+/** 识别 NTQQ MSF 长连接断开态（onMSFStatusChange 2 = kDisconnected，或 login-disconnected）。 */
+export function isMsfDisconnectedStatus(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  return s === '2' || s === 'disconnected' || s === 'kdisconnected' || s === 'login-disconnected';
+}
+
 /**
  * 原生通道零误杀看门狗状态机（2026-11-27 升级：兼顾「无快登绝不误杀」与「有快登遇到 MSF -10003/-10004 票据失效自动免扫码自愈」）：
  * - 连续 fail 2 次 → 返回 'wake'（进程内温和唤醒，不重登）；
@@ -51,11 +57,14 @@ export function createNativeWatchdogState({
   wakeAfterFails = 2,
   restartAfterFails = 4,
   msfInvalidRestartAfterFails = 3,
-  restartCooldownMs = 15 * 60_000,
+  msfDisconnectRestartAfterFails = 3,
+  restartCooldownMs = null,
+  restartBackoffScheduleMs = [2 * 60_000, 5 * 60_000, 15 * 60_000],
   minUptimeBeforeRestartMs = 3 * 60_000,
-  maxRestartsPerHour = 2,
+  maxRestartsPerHour = 3,
   allowRestart = false,
-  allowQuickLoginRestart = false
+  allowQuickLoginRestart = false,
+  allowMsfDisconnectRecovery = false
 } = {}) {
   let consecutiveFails = 0;
   let wakeAttempted = false;
@@ -79,7 +88,8 @@ export function createNativeWatchdogState({
       recentRestarts = [],
       canQuickLogin = false,
       offlineReason = '',
-      msfTicketInvalid = false
+      msfTicketInvalid = false,
+      msfDisconnected = false
     } = {}) {
       consecutiveFails += 1;
       if (isInteractiveOrOfflinePhase(phase)) {
@@ -89,7 +99,10 @@ export function createNativeWatchdogState({
         wakeAttempted = true;
         return 'wake';
       }
-      const threshold = msfTicketInvalid ? Math.min(restartAfterFails, msfInvalidRestartAfterFails) : restartAfterFails;
+      const msfDisconnectTriggered = allowMsfDisconnectRecovery === true && msfDisconnected === true;
+      const threshold = msfTicketInvalid
+        ? Math.min(restartAfterFails, msfInvalidRestartAfterFails)
+        : (msfDisconnectTriggered ? Math.min(restartAfterFails, msfDisconnectRestartAfterFails) : restartAfterFails);
       if (consecutiveFails >= threshold && wakeAttempted) {
         if (BLOCK_RESTART_REASONS.has(String(offlineReason || '').trim())) {
           if (!offlineNotified) {
@@ -99,23 +112,27 @@ export function createNativeWatchdogState({
           return 'none';
         }
         const quickSelfHealAllowed = canQuickLogin === true
-          && (allowRestart || (allowQuickLoginRestart && msfTicketInvalid === true));
-        // 核心防反噬防线：普通 1502/网络半开（msfTicketInvalid=false）或无快登票据时绝不贸然杀进程，
-        // 仅在明确收到 MSF -10004/-10003 票据失效且有可用快登时才走限频免扫码快登重建会话
+          && (allowRestart || (allowQuickLoginRestart && (msfTicketInvalid === true || msfDisconnectTriggered)));
+        // 核心防反噬防线（Q14）：无可用快登票据或已移除/普通网络半开绝不盲杀重启；
+        // 一旦无法恢复，停在 notify_offline，不再无依据反复尝试。
         if (!quickSelfHealAllowed) {
           if (!offlineNotified) {
             offlineNotified = true;
             return 'notify_offline';
           }
-          if ((consecutiveFails - threshold) % 3 === 0) return 'wake';
+          if (canQuickLogin === true && (consecutiveFails - threshold) % 3 === 0) return 'wake';
           return 'none';
         }
-        // 有可用快登票据且满足限频：触发平滑免扫码快登重建会话（解决 MSF -10004/-10003 静默失效）
+        // 有可用快登票据且满足退避冷却与每小时上限：触发平滑免扫码快登重建会话
         if (uptimeMs >= minUptimeBeforeRestartMs) {
           const recentWindow = (Array.isArray(recentRestarts) ? recentRestarts : [])
             .filter((t) => Number.isFinite(t) && t > 0 && now - t < 3600_000);
           const lastRestartAt = recentWindow.length ? Math.max(...recentWindow) : 0;
-          const cooledDown = !lastRestartAt || (now - lastRestartAt >= restartCooldownMs);
+          const scheduleIdx = Math.min(Math.max(0, recentWindow.length - 1), Math.max(0, restartBackoffScheduleMs.length - 1));
+          const requiredCooldown = Number.isFinite(restartCooldownMs) && restartCooldownMs >= 0
+            ? restartCooldownMs
+            : (restartBackoffScheduleMs[scheduleIdx] ?? 15 * 60_000);
+          const cooledDown = !lastRestartAt || (now - lastRestartAt >= requiredCooldown);
           if (cooledDown && recentWindow.length < maxRestartsPerHour) {
             return allowRestart ? 'restart' : 'quick_restart';
           }
@@ -132,6 +149,23 @@ export function createNativeWatchdogState({
   };
 }
 
+/** 从 wrapper.node 登录响应对象安全提取滑块/新设备/非常用设备多步验证字段（不含任何密码）。 */
+export function extractLoginChallengeFields(resp) {
+  const errInfo = resp?.loginErrorInfo || {};
+  const rawUrl = errInfo?.proofWaterUrl || errInfo?.verifyUrl || errInfo?.jumpUrl
+    || resp?.proofWaterUrl || resp?.verifyUrl || resp?.jumpUrl || '';
+  return {
+    result: String(resp?.result ?? resp?.errCode ?? '').trim(),
+    errMsg: String(errInfo?.errMsg ?? resp?.errMsg ?? '').trim(),
+    verifyUrl: sanitizeVerifyUrl(rawUrl),
+    proofWaterRand: String(errInfo?.proofWaterRand || resp?.proofWaterRand || '').trim(),
+    proofWaterSid: String(errInfo?.proofWaterSid || resp?.proofWaterSid || '').trim(),
+    newDeviceLoginSig: String(errInfo?.newDeviceLoginSig || resp?.newDeviceLoginSig || '').trim(),
+    unusualDeviceCheckSig: String(errInfo?.unusualDeviceCheckSig || resp?.unusualDeviceCheckSig || '').trim(),
+    registerSucceedSig: String(errInfo?.registerSucceedSig || resp?.registerSucceedSig || '').trim()
+  };
+}
+
 /**
  * 分类 QQ 原生登录/断连错误码，映射为统一可读中文原因与状态阶段。
  */
@@ -140,10 +174,13 @@ export function classifyLoginError(result, errMsg = '', verifyUrl = '') {
   const msgStr = String(errMsg ?? '').trim();
   const safeVerify = sanitizeVerifyUrl(verifyUrl);
   if (safeVerify) {
+    const isNewDevice = /新设备|非常用|短信|device|unusual/i.test(msgStr) || /device|sms|unusual/i.test(safeVerify);
     return {
-      code: 'verify_required',
+      code: isNewDevice ? 'new_device_verify_required' : 'verify_required',
       phase: 'verify-required',
-      message: msgStr || '腾讯安全中心要求完成滑块或新设备验证',
+      message: msgStr || (isNewDevice
+        ? '腾讯安全中心要求完成新设备或短信验证，请点击验证按钮完成后继续'
+        : '腾讯安全中心要求完成滑块验证，请点击验证按钮完成后继续'),
       verifyUrl: safeVerify,
       needsManualLogin: true,
       blockAutoRestart: true
@@ -153,7 +190,7 @@ export function classifyLoginError(result, errMsg = '', verifyUrl = '') {
     return {
       code: 'token_expired_140022015',
       phase: 'token-expired',
-      message: 'QQ 快登令牌已过期（140022015），请手动通过一键拉起 QQ、扫码或账密重新上线',
+      message: 'QQ 快登令牌已过期（140022015），请手动通过扫码或账密重新上线',
       verifyUrl: '',
       needsManualLogin: true,
       blockAutoRestart: true
@@ -163,7 +200,7 @@ export function classifyLoginError(result, errMsg = '', verifyUrl = '') {
     return {
       code: 'kicked_1006501',
       phase: 'kicked-offline',
-      message: msgStr || '账号被 QQ 安全中心或异地登录踢下线（1006501），请核查网络环境后手动重登',
+      message: msgStr || '账号被 QQ 安全中心或异地登录踢下线（1006501），请核查网络出口是否直连后手动重登',
       verifyUrl: '',
       needsManualLogin: true,
       blockAutoRestart: true
@@ -194,8 +231,8 @@ export function classifyLoginError(result, errMsg = '', verifyUrl = '') {
       code: 'qq_err_140022008',
       phase: 'waiting-manual-login',
       message: msgStr
-        ? ('账密登录被拒（140022008）：' + msgStr)
-        : '账密登录被腾讯拒绝（140022008，可能是密码不符或该号/环境被腾讯限制仅允许扫码登录），建议改用一键拉起 QQ 或扫码',
+        ? ('账密登录被拒（140022008）：' + msgStr + '（建议直接切「扫码登录」一次）')
+        : '账密登录被腾讯拒绝（140022008：当前桌面协议环境或账号被腾讯策略限制仅允许扫码），建议点击上方「扫码登录」一次建立快登票据',
       verifyUrl: '',
       needsManualLogin: true,
       blockAutoRestart: true

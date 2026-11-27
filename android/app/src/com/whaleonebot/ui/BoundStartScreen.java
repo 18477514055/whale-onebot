@@ -136,8 +136,11 @@ final class BoundStartScreen extends Screen {
             host().stopContainer();
             host().toast("正在停止容器");
         });
-        restartQqBtn = Ui.button(activity, t, "重启 QQ", true);
-        restartQqBtn.setOnClickListener(v -> host().restartQqOnly());
+        restartQqBtn = Ui.button(activity, t, "热重连 QQ", true);
+        restartQqBtn.setOnClickListener(v -> confirmProxyIfHijacked(() -> {
+            RemoteBridge.hotReconnectQq(activity);
+            host().toast("正在进程内热重连 QQ（不断容器、不影响 B 站与 Agent）");
+        }));
         ctrlRow.addView(startBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
         LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
         sLp.leftMargin = dp(Theme.S1);
@@ -148,9 +151,9 @@ final class BoundStartScreen extends Screen {
         healthCard.addView(ctrlRow, topMargin(dp(Theme.S3)));
 
         LinearLayout sessRow = Ui.row(activity);
-        wakeBtn = Ui.button(activity, t, "温和重连唤醒", false);
-        wakeBtn.setOnClickListener(v -> host().wakeQqSession());
-        TextView manageSessBtn = Ui.button(activity, t, "下线 / 换号 / 整容器重启", false);
+        wakeBtn = Ui.button(activity, t, "仅重启 QQ 进程", false);
+        wakeBtn.setOnClickListener(v -> confirmProxyIfHijacked(() -> host().restartQqOnly()));
+        TextView manageSessBtn = Ui.button(activity, t, "下线 / 换号 / 健康中心", false);
         manageSessBtn.setOnClickListener(v -> openSessionActionsSheet());
         sessRow.addView(wakeBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
         LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
@@ -216,7 +219,7 @@ final class BoundStartScreen extends Screen {
                 shell.pushEnv();
                 return;
             }
-            shell.requestQr();
+            confirmProxyIfHijacked(() -> shell.requestQr());
         });
         qrChannelPane.addView(reqQrBtn, topMargin(dp(Theme.S2)));
 
@@ -287,14 +290,16 @@ final class BoundStartScreen extends Screen {
 
         TextView submitPwdBtn = Ui.button(activity, t, "提交账密登录", true);
         submitPwdBtn.setOnClickListener(v -> {
-            String u = etUin.getText() == null ? "" : etUin.getText().toString().trim();
-            String p = etPwd.getText() == null ? "" : etPwd.getText().toString();
+            final String u = etUin.getText() == null ? "" : etUin.getText().toString().trim();
+            final String p = etPwd.getText() == null ? "" : etPwd.getText().toString();
             if (!u.matches("[1-9][0-9]{4,15}") || p.isEmpty()) {
                 host().toast("请输入有效的机器人 QQ 号和密码");
                 return;
             }
-            host().passwordLogin(u, p, cbRemember.isChecked());
-            etPwd.setText(""); // 提交后立即清空输入框内存回显
+            confirmProxyIfHijacked(() -> {
+                host().passwordLogin(u, p, cbRemember.isChecked());
+                etPwd.setText(""); // 提交后立即清空输入框内存回显
+            });
         });
         pwdChannelPane.addView(submitPwdBtn, topMargin(dp(Theme.S2)));
         loginBody.addView(pwdChannelPane, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
@@ -352,6 +357,7 @@ final class BoundStartScreen extends Screen {
 
     private void openSessionActionsSheet() {
         String[] options = {
+                "打开登录健康与网络保活自检中心",
                 "安全下线（仅退 QQ 会话，B 站与主运行端继续运行）",
                 "切换账号（清除旧号登录态与快登，准备登新机器人号）",
                 "强制重新登录（释放旧连接并立即按需出 1 张新码）",
@@ -359,17 +365,19 @@ final class BoundStartScreen extends Screen {
         };
         PromptSheet.choose(activity, t, "QQ 会话与重启控制", options, idx -> {
             if (idx == 0) {
+                shell.pushLoginHealth();
+            } else if (idx == 1) {
                 PromptSheet.showConfirm(activity, "确认安全下线？",
                         "将优雅退出当前 QQ 会话并落盘保护数据库，B 站运行端、聊天记录、记忆库与知识库完整保留。",
                         "安全下线", () -> host().qqSessionAction("safe_logout", false, ""), "取消");
-            } else if (idx == 1) {
+            } else if (idx == 2) {
                 PromptSheet.showConfirm(activity, "确认切换机器人账号？",
                         "将清除旧 QQ 号登录态与已记住的加密密码（保留聊天与记忆数据），之后可登录新机器人小号（仍禁止登录主号）。",
                         "切换账号", () -> {
                             manualExpandWhenOnline = true;
                             host().qqSessionAction("switch_account", true, "");
                         }, "取消");
-            } else if (idx == 2) {
+            } else if (idx == 3) {
                 PromptSheet.showConfirm(activity, "确认强制重新登录？",
                         "将释放当前会话并立即按需请求 1 张新二维码，不会影响聊天与记忆数据。",
                         "强制重登", () -> {
@@ -378,12 +386,32 @@ final class BoundStartScreen extends Screen {
                             syncTabs();
                             host().qqSessionAction("force_relogin", false, "qr");
                         }, "取消");
-            } else if (idx == 3) {
+            } else if (idx == 4) {
                 PromptSheet.showConfirm(activity, "确认执行整容器全链路重启？",
                         "将依次关闭 QQ、关闭容器、重启容器并自动拉起 QQ。注意：同容器内的 B 站或其他多开机器人也会短暂中断并随容器重启。",
                         "确认全链路重启", () -> host().restartFullContainer(), "取消");
             }
         }, null, null);
+    }
+
+    private void confirmProxyIfHijacked(final Runnable proceed) {
+        boolean hijack;
+        if (RemoteBridge.isRemote()) {
+            com.whaleonebot.remote.RemoteControlManager rm = RemoteBridge.mgr();
+            hijack = rm != null && rm.activeSnapshot().netProxyHijack;
+        } else {
+            hijack = NetworkRiskDetector.inspect(activity).proxyHijack;
+        }
+        if (!hijack) {
+            proceed.run();
+            return;
+        }
+        PromptSheet.showConfirm(
+                activity,
+                "检测到全局代理（TUN）正在劫持流量",
+                "当前手机开启了全局代理（如 sing-box/Clash），此时连接 QQ 极易导致 MSF -10003 掉线或被腾讯安全中心风控。\n\n建议前往「登录健康中心」复制绕行规则后再上线。",
+                "继续执行", proceed,
+                "先不执行");
     }
 
     private void openVerifyWebView(String url) {
@@ -395,6 +423,12 @@ final class BoundStartScreen extends Screen {
             @Override
             public void onVerified(String ticket, String randStr, String sid) {
                 host().submitCaptcha(ticket, randStr, sid);
+            }
+
+            @Override
+            public void onExtendedVerified(String ticket, String randStr, String sid,
+                                           String newDeviceLoginSig, String unusualDeviceCheckSig) {
+                host().submitCaptcha(ticket, randStr, sid, newDeviceLoginSig, unusualDeviceCheckSig);
             }
 
             @Override

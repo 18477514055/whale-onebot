@@ -159,13 +159,20 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         handleDeepLinkIntent(intent);
     }
 
-    /** 点击系统 QQ 离线高优先级通知后，自动切到对应设备并直达 QQ 启动上线页。 */
+    /** 点击系统 QQ / B 站 / 抖音高优先级通知后，自动切到对应设备并直达目标登录页。 */
     private void handleDeepLinkIntent(Intent intent) {
         if (intent == null || shell == null) return;
-        if (!intent.getBooleanExtra("open_qq_login", false)) return;
-        intent.removeExtra("open_qq_login");
         String peerId = intent.getStringExtra("open_remote_peer");
-        shell.openQqLogin(peerId);
+        if (intent.getBooleanExtra("open_qq_login", false)) {
+            intent.removeExtra("open_qq_login");
+            shell.openQqLogin(peerId);
+            return;
+        }
+        if (intent.getBooleanExtra("open_platform_health", false)) {
+            intent.removeExtra("open_platform_health");
+            String plat = intent.getStringExtra("open_platform");
+            shell.openPlatformHealth(plat, peerId);
+        }
     }
 
     @Override public void onBackPressed() {
@@ -436,6 +443,11 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     }
 
     @Override public void submitCaptcha(final String ticket, final String randStr, final String sid) {
+        submitCaptcha(ticket, randStr, sid, "", "");
+    }
+
+    @Override public void submitCaptcha(final String ticket, final String randStr, final String sid,
+                                        final String newDeviceLoginSig, final String unusualDeviceCheckSig) {
         final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
         if (r != null) {
             new Thread(() -> {
@@ -443,7 +455,9 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                     org.json.JSONObject params = new org.json.JSONObject()
                             .put("ticket", ticket == null ? "" : ticket)
                             .put("randStr", randStr == null ? "" : randStr)
-                            .put("sid", sid == null ? "" : sid);
+                            .put("sid", sid == null ? "" : sid)
+                            .put("newDeviceLoginSig", newDeviceLoginSig == null ? "" : newDeviceLoginSig)
+                            .put("unusualDeviceCheckSig", unusualDeviceCheckSig == null ? "" : unusualDeviceCheckSig);
                     org.json.JSONObject res = r.callActiveRpc("login.submitCaptcha", params, 12000);
                     final String msg = res.optString("msg", "验证票据已回传给远端");
                     runOnUiThread(() -> toast(msg));
@@ -460,6 +474,8 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
                     .put("ticket", ticket == null ? "" : ticket)
                     .put("randStr", randStr == null ? "" : randStr)
                     .put("sid", sid == null ? "" : sid)
+                    .put("newDeviceLoginSig", newDeviceLoginSig == null ? "" : newDeviceLoginSig)
+                    .put("unusualDeviceCheckSig", unusualDeviceCheckSig == null ? "" : unusualDeviceCheckSig)
                     .put("at", System.currentTimeMillis()));
             toast("已提交安全验证结果，请稍候…");
         } catch (Throwable ex) {
@@ -608,7 +624,11 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     }
 
     @Override public String networkDiagnosticSummary() {
-        if (remoteOrNull() != null) return "远程控制中";
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            String s = r.activeSnapshot().netRiskSummary;
+            return (s == null || s.isEmpty()) ? "远程控制中" : s;
+        }
         return ContainerService.networkDiagnosticSummary(this);
     }
 
