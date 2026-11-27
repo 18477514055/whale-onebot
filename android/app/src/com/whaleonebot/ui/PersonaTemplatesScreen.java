@@ -204,15 +204,11 @@ final class PersonaTemplatesScreen extends Screen {
         current.setEllipsize(TextUtils.TruncateAt.END);
         headBox.addView(current, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView hint = Ui.text(activity, "支持 10 段结构化人设编辑与管理员附加规则，也可直接启用或二创内置角色",
-                Theme.T_CAP, t.textSecondary);
-        headBox.addView(hint, marginTop(4));
-
-        TextView createBtn = Ui.button(activity, t, "＋ 新建人设（10 段结构化编辑）", true);
+        TextView createBtn = Ui.button(activity, t, "＋ 新建人设", true);
         createBtn.setOnClickListener(v -> shell.pushPersonaEdit(null));
         headBox.addView(createBtn, marginTop(Theme.S2));
 
-        TextView save = Ui.button(activity, t, "把当前人设存为自定义模板", false);
+        TextView save = Ui.button(activity, t, "当前人设存为模板", false);
         save.setOnClickListener(v -> openNameEditor(-1, "模板名字", ""));
         headBox.addView(save, marginTop(Theme.S1));
         headCard.addView(headBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));

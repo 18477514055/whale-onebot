@@ -87,9 +87,6 @@ final class WebSearchScreen extends Screen {
         scrollView.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         col.addView(header("联网搜索"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        col.addView(Ui.text(activity,
-                "独立配置高质量搜索服务商与 API Key（已移除低质量百度与必应网页抓取）。",
-                Theme.T_CAP, t.textSecondary), mt(dp(Theme.S1)));
 
         boolean enabled = boolAt("webSearch.enabled", false);
         String provider = strAt("webSearch.provider", "");
@@ -174,29 +171,44 @@ final class WebSearchScreen extends Screen {
                             }));
         }
 
-        // 测试与保存区
         LinearLayout opsCard = Ui.addCard(col, activity, t, Theme.S2);
-        final TextView testBtn = Ui.button(activity, t, "测试联网搜索连通性", false);
+        final TextView testBtn = Ui.button(activity, t, "测试连通性", false);
         testBtn.setOnClickListener(v -> {
             if (dirty) {
-                host().toast("请先点「保存联网搜索配置」后再测试");
+                host().toast("请先保存后再测试");
                 return;
             }
             Ui.enabled(testBtn, false);
-            testBtn.setText("搜索测试中…");
+            testBtn.setText("测试中…");
             new Thread(() -> {
-                DashApi.Result r = DashApi.post(activity, "/api/search/test", "{\"query\":\"今日新闻\"}", 15000);
+                DashApi.Result r = DashApi.post(activity, "/api/web-search/test", "{\"query\":\"今日新闻\"}", 18000);
+                String msg;
+                if (r != null && r.ok && r.data != null) {
+                    Map<String, Object> m = BotConfigJson.asObject(r.data);
+                    boolean ok = m != null && Boolean.TRUE.equals(m.get("ok"));
+                    if (ok) {
+                        int cnt = (int) DashApi.num(m, "count");
+                        long ms = (long) DashApi.num(m, "latencyMs");
+                        msg = "连通成功（返回 " + cnt + " 条 · " + ms + "ms）";
+                    } else {
+                        String err = m == null ? "" : DashApi.str(m, "error", "");
+                        msg = "搜索失败：" + (err.isEmpty() ? "请检查 Key 或服务商" : err);
+                    }
+                } else {
+                    msg = "搜索失败：" + (r == null || r.error == null ? "请检查 Key 或运行端状态" : r.error);
+                }
+                final String finalMsg = msg;
                 activity.runOnUiThread(() -> {
-                    testBtn.setText("测试联网搜索连通性");
+                    testBtn.setText("测试连通性");
                     Ui.enabled(testBtn, true);
-                    host().toast(r.ok ? "联网搜索测试通过" : ("搜索失败：" + (r.error == null ? "请检查 Key 或服务商" : r.error)));
+                    host().toast(finalMsg);
                 });
             }, "websearch-test").start();
         });
         opsCard.addView(testBtn, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         if (dirty) {
-            TextView saveBtn = Ui.button(activity, t, "保存联网搜索配置", true);
+            TextView saveBtn = Ui.button(activity, t, "保存配置", true);
             saveBtn.setOnClickListener(v -> save());
             opsCard.addView(saveBtn, mt(dp(Theme.S2)));
         }

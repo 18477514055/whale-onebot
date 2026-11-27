@@ -237,32 +237,26 @@ final class WhitelistPicker {
     }
 
     static String cachedGroupName(android.content.Context ctx, String groupId) {
-        if (ctx == null || groupId == null || groupId.trim().isEmpty()) return "";
+        if (groupId == null || groupId.trim().isEmpty()) return "";
+        if (ctx != null) NameDirectory.init(ctx);
+        String n = NameDirectory.groupName(groupId);
+        if (!n.isEmpty()) return n;
+        if (ctx == null) return "";
         String v = loadMergedGroupNames(ctx).get(groupId.trim());
         return v == null ? "" : v;
     }
 
     static void saveGroupRemark(android.content.Context ctx, String groupId, String remark) {
         if (ctx == null || groupId == null || groupId.trim().isEmpty()) return;
-        File f = new File(ctx.getFilesDir(), GROUP_REMARK_FILE);
-        Map<String, String> cur = new java.util.LinkedHashMap<String, String>();
-        mergeJsonMap(cur, f);
-        String clean = remark == null ? "" : remark.trim();
-        if (clean.isEmpty()) cur.remove(groupId.trim());
-        else cur.put(groupId.trim(), clean);
-        writeStringMap(f, cur);
+        NameDirectory.putGroupRemark(ctx, groupId, remark);
     }
 
     static void saveCachedGroupNames(android.content.Context ctx, Map<String, String> fresh) {
         if (ctx == null || fresh == null || fresh.isEmpty()) return;
-        File f = new File(ctx.getFilesDir(), GROUP_CACHE_FILE);
-        Map<String, String> cur = new java.util.LinkedHashMap<String, String>();
-        mergeJsonMap(cur, f);
-        cur.putAll(fresh);
-        writeStringMap(f, cur);
+        NameDirectory.putGroupNames(ctx, fresh);
     }
 
-    /** 一键异步刷新全部群名（非 Hook Web CGI 优先，刷新完成回调刷新界面）。 */
+    /** 一键异步刷新全部群名（Web CGI + 运行端会话多源汇聚，自动同步至全 App）。 */
     static void refreshAllGroupNames(final Activity activity, final java.util.function.Consumer<Integer> onDone) {
         if (activity == null) return;
         new Thread(() -> {
@@ -276,7 +270,9 @@ final class WhitelistPicker {
                 }
             } catch (Throwable ignored) {}
             final int total = count;
-            activity.runOnUiThread(() -> { if (onDone != null) onDone.accept(total); });
+            NameDirectory.syncAsync(activity, true, () -> {
+                if (onDone != null) onDone.accept(total);
+            });
         }, "whale-refresh-groups").start();
     }
 

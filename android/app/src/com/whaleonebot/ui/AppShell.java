@@ -242,6 +242,8 @@ public class AppShell {
         if (activity == null || host == null) throw new IllegalArgumentException("activity/host 不能为空");
         this.activity = activity;
         this.host = host;
+        NameDirectory.init(activity.getApplicationContext());
+        NameDirectory.syncAsync(activity, false, null);
         com.whaleonebot.install.CoreInstaller.checkAuto(activity.getApplicationContext());
         this.store = new ThemeStore(activity);
         this.theme = store.theme();

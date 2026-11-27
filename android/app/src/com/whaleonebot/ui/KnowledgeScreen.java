@@ -98,6 +98,10 @@ final class KnowledgeScreen extends Screen {
     private Object liveStatus;
     private boolean rebuilding;
     private String rebuildNote;
+    private String kbSearchQuery = "";
+    private boolean kbSearching = false;
+    private Object kbSearchTree;
+    private String kbSearchError;
     /** stats.json 里的 {@code memory.impressions}：记忆库里存了多少条印象（-1 = 未知）。 */
     private int memoryImpressions = -1;
 
@@ -360,12 +364,9 @@ final class KnowledgeScreen extends Screen {
         LinearLayout col = Ui.column(activity);
         col.addView(header("知识库"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "资料库只在模型主动查的时候才检索", Theme.T_CAP, t.textSecondary);
-        sub.setLineSpacing(dp(3), 1f);
-        col.addView(sub, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-
-        col.addView(librariesCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
-        col.addView(modelCard(EMBED, "向量模型", "知识库与记忆库共用", "换模型要重建索引"),
+        col.addView(kbSearchCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(librariesCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(modelCard(EMBED, "向量模型", "知识库与记忆库共用", "换模型需重建索引"),
                 marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         col.addView(modelCard(RERANK, "重排模型", rerankSubtitle(), null),
                 marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
@@ -377,6 +378,102 @@ final class KnowledgeScreen extends Screen {
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
         scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         return scroll;
+    }
+
+    private View kbSearchCard() {
+        Card c = card("搜索知识库", null);
+        LinearLayout bar = Ui.row(activity);
+        final EditText qInput = new EditText(activity);
+        qInput.setSingleLine(true);
+        qInput.setHint("输入关键词检索资料片段…");
+        qInput.setText(kbSearchQuery);
+        Ui.styleInput(qInput, activity, t);
+        bar.addView(qInput, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+
+        TextView go = Ui.button(activity, t, kbSearching ? "搜索中…" : "搜索", true);
+        Ui.enabled(go, !kbSearching);
+        go.setOnClickListener(v -> {
+            String q = qInput.getText() == null ? "" : qInput.getText().toString().trim();
+            if (q.isEmpty()) {
+                kbSearchQuery = "";
+                kbSearchTree = null;
+                kbSearchError = null;
+                render();
+                return;
+            }
+            runKbSearch(q);
+        });
+        LinearLayout.LayoutParams glp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        glp.leftMargin = dp(Theme.S1);
+        bar.addView(go, glp);
+
+        if (kbSearchTree != null || kbSearchError != null) {
+            TextView clr = Ui.button(activity, t, "清空", false);
+            clr.setOnClickListener(v -> {
+                kbSearchQuery = "";
+                kbSearchTree = null;
+                kbSearchError = null;
+                render();
+            });
+            LinearLayout.LayoutParams clp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            clp.leftMargin = dp(Theme.S1);
+            bar.addView(clr, clp);
+        }
+        c.body.addView(bar, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (kbSearchError != null) {
+            c.body.addView(Ui.text(activity, kbSearchError, Theme.T_CAP, t.textSecondary),
+                    marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+        } else if (kbSearchTree != null) {
+            List<Map<String, Object>> hits = DashApi.objects(BotConfigJson.get(kbSearchTree, "hits"));
+            if (hits.isEmpty()) {
+                c.body.addView(Ui.text(activity, "未找到匹配「" + kbSearchQuery + "」的资料",
+                        Theme.T_CAP, t.textSecondary), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+            } else {
+                c.body.addView(Ui.text(activity, "命中 " + hits.size() + " 段",
+                        Theme.T_CAP, t.accent), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+                for (int i = 0; i < Math.min(hits.size(), 15); i++) {
+                    c.body.addView(ModelsScreen.W.divider(activity, t), Ui.llp(MATCH_PARENT, dp(1)));
+                    Map<String, Object> h = hits.get(i);
+                    String libName = DashApi.str(h, "libName");
+                    String file = DashApi.str(h, "file");
+                    final String text = DashApi.str(h, "text");
+                    final String heading = (libName.isEmpty() ? "" : ("[" + libName + "] ")) + file;
+                    c.body.addView(ModelsScreen.W.row(activity, t,
+                            heading.isEmpty() ? "资料片段" : heading,
+                            DashKit.cut(text, 70), true,
+                            v -> ModelsScreen.W.infoDialog(activity, t,
+                                    heading.isEmpty() ? "资料详情" : heading, text)),
+                            Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                }
+            }
+        }
+        return c.view;
+    }
+
+    private void runKbSearch(final String q) {
+        kbSearchQuery = q;
+        kbSearching = true;
+        kbSearchError = null;
+        render();
+        new Thread(() -> {
+            String body = "{}";
+            try {
+                body = new org.json.JSONObject().put("query", q).put("limit", 12).toString();
+            } catch (Throwable ignored) {}
+            final DashApi.Result r = DashApi.post(activity, "/api/local/knowledge/search", body, 15000);
+            activity.runOnUiThread(() -> {
+                kbSearching = false;
+                if (r != null && r.ok && r.data != null) {
+                    kbSearchTree = r.data;
+                    kbSearchError = null;
+                } else {
+                    kbSearchTree = null;
+                    kbSearchError = "搜索失败：" + (r == null || r.error == null ? "请检查运行端状态" : r.error);
+                }
+                render();
+            });
+        }, "kb-search").start();
     }
 
     /** 卡片外壳：返回 body 供往里加行。 */

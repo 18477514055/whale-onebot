@@ -350,48 +350,32 @@ public final class BotConfigScreen extends Screen {
 
         col.addView(pageHeader("机器人配置", false), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "四大核心分区清晰管理 · 保存保持当前位置不回顶 · 点「?」看说明",
-                Theme.T_CAP, t.textSecondary);
-        LinearLayout.LayoutParams subLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-        subLp.topMargin = dp(Theme.S1);
-        col.addView(sub, subLp);
-
         col.addView(statusCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
 
         // ---------------- 区块 1：核心配置 ----------------
         col.addView(blockLabel("核心配置", true), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
-        col.addView(l1EntryCard(IconView.CPU, "模型库",
-                "集中管理 OpenAI 兼容渠道、40+ 预设与 API Key（含 OpenCode 专属请求头）",
+        col.addView(l1EntryCard(IconView.CPU, "模型库", "服务商与 API Key",
                 v -> shell.pushModelLibrary()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.TUNE, "模型分配与自动路由",
-                "主聊天 / 记忆整理（支持复用主模型关思考）/ 识图 / 语音思考强度与路由池",
+        col.addView(l1EntryCard(IconView.TUNE, "模型分配", "用途模型、思考强度与自动路由",
                 v -> shell.pushModels()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.CHECK, "白名单与黑名单",
-                "放行群聊与私聊 QQ 清单、优先黑名单",
+        col.addView(l1EntryCard(IconView.CHECK, "白名单与黑名单", "允许或禁止的群与私聊",
                 v -> openGroupByTitle("白名单")), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.CHAT, "群聊按群规则",
-                "逐群回复概率、被 @ / 戳一戳冷却、专属人设、独立记忆与非 Hook 群名刷新",
+        col.addView(l1EntryCard(IconView.CHAT, "按群设置", "回复概率、冷却、专属人设与群名",
                 v -> shell.pushPerGroup()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.PALETTE, "人设管理",
-                "10 段结构化新建与编辑、管理员附加规则、9 款内置人设与自定义模板",
+        col.addView(l1EntryCard(IconView.PALETTE, "人设管理", "自定义与内置人设",
                 v -> shell.pushPersonaTemplates()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.GLOBE, "联网搜索",
-                "独立高质搜索 API（博查 / 秘塔 / 智谱 / Tavily / 豆包 / DeepSeek / 聚合）与测试",
+        col.addView(l1EntryCard(IconView.GLOBE, "联网搜索", "搜索引擎与独立 Key",
                 v -> shell.pushWebSearch()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
-        // ---------------- 区块 2：资料与记忆（记忆库升格一级） ----------------
+        // ---------------- 区块 2：资料与记忆 ----------------
         col.addView(blockLabel("资料与记忆", true), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
-        col.addView(l1EntryCard(IconView.CHAT, "记忆库",
-                "群印象、近期事件、6 维人物画像 · 支持文档与 .zip/.tar.gz 压缩包导入提炼",
+        col.addView(l1EntryCard(IconView.CHAT, "记忆库", "群印象、人物画像、搜索与导入",
                 v -> shell.pushMemory()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.SHIELD, "知识库",
-                "多资料库管理、文档与压缩包导入建索引、向量与重排模型",
+        col.addView(l1EntryCard(IconView.SHIELD, "知识库", "资料库、搜索、导入与向量模型",
                 v -> shell.pushKnowledge()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.BOX, "长期语义记忆",
-                "固化开关、语义召回测试、过时记忆归档与恢复",
+        col.addView(l1EntryCard(IconView.BOX, "长期语义记忆", "固化、召回测试与归档",
                 v -> shell.pushNativeManage("living-memory")), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(l1EntryCard(IconView.DOT, "亲密度与心情",
-                "熟人排行、互动事件记录与心情精力调节",
+        col.addView(l1EntryCard(IconView.DOT, "亲密度与心情", "熟人榜与心情精力",
                 v -> shell.pushIntimacy()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
         // ---------------- 区块 3：聊天行为与日常玩法 ----------------

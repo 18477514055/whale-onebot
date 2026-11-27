@@ -172,7 +172,11 @@ final class ProviderEditScreen extends Screen {
 
     // ================================================================ 渲染
 
+    private ScrollView pageScroll;
+    private int savedScrollY = 0;
+
     private void renderPage() {
+        if (pageScroll != null) savedScrollY = pageScroll.getScrollY();
         root.removeAllViews();
         if (!loaded) {
             root.addView(errorPage(loadError == null ? "配置尚未载入" : loadError),
@@ -182,12 +186,6 @@ final class ProviderEditScreen extends Screen {
 
         LinearLayout col = Ui.column(activity);
         col.addView(header(isNew ? "新建渠道" : "编辑渠道"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        TextView sub = Ui.text(activity,
-                isNew ? "填地址和 Key 后保存"
-                        : "只改这一条渠道；没动过的字段原样保留。",
-                Theme.T_CAP, t.textSecondary);
-        sub.setLineSpacing(dp(3), 1f);
-        col.addView(sub, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
 
         if (missingNote != null) {
             TextView missing = Ui.text(activity, missingNote, Theme.T_CAP, t.toneStrong);
@@ -203,6 +201,7 @@ final class ProviderEditScreen extends Screen {
 
         // 先挂正文、后挂保存栏：保存栏是浮层，必须在最上层，否则会被 ScrollView 盖住点不到。
         ScrollView scroll = new ScrollView(activity);
+        pageScroll = scroll;
         scroll.setFillViewport(true);
         scroll.setClipChildren(false);
         scroll.setVerticalScrollBarEnabled(false);
@@ -210,6 +209,8 @@ final class ProviderEditScreen extends Screen {
         scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         root.addView(scroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         root.addView(saveBar(), barLp());
+        final int y = savedScrollY;
+        if (y > 0) scroll.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, y); });
     }
 
     /** 一张「标题 + 说明 + 内容」的玻璃卡：view 进页面，body 往里加行。 */
@@ -316,21 +317,9 @@ final class ProviderEditScreen extends Screen {
                 Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         ModelPresets.Service svc = ModelPresets.serviceForBaseUrl(baseUrl);
-        TextView note = Ui.text(activity,
-                "OpenCode 的会话头会自动带上，不用配。"
-                        + ""
-                        + (svc == null
-                        ? "这家没有档位预设"
-                        : "当前地址命中预置服务「" + svc.label + "」，思考强度按它给档位。"),
-                Theme.T_CAP, t.textTertiary);
-        note.setLineSpacing(dp(3), 1f);
-        holder.addView(note, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-
-        ModelPresets.Provider preset = ModelPresets.providerById(presetId);
-        if (preset != null && preset.note != null && preset.note.length() > 0) {
-            TextView pn = Ui.text(activity, "预置说明：" + preset.note, Theme.T_CAP, t.textTertiary);
-            pn.setLineSpacing(dp(3), 1f);
-            holder.addView(pn, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+        if (svc != null) {
+            TextView note = Ui.text(activity, "思考档位预设：" + svc.label, Theme.T_CAP, t.textTertiary);
+            holder.addView(note, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         }
         return c.view;
     }
@@ -372,15 +361,11 @@ final class ProviderEditScreen extends Screen {
     // ---------------------------------------------------------------- 模型
 
     private View modelsCard() {
-        Card c = cardShell("模型（" + models.size() + "）",
-                "这里只列可选模型");
+        Card c = cardShell("模型（" + models.size() + "）", null);
         LinearLayout holder = c.body;
 
         if (models.isEmpty()) {
-            TextView empty = Ui.text(activity,
-                    "还没有模型",
-                    Theme.T_CAP, t.textTertiary);
-            empty.setLineSpacing(dp(3), 1f);
+            TextView empty = Ui.text(activity, "暂无模型", Theme.T_CAP, t.textTertiary);
             holder.addView(empty, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         }
         for (int i = 0; i < models.size(); i++) {
@@ -388,21 +373,158 @@ final class ProviderEditScreen extends Screen {
             holder.addView(modelRow(models.get(i)), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         }
 
-        TextView add = Ui.button(activity, t, "＋ 添加模型", false);
+        LinearLayout btnRow = Ui.row(activity);
+        final TextView fetchBtn = Ui.button(activity, t, "拉取模型列表", true);
+        fetchBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                fetchRemoteModels(fetchBtn);
+            }
+        });
+        TextView add = Ui.button(activity, t, "＋ 手动添加", false);
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 askModel();
             }
         });
-        holder.addView(add, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-
-        TextView tip = Ui.text(activity,
-                "手机端不联网拉取，请手输。",
-                Theme.T_CAP, t.textTertiary);
-        tip.setLineSpacing(dp(3), 1f);
-        holder.addView(tip, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+        btnRow.addView(fetchBtn, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.2f));
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        alp.leftMargin = dp(Theme.S1);
+        btnRow.addView(add, alp);
+        holder.addView(btnRow, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         return c.view;
+    }
+
+    private void fetchRemoteModels(final TextView btn) {
+        final String base = baseUrl == null ? "" : baseUrl.trim();
+        if (base.isEmpty() || ModelsScreen.U.hostOf(base).isEmpty()) {
+            ModelsScreen.W.toast(activity, "请先填写有效的服务地址");
+            return;
+        }
+        Ui.enabled(btn, false);
+        btn.setText("拉取中…");
+        final String key = keyInput == null ? "" : keyInput.trim();
+        final String pid = providerId == null ? "" : providerId.trim();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final java.util.List<String> fetched = new java.util.ArrayList<String>();
+                String err = "";
+                try {
+                    DashApi.Result r = DashApi.post(activity, "/api/providers/fetch-models", testBody(pid, base, key), 18000);
+                    if (r != null && r.ok && r.data != null) {
+                        Map<String, Object> root = BotConfigJson.asObject(r.data);
+                        List<Object> arr = root == null ? null : BotConfigJson.asArray(root.get("models"));
+                        if (arr != null) {
+                            for (Object o : arr) {
+                                String id = ModelsScreen.U.s(o).trim();
+                                if (!id.isEmpty()) fetched.add(id);
+                            }
+                        }
+                        if (fetched.isEmpty()) err = root == null ? "未返回模型" : DashApi.str(root, "error", "接口返回空列表");
+                    } else {
+                        err = (r == null || r.error == null) ? "拉取失败（请检查地址、Key 或运行端）" : r.error;
+                    }
+                } catch (Throwable ex) {
+                    err = ex.getMessage() == null ? "拉取异常" : ex.getMessage();
+                }
+                final String finalErr = err;
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        btn.setText("拉取模型列表");
+                        Ui.enabled(btn, true);
+                        if (fetched.isEmpty()) {
+                            ModelsScreen.W.toast(activity, "拉取失败：" + finalErr);
+                            return;
+                        }
+                        showFetchedModelsDialog(fetched);
+                    }
+                });
+            }
+        }, "prov-fetch-models").start();
+    }
+
+    private void showFetchedModelsDialog(final List<String> fetched) {
+        final android.app.Dialog dlg = ModelsScreen.W.dialog(activity);
+        if (dlg == null) return;
+        final java.util.LinkedHashSet<String> picked = new java.util.LinkedHashSet<String>(models);
+
+        LinearLayout box = ModelsScreen.W.box(activity);
+        box.addView(ModelsScreen.W.title(activity, t, "选择模型（共 " + fetched.size() + " 个）"),
+                Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        final android.widget.EditText filterBox = new android.widget.EditText(activity);
+        filterBox.setSingleLine(true);
+        filterBox.setHint("搜索模型 ID…");
+        Ui.styleInput(filterBox, activity, t);
+        box.addView(filterBox, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        ScrollView sv = new ScrollView(activity);
+        sv.setVerticalScrollBarEnabled(true);
+        final LinearLayout listBox = Ui.column(activity);
+        sv.addView(listBox, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams svLp = Ui.llp(MATCH_PARENT, dp(300));
+        svLp.topMargin = dp(Theme.S2);
+        box.addView(sv, svLp);
+
+        final Runnable rebuildList = new Runnable() {
+            @Override
+            public void run() {
+                listBox.removeAllViews();
+                String q = filterBox.getText() == null ? "" : filterBox.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
+                int shown = 0;
+                for (final String mid : fetched) {
+                    if (!q.isEmpty() && !mid.toLowerCase(java.util.Locale.ROOT).contains(q)) continue;
+                    if (shown >= 80) {
+                        listBox.addView(Ui.text(activity, "仅展示前 80 条，请输入关键词筛选", Theme.T_CAP, t.textTertiary),
+                                mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
+                        break;
+                    }
+                    final android.widget.CheckBox cb = new android.widget.CheckBox(activity);
+                    cb.setText(mid);
+                    cb.setTextColor(t.textPrimary);
+                    cb.setTextSize(Theme.T_CAP);
+                    cb.setChecked(picked.contains(mid));
+                    cb.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                        if (isChecked) picked.add(mid);
+                        else picked.remove(mid);
+                    });
+                    listBox.addView(cb, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                    shown++;
+                }
+                if (shown == 0) {
+                    listBox.addView(Ui.text(activity, "无匹配模型", Theme.T_CAP, t.textTertiary),
+                            mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
+                }
+            }
+        };
+        filterBox.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable s) { rebuildList.run(); }
+        });
+        rebuildList.run();
+
+        LinearLayout bar = Ui.row(activity);
+        TextView cancel = Ui.button(activity, t, "取消", false);
+        cancel.setOnClickListener(v -> dlg.dismiss());
+        TextView ok = Ui.button(activity, t, "确认选用", true);
+        ok.setOnClickListener(v -> {
+            models.clear();
+            models.addAll(picked);
+            dlg.dismiss();
+            renderPage();
+            ModelsScreen.W.toast(activity, "已更新 " + models.size() + " 个模型（记得点保存）");
+        });
+        bar.addView(cancel, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        olp.leftMargin = dp(Theme.S1);
+        bar.addView(ok, olp);
+        box.addView(bar, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        ModelsScreen.W.show(dlg, activity, t, box);
     }
 
     private View modelRow(final String id) {

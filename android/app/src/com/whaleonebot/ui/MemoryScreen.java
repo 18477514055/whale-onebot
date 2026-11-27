@@ -52,6 +52,10 @@ final class MemoryScreen extends Screen {
     private Object importJobsTree;
     private boolean toolBusy;
     private String toolNote;
+    private String searchQuery = "";
+    private boolean searching = false;
+    private Object searchResultTree;
+    private String searchError;
     private String scopeKey;
     private String error;
     private boolean loading;
@@ -304,6 +308,9 @@ final class MemoryScreen extends Screen {
         LinearLayout col = Ui.column(activity);
         col.addView(header("记忆库"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
+        // 给「人」用的全局记忆搜索栏（跨群印象 / 近期事件 / 长期记忆）
+        col.addView(memorySearchCard(), DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
         col.addView(DashKit.facets(activity, t,
                 new String[]{"群印象", "最近的事", "人物", "长期记忆", "导入与工具"}, facet, new DashKit.OnFacet() {
                     @Override
@@ -329,6 +336,104 @@ final class MemoryScreen extends Screen {
         return DashKit.scroll(activity, col);
     }
 
+    private View memorySearchCard() {
+        DashKit.Card c = DashKit.card(activity, t, "搜索记忆", null);
+        LinearLayout bar = Ui.row(activity);
+        final android.widget.EditText qInput = new android.widget.EditText(activity);
+        qInput.setSingleLine(true);
+        qInput.setHint("搜关键词、人名或群号…");
+        qInput.setText(searchQuery);
+        Ui.styleInput(qInput, activity, t);
+        bar.addView(qInput, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+
+        TextView go = Ui.button(activity, t, searching ? "搜索中…" : "搜索", true);
+        Ui.enabled(go, !searching);
+        go.setOnClickListener(v -> {
+            String q = qInput.getText() == null ? "" : qInput.getText().toString().trim();
+            if (q.isEmpty()) {
+                searchQuery = "";
+                searchResultTree = null;
+                searchError = null;
+                render();
+                return;
+            }
+            runMemorySearch(q);
+        });
+        LinearLayout.LayoutParams glp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        glp.leftMargin = dp(Theme.S1);
+        bar.addView(go, glp);
+
+        if (searchResultTree != null || searchError != null) {
+            TextView clr = Ui.button(activity, t, "清空", false);
+            clr.setOnClickListener(v -> {
+                searchQuery = "";
+                searchResultTree = null;
+                searchError = null;
+                render();
+            });
+            LinearLayout.LayoutParams clp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            clp.leftMargin = dp(Theme.S1);
+            bar.addView(clr, clp);
+        }
+        c.body.addView(bar, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (searchError != null) {
+            c.body.addView(Ui.text(activity, searchError, Theme.T_CAP, t.textSecondary),
+                    DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+        } else if (searchResultTree != null) {
+            List<Map<String, Object>> hits = DashApi.objects(BotConfigJson.get(searchResultTree, "hits"));
+            if (hits.isEmpty()) {
+                c.body.addView(Ui.text(activity, "未找到匹配「" + searchQuery + "」的记忆",
+                        Theme.T_CAP, t.textSecondary), DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+            } else {
+                c.body.addView(Ui.text(activity, "命中 " + hits.size() + " 条",
+                        Theme.T_CAP, t.accent), DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+                for (int i = 0; i < Math.min(hits.size(), 25); i++) {
+                    DashKit.divider(activity, t, c.body);
+                    Map<String, Object> h = hits.get(i);
+                    String kind = DashApi.str(h, "kind");
+                    String kindTag = "impression".equals(kind) ? "印象" : ("episode".equals(kind) ? "事件" : "长期");
+                    String ck = DashApi.str(h, "chatKey");
+                    String who = DashApi.str(h, "who");
+                    final String full = DashApi.str(h, "content");
+                    final String place = ck.isEmpty() ? "" : DashKit.chatLabel(ck);
+                    String title = "【" + kindTag + "】" + DashKit.cut(full, 48);
+                    String meta = (place.isEmpty() ? "" : place)
+                            + (who.isEmpty() ? "" : ((place.isEmpty() ? "" : " · ") + who));
+                    DashKit.row(activity, t, c.body, title, meta, null, true,
+                            v -> ModelsScreen.W.infoDialog(activity, t,
+                                    "【" + kindTag + "】" + (meta.isEmpty() ? "" : meta), full));
+                }
+            }
+        }
+        return c.view;
+    }
+
+    private void runMemorySearch(final String q) {
+        searchQuery = q;
+        searching = true;
+        searchError = null;
+        render();
+        new Thread(() -> {
+            String body = "{}";
+            try {
+                body = new JSONObject().put("query", q).put("limit", 25).toString();
+            } catch (Throwable ignored) {}
+            final DashApi.Result r = DashApi.post(activity, "/api/local/memory/search", body, 15000);
+            activity.runOnUiThread(() -> {
+                searching = false;
+                if (r != null && r.ok && r.data != null) {
+                    searchResultTree = r.data;
+                    searchError = null;
+                } else {
+                    searchResultTree = null;
+                    searchError = "搜索失败：" + (r == null || r.error == null ? "请检查运行端状态" : r.error);
+                }
+                render();
+            });
+        }, "dm-mem-search").start();
+    }
+
     // ---------------------------------------------------------------- ① 群印象（列表 + 详细编辑）
 
     private View sessionFacet() {
@@ -349,12 +454,10 @@ final class MemoryScreen extends Screen {
         sub.setLineSpacing(dp(3), 1f);
         col.addView(sub, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // 顶部一键导入记忆快捷卡（文档或 .zip/.tar.gz 压缩包 → 提交记忆整理模型提炼入向量库）
-        DashKit.Card quickImp = DashKit.card(activity, t, "导入文档 / 压缩包到记忆库", null);
-        DashKit.kv(activity, t, quickImp.body, "提炼管线",
-                "支持 .md / .txt / .json / .csv 或整个 .zip / .tar.gz 压缩包，提交后由记忆整理模型自动提炼并写入向量库。");
+        // 顶部快捷导入卡
+        DashKit.Card quickImp = DashKit.card(activity, t, "导入记忆", null);
         LinearLayout qRow = Ui.row(activity);
-        TextView qBg = Ui.button(activity, t, "导入背景记忆", true);
+        TextView qBg = Ui.button(activity, t, "导入文档/压缩包", true);
         Ui.enabled(qBg, !toolBusy);
         qBg.setOnClickListener(v -> startMemoryFileImport("background"));
         TextView qProf = Ui.button(activity, t, "提炼人物画像", false);
@@ -364,7 +467,7 @@ final class MemoryScreen extends Screen {
         LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
         qLp.leftMargin = dp(Theme.S2);
         qRow.addView(qProf, qLp);
-        quickImp.body.addView(qRow, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        quickImp.body.addView(qRow, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         col.addView(quickImp.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
         DashKit.Card c = DashKit.card(activity, t, "各群/私聊印象", null);

@@ -599,18 +599,23 @@ final class NativeManageScreen extends Screen {
     // ================================================================ 4. 长期语义记忆（LivingMemory）
 
     private void renderLivingMemory() {
-        Map<String, Object> st = BotConfigJson.asObject(primaryData);
-        boolean enabled = st != null && Boolean.TRUE.equals(st.get("enabled"));
-        String lmMode = st == null ? "shadow" : DashApi.str(st, "mode", "shadow");
+        Map<String, Object> rootObj = BotConfigJson.asObject(primaryData);
+        Map<String, Object> cfgObj = rootObj == null ? null : BotConfigJson.asObject(rootObj.get("config"));
+        Map<String, Object> stObj = rootObj == null ? null : BotConfigJson.asObject(rootObj.get("status"));
+        Map<String, Object> statsObj = stObj == null ? null : BotConfigJson.asObject(stObj.get("stats"));
+        boolean enabled = cfgObj != null && Boolean.TRUE.equals(cfgObj.get("enabled"));
+        String lmMode = cfgObj == null ? "shadow" : DashApi.str(cfgObj, "mode", "shadow");
+        long activeCount = statsObj == null ? 0 : (long) DashApi.num(statsObj, "active");
+        long totalCount = statsObj == null ? 0 : (long) DashApi.num(statsObj, "total");
 
         LinearLayout top = Ui.addCard(content, activity, t, Theme.S3);
-        top.addView(Ui.strong(activity, "长期语义记忆（LivingMemory）", Theme.T_CARD, t.textPrimary));
-        top.addView(Ui.text(activity, "当前状态：" + (enabled ? ("已启用 · " + lmMode) : "未启用")
-                + "（active = 正式注入聊天提示词；shadow = 仅后台积累不注入）",
+        top.addView(Ui.strong(activity, "长期语义记忆", Theme.T_CARD, t.textPrimary));
+        top.addView(Ui.text(activity, (enabled ? ("已启用 · " + lmMode) : "已关闭")
+                + (totalCount > 0 ? (" · 活跃 " + activeCount + " / 共 " + totalCount + " 条") : ""),
                 Theme.T_CAP, t.textSecondary), mt(dp(4)));
 
         LinearLayout modeRow = Ui.row(activity);
-        TextView btnActive = Ui.button(activity, t, "固化上线 (active)", enabled && "active".equals(lmMode));
+        TextView btnActive = Ui.button(activity, t, "固化上线", enabled && "active".equals(lmMode));
         btnActive.setOnClickListener(v -> saveLivingMemoryMode(true, "active"));
         TextView btnShadow = Ui.button(activity, t, "影子观察", enabled && !"active".equals(lmMode));
         btnShadow.setOnClickListener(v -> saveLivingMemoryMode(true, "shadow"));
@@ -625,37 +630,43 @@ final class NativeManageScreen extends Screen {
         modeRow.addView(btnOff, oLp);
         top.addView(modeRow, mt(dp(Theme.S2)));
 
-        // 召回测试卡
+        // 召回测试卡（支持跨所有活跃会话自动聚合召回）
         LinearLayout recallCard = Ui.addCard(content, activity, t, Theme.S2);
-        recallCard.addView(Ui.strong(activity, "语义召回实测", Theme.T_BODY, t.textPrimary));
+        recallCard.addView(Ui.strong(activity, "语义召回测试", Theme.T_BODY, t.textPrimary));
         final EditText qBox = new EditText(activity);
         qBox.setSingleLine(true);
-        qBox.setHint("输入一句话测试机器人能回忆起哪些长期记忆");
+        qBox.setHint("输入关键词或问题测试召回");
         Ui.styleInput(qBox, activity, t);
         recallCard.addView(qBox, mt(dp(Theme.S1)));
         TextView testBtn = Ui.button(activity, t, "测试语义召回", true);
         testBtn.setOnClickListener(v -> {
             final String q = qBox.getText().toString().trim();
-            if (q.isEmpty()) { host().toast("先输入测试问题"); return; }
+            if (q.isEmpty()) { host().toast("先输入测试关键词"); return; }
             new Thread(() -> {
                 DashApi.Result r = DashApi.post(activity, "/api/living-memory/recall-test",
-                        "{\"query\":" + jsonStr(q) + ",\"limit\":5}", 12000);
+                        "{\"query\":" + jsonStr(q) + ",\"limit\":6}", 15000);
                 String summary;
-                if (r.ok && r.data != null) {
+                if (r != null && r.ok && r.data != null) {
                     Map<String, Object> m = BotConfigJson.asObject(r.data);
                     List<Object> hits = m == null ? null : BotConfigJson.asArray(m.get("results"));
                     if (hits == null && m != null) hits = BotConfigJson.asArray(m.get("items"));
+                    if (hits == null && m != null) hits = BotConfigJson.asArray(m.get("memories"));
                     if (hits == null || hits.isEmpty()) summary = "未命中相关长期记忆。";
                     else {
                         StringBuilder sb = new StringBuilder("命中 " + hits.size() + " 条：\n");
                         for (int i = 0; i < hits.size(); i++) {
                             Map<String, Object> h = BotConfigJson.asObject(hits.get(i));
-                            if (h != null) sb.append(i + 1).append(". ").append(DashApi.str(h, "content", DashApi.str(h, "summary", ""))).append('\n');
+                            if (h == null) continue;
+                            String sc = DashApi.str(h, "scopeKey", "");
+                            String body = DashApi.str(h, "summary", DashApi.str(h, "content", ""));
+                            sb.append(i + 1).append(". ");
+                            if (!sc.isEmpty()) sb.append("[").append(DashKit.chatLabel(sc)).append("] ");
+                            sb.append(body).append('\n');
                         }
                         summary = sb.toString().trim();
                     }
                 } else {
-                    summary = "召回失败：" + (r.error == null ? "未知错误" : r.error);
+                    summary = "召回失败：" + (r == null || r.error == null ? "请检查运行端状态" : r.error);
                 }
                 final String out = summary;
                 activity.runOnUiThread(() -> { lastRecallSummary = out; render(); });
@@ -672,12 +683,13 @@ final class NativeManageScreen extends Screen {
         if (items == null && memObj != null) items = BotConfigJson.asArray(memObj.get("memories"));
         LinearLayout listCard = Ui.addCard(content, activity, t, Theme.S2);
         listCard.addView(Ui.strong(activity, "最近长期记忆（" + (items == null ? 0 : items.size()) + "）", Theme.T_BODY, t.textPrimary));
-        TextView addMem = Ui.button(activity, t, "＋ 手动录入一条长期记忆", false);
+        TextView addMem = Ui.button(activity, t, "＋ 手动录入", false);
         addMem.setOnClickListener(v -> ModelsScreen.W.textDialog(activity, t, "录入长期记忆",
-                "写一句希望机器人长期记住的事实或约定", "", InputType.TYPE_CLASS_TEXT, true,
+                "填写需要长期记住的事实或约定", "", InputType.TYPE_CLASS_TEXT, true,
                 s -> (s == null || s.trim().isEmpty()) ? "内容不能为空" : null,
                 txt -> postJsonAndReload("/api/living-memory/memories",
-                        "{\"content\":" + jsonStr(txt.trim()) + ",\"scope\":\"global\",\"kind\":\"fact\"}", "已录入长期记忆")));
+                        "{\"scopeKey\":\"owner-global\",\"type\":\"fact\",\"summary\":" + jsonStr(DashKit.cut(txt.trim(), 80))
+                                + ",\"content\":" + jsonStr(txt.trim()) + "}", "已录入长期记忆")));
         listCard.addView(addMem, mt(dp(Theme.S2)));
 
         if (items != null) {
@@ -686,7 +698,7 @@ final class NativeManageScreen extends Screen {
                 if (it == null) continue;
                 listCard.addView(Ui.divider(activity, t));
                 final String id = DashApi.str(it, "id", "");
-                String txt = DashApi.str(it, "content", DashApi.str(it, "summary", ""));
+                String txt = DashApi.str(it, "summary", DashApi.str(it, "content", ""));
                 boolean archived = "archived".equalsIgnoreCase(DashApi.str(it, "status", ""));
                 LinearLayout r = Ui.row(activity);
                 r.addView(Ui.text(activity, (archived ? "[已归档] " : "") + txt, Theme.T_CAP,
@@ -695,7 +707,7 @@ final class NativeManageScreen extends Screen {
                     TextView act = Ui.button(activity, t, archived ? "恢复" : "归档", false);
                     act.setOnClickListener(v -> postJsonAndReload(
                             "/api/living-memory/memories/" + id + (archived ? "/restore" : "/archive"),
-                            "{}", archived ? "已恢复记忆" : "已归档记忆"));
+                            "{\"confirm\":true}", archived ? "已恢复记忆" : "已归档记忆"));
                     r.addView(act, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
                 }
                 listCard.addView(r, mt(dp(Theme.S1)));

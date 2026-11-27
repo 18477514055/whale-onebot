@@ -252,17 +252,9 @@ final class DashKit {
         return String.format(java.util.Locale.US, "%.2fM", n / 1000000.0);
     }
 
-    /** 「群 <群号>」/「私聊 <QQ号>」这种短标签。 */
+    /** 自动同步全 App 群名与昵称目录：「群名（群号）」/「群 <群号>」/「私聊 昵称（QQ号）」。 */
     static String chatLabel(String key) {
-        if (key == null) return "—";
-        String k = key.trim();
-        int i = k.indexOf(':');
-        if (i < 0) return k;
-        String kind = k.substring(0, i);
-        String id = k.substring(i + 1);
-        if ("group".equals(kind)) return "群 " + id;
-        if ("private".equals(kind)) return "私聊 " + id;
-        return k;
+        return NameDirectory.formatChat(key);
     }
 
     /** 包一层可滚动的页面：col 由调用方塞内容。 */

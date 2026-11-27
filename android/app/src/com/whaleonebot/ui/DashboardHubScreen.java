@@ -39,11 +39,6 @@ final class DashboardHubScreen extends Screen {
 
         col.addView(header("运行看板"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "运行状态观测、调用追踪、异常对账与关系监控（插件/技能/MCP 已独立至扩展中心）",
-                Theme.T_CAP, t.textSecondary);
-        sub.setLineSpacing(dp(3), 1f);
-        col.addView(sub, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-
         // 卡 1：实时观测与对账
         DashKit.Card c1 = DashKit.card(activity, t, "运行观测与对账", null);
         entry(c1.body, "总览与体检", "连接状态 · 心情精力 · 今日用量 · 存储占用", v -> shell.pushDashboard());

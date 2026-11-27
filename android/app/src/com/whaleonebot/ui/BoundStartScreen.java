@@ -158,8 +158,8 @@ final class BoundStartScreen extends Screen {
         sessRow.addView(manageSessBtn, mLp);
         healthCard.addView(sessRow, topMargin(dp(Theme.S2)));
 
-        // ---------------- 2. 登录通道（按需扫码 / 账密+滑块） ----------------
-        col.addView(sectionLabel("QQ 登录通道（按需出码 · 绝不后台刷码）"), sectionLp());
+        // ---------------- 2. 登录通道 ----------------
+        col.addView(sectionLabel("QQ 登录"), sectionLp());
         loginCard = Ui.addCard(col, activity, t, 0);
 
         loginFoldBtn = Ui.button(activity, t, "当前已在线 · 展开重新登录选项", false);
@@ -206,13 +206,10 @@ final class BoundStartScreen extends Screen {
         tabs.addView(tabPwdBtn, t2Lp);
         loginBody.addView(tabs, topMargin(dp(Theme.S2)));
 
-        // ---- 通道 A：按需高清扫码 ----
+        // ---- 通道 A：按需扫码 ----
         qrChannelPane = Ui.column(activity);
-        qrChannelPane.addView(Ui.text(activity,
-                "提示：点击下方按需生成 1 张二维码，推荐使用另一台设备相机直扫（或切到「账密登录」免扫码）。QQ 下线不影响 B 站与主运行端。",
-                Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S2)));
 
-        reqQrBtn = Ui.button(activity, t, "按需获取 1 张新二维码", true);
+        reqQrBtn = Ui.button(activity, t, "获取二维码", true);
         reqQrBtn.setOnClickListener(v -> {
             if (RemoteBridge.qqClientVersion(activity) == null) {
                 host().toast("容器里还没有 QQ：先去「环境配置」装 QQ 安装包，回来再登录");

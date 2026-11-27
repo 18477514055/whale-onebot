@@ -328,9 +328,6 @@ final class IntimacyScreen extends Screen {
         LinearLayout col = Ui.column(activity);
         col.addView(header("亲密度与心情"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "查看熟人关系与相处事由，也可随时哄一哄或补满精力", Theme.T_CAP, t.textSecondary);
-        col.addView(sub, mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-
         LinearLayout bar = DashKit.facets(activity, t, FACETS, facet, new DashKit.OnFacet() {
             @Override
             public void onFacet(int index) {
@@ -725,9 +722,12 @@ final class IntimacyScreen extends Screen {
 
     private String moodRowTitle(Map<String, Object> r) {
         String key = ModelsScreen.U.s(r.get("scope")).trim();
+        if (key.length() == 0) key = ModelsScreen.U.s(r.get("chatKey")).trim();
         String place = (key.length() == 0 || "global".equals(key)) ? "全局状态" : DashKit.chatLabel(key);
+        String uin = ModelsScreen.U.s(r.get("uin")).trim();
+        String who = uin.length() > 0 ? (" · " + NameDirectory.formatUser(uin)) : "";
         String kind = kindLabel(ModelsScreen.U.s(r.get("kind")).trim());
-        return place + " · " + kind;
+        return place + who + " · " + kind;
     }
 
     private String moodRowSub(Map<String, Object> r) {

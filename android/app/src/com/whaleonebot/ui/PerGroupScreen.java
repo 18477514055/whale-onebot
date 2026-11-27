@@ -219,59 +219,54 @@ final class PerGroupScreen extends Screen {
     }
 
     private void renderGroupList() {
-        body.addView(header("群聊与按群规则"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(header("按群设置"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         if (loadError != null) {
             body.addView(Ui.text(activity, loadError, Theme.T_BODY, t.textPrimary), marginTop(Theme.S2));
             return;
         }
 
-        // 顶部群名刷新与说明卡
+        // 顶部群名刷新卡
         FrameLayout topCard = Ui.card(activity, t);
         LinearLayout topBox = Ui.column(activity);
-        topBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
-        topBox.addView(Ui.text(activity,
-                "统一运行完整生命周期模式 · 点击任意群进入独立配置页（回复概率、冷却、专属人设与记忆隔离）",
-                Theme.T_CAP, t.textSecondary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        topBox.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S3), dp(Theme.S2));
         TextView refreshBtn = Ui.button(activity, t,
-                refreshingNames ? "正在拉取群名（非 Hook Web CGI）…" : "一键刷新全部群名", false);
+                refreshingNames ? "正在刷新群名…" : "刷新群名并同步全应用", false);
         Ui.enabled(refreshBtn, !refreshingNames);
         refreshBtn.setOnClickListener(v -> {
             refreshingNames = true;
             render();
             WhitelistPicker.refreshAllGroupNames(activity, count -> {
                 refreshingNames = false;
-                host().toast(count > 0 ? ("已刷新 " + count + " 个群名") : "未拉取到新群名（可点进群手动设备注）");
+                host().toast(count > 0 ? ("已刷新 " + count + " 个群名") : "已完成同步（未拉取到的群可点进手动设备注）");
                 render();
             });
         });
-        topBox.addView(refreshBtn, marginTop(Theme.S2));
+        topBox.addView(refreshBtn, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         topCard.addView(topBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         body.addView(topCard, marginTop(Theme.S2));
 
         if (probDraft.isEmpty()) {
-            body.addView(Ui.text(activity, "群白名单里还没有群，请先在「白名单 / 黑名单」中添加允许的群号。",
+            body.addView(Ui.text(activity, "群白名单为空。",
                     Theme.T_BODY, t.textSecondary), marginTop(Theme.S3));
             return;
         }
 
-        Map<String, String> names = WhitelistPicker.loadMergedGroupNames(activity);
+        NameDirectory.init(activity);
         for (String id : probDraft.keySet()) {
-            body.addView(groupCard(id, names.get(id)), marginTop(Theme.S2));
+            body.addView(groupCard(id), marginTop(Theme.S2));
         }
     }
 
-    private View groupCard(final String id, String cachedName) {
+    private View groupCard(final String id) {
         FrameLayout card = Ui.card(activity, t);
         LinearLayout row = Ui.row(activity);
         row.setPadding(dp(Theme.S3), dp(Theme.S2 + 2), dp(Theme.S2 + 2), dp(Theme.S2 + 2));
         card.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         LinearLayout box = Ui.column(activity);
-        String displayTitle = (cachedName != null && !cachedName.trim().isEmpty())
-                ? (cachedName.trim() + "（" + id + "）")
-                : ("群 " + id);
-        box.addView(Ui.strong(activity, displayTitle, Theme.T_BODY, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        box.addView(Ui.strong(activity, NameDirectory.formatGroup(id), Theme.T_BODY, t.textPrimary),
+                Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         Integer p = probDraft.get(id);
         Integer mcd = mentionCdDraft.get(id);

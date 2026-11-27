@@ -70,9 +70,6 @@ final class ModelLibraryScreen extends Screen {
         scrollView.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         col.addView(header("模型库"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        col.addView(Ui.text(activity,
-                "集中管理模型服务商与 API Key（目前支持 OpenAI 兼容接口；OpenCode 渠道自动注入固定会话头）。",
-                Theme.T_CAP, t.textSecondary), mt(dp(Theme.S1)));
 
         // 操作栏：从预设添加 / 新建自定义 / 前往模型分配
         LinearLayout actCard = Ui.addCard(col, activity, t, Theme.S3);
@@ -113,8 +110,6 @@ final class ModelLibraryScreen extends Screen {
                 List<Object> models = BotConfigJson.asArray(pv.get("models"));
                 int mCount = models == null ? 0 : models.size();
                 boolean hasKey = ModelsScreen.U.providerKeyPresent(data, pid);
-                boolean isOpenCode = baseUrl.toLowerCase(java.util.Locale.US).contains("opencode.ai")
-                        || pid.toLowerCase(java.util.Locale.US).contains("opencode");
 
                 LinearLayout row = Ui.row(activity);
                 row.setPadding(0, dp(Theme.S1), 0, dp(Theme.S1));
@@ -131,8 +126,7 @@ final class ModelLibraryScreen extends Screen {
                 head.addView(pill, plp);
                 txt.addView(head, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-                String meta = ModelsScreen.U.hostOf(baseUrl) + " · " + mCount + " 个模型"
-                        + (isOpenCode ? " · 自动会话头" : "");
+                String meta = ModelsScreen.U.hostOf(baseUrl) + " · " + mCount + " 个模型";
                 txt.addView(Ui.text(activity, meta, Theme.T_CAP, t.textSecondary), mt(dp(4)));
                 row.addView(txt, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
                 row.addView(new IconView(activity, IconView.CHEV_R, t.textTertiary), Ui.llp(dp(18), dp(18)));
