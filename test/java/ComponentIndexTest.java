@@ -82,6 +82,19 @@ public final class ComponentIndexTest {
         }
         check(rejected, "defaultRelease: v1 style empty coreOrder rejects unknown current");
 
+        String v2NoEnvFile = "{"
+                + "\"schemaVersion\":2,\"abi\":1,\"current\":\"1.2.12\","
+                + "\"releases\":[{\"version\":\"1.1.8\"}],"
+                + "\"components\":{"
+                + "\"environment\":[{\"version\":\"1.1.8\",\"sha256\":\"" + "b".repeat(64) + "\",\"bytes\":123,"
+                + "\"url\":\"https://github.com/o/r/releases/download/v1.1.8/env-1.1.8.tar.gz?dl=1\"}],"
+                + "\"core\":[{\"version\":\"1.1.8\",\"file\":\"bot-core-1.1.8.zip\",\"sha256\":\"" + "c".repeat(64) + "\",\"bytes\":10,"
+                + "\"url\":\"https://github.com/o/r/releases/download/v1.1.8/bot-core-1.1.8.zip\"}]"
+                + "}}";
+        ComponentIndex noFileIdx = ComponentIndex.of(v2NoEnvFile);
+        ComponentIndex.Entry envEntry = noFileIdx.pick(ComponentIndex.GROUP_ENVIRONMENT, "", "1.1.8");
+        check(envEntry != null && "env-1.1.8.tar.gz".equals(envEntry.file), "v2 environment 缺 file 时应从 url 推导文件名");
+
         System.out.println("ComponentIndexTest: " + pass + " checks PASS");
     }
 }

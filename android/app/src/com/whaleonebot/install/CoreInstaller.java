@@ -188,8 +188,17 @@ public final class CoreInstaller {
 
   private Map<String, Object> env(Map<String, Object> r) throws IOException {
     Map<String, Object> e = obj(r.get("environment"));
-    String url = str(e, "url"), file = str(e, "file");
+    String url = str(e, "url");
     ReleaseCache.origin(url);
+    Object rawFile = e.get("file");
+    // 历史 v2 索引的 components.environment[] 由脚本生成时未带 file 字段，按已校验的官方 URL 末尾文件名推导。
+    String file;
+    if (rawFile == null) {
+      file = url.substring(url.lastIndexOf('/') + 1);
+    } else {
+      require(rawFile instanceof String, "Missing field: file");
+      file = (String) rawFile;
+    }
     require(
         url.endsWith("/" + file)
             && file.matches("whale-environment-arm64-[A-Za-z0-9._-]+\\.tar\\.gz")

@@ -143,8 +143,26 @@ public final class ComponentIndex {
       if (version == null || version.length() == 0) continue;
       String sha = str(m, "sha256");
       if (sha == null || !sha.matches("[0-9a-f]{64}")) continue;
-      out.add(new Entry(group, id, version, nz(str(m, "file")), nz(str(m, "url")), sha, (long) num(m, "bytes", -1)));
+      String url = nz(str(m, "url"));
+      String file = deriveFileName(str(m, "file"), url);
+      out.add(new Entry(group, id, version, file, url, sha, (long) num(m, "bytes", -1)));
     }
+  }
+
+  private static String deriveFileName(String file, String url) {
+    if (file != null && file.length() > 0) return file;
+    if (url == null || url.length() == 0) return "";
+    String clean = url;
+    int cut = clean.indexOf('?');
+    if (cut >= 0) clean = clean.substring(0, cut);
+    cut = clean.indexOf('#');
+    if (cut >= 0) clean = clean.substring(0, cut);
+    int slash = clean.lastIndexOf('/');
+    String tail = slash >= 0 ? clean.substring(slash + 1) : "";
+    if (tail.length() == 0 || ".".equals(tail) || "..".equals(tail) || tail.indexOf('\\') >= 0) {
+      return "";
+    }
+    return tail;
   }
 
   /**
