@@ -48,11 +48,9 @@ public final class BotConfigScreen extends Screen {
 
     private static final int PAGE_LIST = 0;
 
-    /**
-     * 字段说明只在这一长度以内才显示（用户要求：只留「~100」「秒」这种范围单位提示，
-     * 其余解释一律不显示；想回来看就把这个数调大）。
-     */
-    private static final int HINT_MAX_CHARS = 10;
+    /** L2 专家全部参数区展开态与实时关键词搜索词。 */
+    private boolean expertExpanded = false;
+    private String searchQuery = "";
 
     private final BotConfigHost cfg;
 
@@ -75,6 +73,8 @@ public final class BotConfigScreen extends Screen {
     private String loadError;
     private int page = PAGE_LIST;
     private boolean built;
+    private int savedListScrollY = 0;
+    private int savedGroupScrollY = 0;
 
     private String lastOnlineText;
     private TextView saveHintLine;
@@ -172,6 +172,24 @@ public final class BotConfigScreen extends Screen {
         return false;
     }
 
+    @Override
+    boolean hasUnsavedChanges() {
+        return !pending.isEmpty();
+    }
+
+    @Override
+    void onAttach() {
+        super.onAttach();
+        // 从子页（模型与 Key / 按群设置 / 人格模板）返回时，若当前无未保存改动则静默重载最新 config.json，防止冲掉刚保存的 Key
+        if (built && pending.isEmpty()) {
+            loaded = false;
+            data = null;
+            loadError = null;
+            ensureLoaded();
+            renderPage(Motion.NONE);
+        }
+    }
+
     // 注意：本页不在 onAttach 里做入场动效 —— 整页入场统一由 AppShell 的 Motion 负责。
     // 以前这里自己把内容容器 alpha 置 0 再花 260ms 淡进来，和 AppShell 的整页位移淡入叠在一起：
     // 整页已经滑到位置了，内容却还是全透明、然后才慢慢浮出来 —— 看起来就是「闪一下、动效没了」。
@@ -252,6 +270,12 @@ public final class BotConfigScreen extends Screen {
      */
     private void renderPage(int motion) {
         if (body == null) return;
+        // 保存滚动位置：同页保存/放弃/开关切换后不回顶
+        if (content instanceof ScrollView) {
+            int curY = ((ScrollView) content).getScrollY();
+            if (page == PAGE_LIST) savedListScrollY = curY;
+            else savedGroupScrollY = curY;
+        }
         dots.clear();
         onlineLine = null;
 
@@ -267,17 +291,39 @@ public final class BotConfigScreen extends Screen {
         View old = content;
         content = v;
         Motion.swap(body, old, v, motion);
+        if ((motion == Motion.FADE || motion == Motion.NONE) && v instanceof ScrollView) {
+            final ScrollView targetScroll = (ScrollView) v;
+            final int keepY = (page == PAGE_LIST) ? savedListScrollY : savedGroupScrollY;
+            if (keepY > 0) {
+                targetScroll.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        targetScroll.scrollTo(0, keepY);
+                    }
+                });
+            }
+        }
         refreshSaveBar();
     }
 
     private void goList() {
         if (page == PAGE_LIST) return;
+        savedGroupScrollY = 0;
         page = PAGE_LIST;
         renderPage(Motion.POP);
+        if (content instanceof ScrollView && savedListScrollY > 0) {
+            final ScrollView sv = (ScrollView) content;
+            final int y = savedListScrollY;
+            sv.post(() -> sv.scrollTo(0, y));
+        }
     }
 
     private void openGroup(int index) {
         if (index < 0 || index >= BotConfigSchema.GROUPS.length) return;
+        if (content instanceof ScrollView && page == PAGE_LIST) {
+            savedListScrollY = ((ScrollView) content).getScrollY();
+        }
+        savedGroupScrollY = 0;
         page = index + 1;
         renderPage(Motion.PUSH);
     }
@@ -298,13 +344,13 @@ public final class BotConfigScreen extends Screen {
         return barVisible ? dp(120) : dp(Theme.S4);
     }
 
-    // ---------------------------------------------------------------- 列表页
+    // ---------------------------------------------------------------- 列表页（4 区块清晰结构 + 关键词全参搜索）
     private View listPage() {
         LinearLayout col = Ui.column(activity);
 
-        col.addView(pageHeader("运行端配置", false), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(pageHeader("机器人配置", false), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "机器人业务程序 · /agent/data/config.json",
+        TextView sub = Ui.text(activity, "四大核心分区清晰管理 · 保存保持当前位置不回顶 · 点「?」看说明",
                 Theme.T_CAP, t.textSecondary);
         LinearLayout.LayoutParams subLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         subLp.topMargin = dp(Theme.S1);
@@ -312,22 +358,192 @@ public final class BotConfigScreen extends Screen {
 
         col.addView(statusCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
 
-        TextView label = Ui.strong(activity, "配置分组", Theme.T_CAP, t.textTertiary);
-        label.setLetterSpacing(0.08f);
-        col.addView(label, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+        // ---------------- 区块 1：核心配置 ----------------
+        col.addView(blockLabel("核心配置", true), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+        col.addView(l1EntryCard(IconView.CPU, "模型库",
+                "集中管理 OpenAI 兼容渠道、40+ 预设与 API Key（含 OpenCode 专属请求头）",
+                v -> shell.pushModelLibrary()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.TUNE, "模型分配与自动路由",
+                "主聊天 / 记忆整理（支持复用主模型关思考）/ 识图 / 语音思考强度与路由池",
+                v -> shell.pushModels()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.CHECK, "白名单与黑名单",
+                "放行群聊与私聊 QQ 清单、优先黑名单",
+                v -> openGroupByTitle("白名单")), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.CHAT, "群聊按群规则",
+                "逐群回复概率、被 @ / 戳一戳冷却、专属人设、独立记忆与非 Hook 群名刷新",
+                v -> shell.pushPerGroup()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.PALETTE, "人设管理",
+                "10 段结构化新建与编辑、管理员附加规则、9 款内置人设与自定义模板",
+                v -> shell.pushPersonaTemplates()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.GLOBE, "联网搜索",
+                "独立高质搜索 API（博查 / 秘塔 / 智谱 / Tavily / 豆包 / DeepSeek / 聚合）与测试",
+                v -> shell.pushWebSearch()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
-        for (int i = 0; i < BotConfigSchema.GROUPS.length; i++) {
-            col.addView(groupCard(i), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        // ---------------- 区块 2：资料与记忆（记忆库升格一级） ----------------
+        col.addView(blockLabel("资料与记忆", true), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+        col.addView(l1EntryCard(IconView.CHAT, "记忆库",
+                "群印象、近期事件、6 维人物画像 · 支持文档与 .zip/.tar.gz 压缩包导入提炼",
+                v -> shell.pushMemory()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.SHIELD, "知识库",
+                "多资料库管理、文档与压缩包导入建索引、向量与重排模型",
+                v -> shell.pushKnowledge()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.BOX, "长期语义记忆",
+                "固化开关、语义召回测试、过时记忆归档与恢复",
+                v -> shell.pushNativeManage("living-memory")), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(l1EntryCard(IconView.DOT, "亲密度与心情",
+                "熟人排行、互动事件记录与心情精力调节",
+                v -> shell.pushIntimacy()), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        // ---------------- 区块 3：聊天行为与日常玩法 ----------------
+        col.addView(blockLabel("聊天行为与日常玩法", false), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+        String[] dailyPrefixes = new String[] { "回复与发送", "主动发言", "记忆", "表情包", "消息类型", "日报与动态", "群游戏", "提醒", "内容审核" };
+        for (String pref : dailyPrefixes) {
+            int gi = findGroupIndexByTitle(pref);
+            if (gi >= 0 && BotConfigSchema.GROUPS[gi].fieldCount() > 0) {
+                col.addView(groupCard(gi), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+            }
         }
 
-        TextView foot = Ui.text(activity,
-                "共 " + BotConfigSchema.GROUPS.length + " 组 / " + BotConfigSchema.totalFieldCount()
-                        + " 项",
-                Theme.T_CAP, t.textTertiary);
-        foot.setLineSpacing(dp(3), 1f);
-        col.addView(foot, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+        // ---------------- 区块 4：高级与底层参数（带全局关键词搜索） ----------------
+        col.addView(blockLabel("高级与底层参数", false), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S4)));
+
+        TextView toggleExpert = Ui.button(activity, t,
+                expertExpanded
+                        ? ("收起全部 " + BotConfigSchema.totalFieldCount() + " 项高级参数与搜索 ▴")
+                        : ("展开全部 " + BotConfigSchema.totalFieldCount() + " 项高级参数与搜索 ▾"),
+                false);
+        toggleExpert.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                expertExpanded = !expertExpanded;
+                renderPage(Motion.FADE);
+            }
+        });
+        col.addView(toggleExpert, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+
+        if (expertExpanded) {
+            EditText searchBox = new EditText(activity);
+            searchBox.setSingleLine(true);
+            searchBox.setHint("搜索任意参数名或关键词（如：预算、冷却、搜索、记忆、拟人化）");
+            searchBox.setText(searchQuery);
+            searchBox.setSelection(searchQuery.length());
+            Ui.styleInput(searchBox, activity, t);
+            final LinearLayout expertList = Ui.column(activity);
+            searchBox.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+                @Override
+                public void afterTextChanged(Editable s) {
+                    searchQuery = s == null ? "" : s.toString().trim();
+                    populateExpertList(expertList);
+                }
+            });
+            col.addView(searchBox, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+            populateExpertList(expertList);
+            col.addView(expertList, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        }
 
         return pageShell(col, bottomPad());
+    }
+
+    private TextView blockLabel(String title, boolean accent) {
+        TextView tv = Ui.strong(activity, title, Theme.T_CAP, accent ? t.accent : t.textTertiary);
+        tv.setLetterSpacing(0.08f);
+        return tv;
+    }
+
+    private int findGroupIndexByTitle(String prefix) {
+        if (prefix == null) return -1;
+        for (int i = 0; i < BotConfigSchema.GROUPS.length; i++) {
+            String title = BotConfigSchema.GROUPS[i].title;
+            if (title != null && title.startsWith(prefix)) return i;
+        }
+        return -1;
+    }
+
+    private void openGroupByTitle(String prefix) {
+        int idx = findGroupIndexByTitle(prefix);
+        if (idx >= 0) openGroup(idx);
+    }
+
+    private View l1EntryCard(int icon, String title, String desc, View.OnClickListener click) {
+        FrameLayout card = Ui.card(activity, t);
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S2 + 2), dp(Theme.S3));
+        card.addView(row, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        FrameLayout tile = new FrameLayout(activity);
+        tile.setBackground(Drawables.round(Ui.alpha(t.accent, 0.16f), 0, 0, dp(Theme.R_TILE)));
+        tile.addView(new IconView(activity, icon, t.accent),
+                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        row.addView(tile, Ui.llp(dp(44), dp(44)));
+
+        LinearLayout box = Ui.column(activity);
+        LinearLayout.LayoutParams blp = Ui.llp(0, WRAP_CONTENT);
+        blp.weight = 1f;
+        blp.leftMargin = dp(Theme.S3);
+        blp.rightMargin = dp(Theme.S2);
+        box.addView(Ui.strong(activity, title, Theme.T_BODY, t.textPrimary), Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        TextView sub = Ui.text(activity, desc, Theme.T_CAP, t.textSecondary);
+        sub.setLineSpacing(dp(2), 1f);
+        box.addView(sub, marginTop(Ui.llp(WRAP_CONTENT, WRAP_CONTENT), dp(4)));
+        row.addView(box, blp);
+
+        row.addView(new IconView(activity, IconView.CHEV_R, t.textTertiary), Ui.llp(dp(20), dp(20)));
+        card.setClickable(true);
+        card.setFocusable(true);
+        Ui.press(card, 0.985f);
+        card.setOnClickListener(click);
+        return card;
+    }
+
+    private void populateExpertList(LinearLayout host) {
+        host.removeAllViews();
+        String q = searchQuery == null ? "" : searchQuery.trim().toLowerCase(java.util.Locale.ROOT);
+        if (q.length() > 0) {
+            int hits = 0;
+            for (int gi = 0; gi < BotConfigSchema.GROUPS.length; gi++) {
+                final int groupIdx = gi;
+                BotConfigSchema.Group g = BotConfigSchema.GROUPS[gi];
+                for (int si = 0; si < g.sections.length; si++) {
+                    for (int fi = 0; fi < g.sections[si].fields.length; fi++) {
+                        BotConfigSchema.Field f = g.sections[si].fields[fi];
+                        if (f == null || BotConfigJson.isSecret(f.path)) continue;
+                        String hay = (g.title + " " + f.label + " " + (f.hint == null ? "" : f.hint) + " " + f.path)
+                                .toLowerCase(java.util.Locale.ROOT);
+                        if (hay.contains(q)) {
+                            hits++;
+                            if (hits <= 25) {
+                                FrameLayout hitCard = Ui.card(activity, t);
+                                LinearLayout inner = Ui.column(activity);
+                                inner.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S3), dp(Theme.S2));
+                                hitCard.addView(inner, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+                                LinearLayout top = Ui.row(activity);
+                                top.addView(Ui.text(activity, g.title + " · " + f.path, Theme.T_CAP, t.textTertiary),
+                                        new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+                                TextView jump = Ui.text(activity, "进所在组 →", Theme.T_CAP, t.accent);
+                                jump.setClickable(true);
+                                jump.setOnClickListener(v -> openGroup(groupIdx));
+                                top.addView(jump, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+                                inner.addView(top, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+                                inner.addView(fieldBlock(f), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
+                                host.addView(hitCard, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+                            }
+                        }
+                    }
+                }
+            }
+            if (hits == 0) {
+                host.addView(Ui.text(activity, "未找到匹配「" + searchQuery + "」的参数，换个关键词试试。",
+                        Theme.T_CAP, t.textTertiary), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+            }
+            return;
+        }
+        for (int i = 0; i < BotConfigSchema.GROUPS.length; i++) {
+            // 砍掉 0 项空壳中转组（模型与接口 / 知识库已在上方 L1 卡片直达）
+            if (BotConfigSchema.GROUPS[i].fieldCount() == 0) continue;
+            host.addView(groupCard(i), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        }
     }
 
     private View statusCard() {
@@ -742,9 +958,6 @@ public final class BotConfigScreen extends Screen {
 
         LinearLayout txt = Ui.column(activity);
         txt.addView(labelRow(f), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        if (f.hint != null && f.hint.length() > 0 && f.hint.length() <= HINT_MAX_CHARS) {
-            txt.addView(hintText(f.hint), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(4)));
-        }
         LinearLayout.LayoutParams tlp = Ui.llp(0, WRAP_CONTENT);
         tlp.weight = 1f;
         tlp.rightMargin = dp(Theme.S2);
@@ -817,18 +1030,15 @@ public final class BotConfigScreen extends Screen {
         });
 
         col.addView(e, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-        if (f.hint != null && f.hint.length() > 0 && f.hint.length() <= HINT_MAX_CHARS) {
-            col.addView(hintText(f.hint), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
-        }
         return col;
     }
 
     private int inputTypeOf(BotConfigSchema.Field f) {
         if (f.type == BotConfigSchema.INT) {
-            return InputType.TYPE_CLASS_NUMBER;
+            return InputType.TYPE_CLASS_NUMBER | (f.min < 0 ? InputType.TYPE_NUMBER_FLAG_SIGNED : 0);
         }
         if (f.type == BotConfigSchema.DEC) {
-            return InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL;
+            return InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED;
         }
         return InputType.TYPE_CLASS_TEXT;
     }
@@ -878,9 +1088,6 @@ public final class BotConfigScreen extends Screen {
         }
 
         col.addView(hs, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-        if (f.hint != null && f.hint.length() > 0 && f.hint.length() <= HINT_MAX_CHARS) {
-            col.addView(hintText(f.hint), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
-        }
         return col;
     }
 
@@ -995,10 +1202,6 @@ public final class BotConfigScreen extends Screen {
             col.addView(add, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
         }
 
-        if (f.hint != null && f.hint.length() > 0 && f.hint.length() <= HINT_MAX_CHARS) {
-            col.addView(hintText(f.hint), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
-        }
-
         rebuildListRows(f, st);
         return col;
     }
@@ -1103,10 +1306,6 @@ public final class BotConfigScreen extends Screen {
             }
         }, t);
         col.addView(ctl, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
-
-        if (f.hint != null && f.hint.length() > 0 && f.hint.length() <= HINT_MAX_CHARS) {
-            col.addView(hintText(f.hint), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(6)));
-        }
         return col;
     }
 
@@ -1148,7 +1347,16 @@ public final class BotConfigScreen extends Screen {
         LinearLayout row = Ui.row(activity);
         TextView label = Ui.text(activity, f.label, Theme.T_BODY, t.textPrimary);
         label.setTypeface(Typeface.DEFAULT_BOLD);
-        row.addView(label, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams llp = Ui.llp(0, WRAP_CONTENT);
+        llp.weight = 1f;
+        row.addView(label, llp);
+
+        if (isHighRiskField(f.path)) {
+            TextView risk = Ui.pill(activity, t, "高危", Ui.TONE_WARN);
+            LinearLayout.LayoutParams rlp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            rlp.leftMargin = dp(6);
+            row.addView(risk, rlp);
+        }
 
         View dot = new View(activity);
         dot.setBackground(Drawables.circle(t.accent, 0, 0));
@@ -1158,7 +1366,45 @@ public final class BotConfigScreen extends Screen {
         row.addView(dot, dlp);
         dots.put(f.path, dot);
 
+        // ★ 轻量「?」按需说明按钮：行内零长灰字，点击弹出完整解释、范围与风险提示（彻底废除 10 字截断）
+        if (f.hint != null && f.hint.trim().length() > 0) {
+            TextView q = Ui.strong(activity, "?", Theme.T_CAP, t.accent);
+            q.setGravity(Gravity.CENTER);
+            q.setBackground(Drawables.circle(Ui.alpha(t.accent, 0.14f), Ui.alpha(t.accent, 0.35f), dp(1)));
+            q.setClickable(true);
+            q.setFocusable(true);
+            q.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    StringBuilder info = new StringBuilder();
+                    if (isHighRiskField(f.path)) {
+                        info.append("【高风险配置】修改前请确认影响范围。\n\n");
+                    }
+                    info.append(f.hint.trim());
+                    if (f.type == BotConfigSchema.INT || f.type == BotConfigSchema.DEC) {
+                        info.append("\n\n允许范围：").append(BotConfigJson.pretty(f.min, 3))
+                                .append(" ~ ").append(BotConfigJson.pretty(f.max, 3));
+                    }
+                    info.append("\n配置路径：").append(f.path);
+                    ModelsScreen.W.infoDialog(activity, t, f.label, info.toString());
+                }
+            });
+            LinearLayout.LayoutParams qlp = Ui.llp(dp(22), dp(22));
+            qlp.leftMargin = dp(8);
+            row.addView(q, qlp);
+        }
+
         return row;
+    }
+
+    private static boolean isHighRiskField(String path) {
+        if (path == null) return false;
+        return "allowAllWhenEmpty".equals(path)
+                || "qzoneInteractions.enabled".equals(path)
+                || "moderation.actions.kick".equals(path)
+                || "moderation.actions.ban".equals(path)
+                || "identityPilot.incomingFriendRequest.autoWhitelist".equals(path)
+                || "plugins.requireNetworkIsolation".equals(path);
     }
 
     private TextView hintText(String hint) {

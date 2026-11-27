@@ -163,6 +163,13 @@ final class BotConfigJson {
      */
     static boolean isSecret(String path) {
         if (path == null || path.length() == 0) return true;
+        // 非密钥白名单：路径字面含 "token" 但属于普通数值/省费策略配置，不能误吞。
+        if ("tokenSaver.mode".equals(path)
+                || "conversation.lifecycleRolloverInputTokens".equals(path)
+                || "api.maxRunTokens".equals(path)
+                || "api.contextWindowTokens".equals(path)) {
+            return false;
+        }
         String[] seg = path.split("\\.");
         for (int i = 0; i < seg.length; i++) {
             String k = seg[i].toLowerCase(Locale.US);

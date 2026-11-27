@@ -1,0 +1,10 @@
+{
+  "id": "recipe-helper",
+  "name": "菜谱助手",
+  "description": "按现有食材给出今晚就能做的家常菜做法，写清用量、火候与省事替代方案。",
+  "version": "1.0.0",
+  "author": "whale-onebot",
+  "category": "生活",
+  "allowedTools": ["web_search", "send_message"],
+  "triggers": ["这些食材能做什么", "教我做一道菜", "冰箱里只有"]
+}

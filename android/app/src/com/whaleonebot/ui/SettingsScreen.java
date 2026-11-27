@@ -179,16 +179,52 @@ final class SettingsScreen extends Screen {
                     return;
                 }
                 com.whaleonebot.Watchdog.setEnabled(activity, isChecked);
-                if (isChecked && !com.whaleonebot.ContainerService.isRunning()) {
-                    com.whaleonebot.ContainerService.start(activity);
-                }
                 watchdogValue.setText(watchdogText(isChecked));
                 if (isChecked) {
+                    if (!com.whaleonebot.ContainerService.isRunning()
+                            && com.whaleonebot.ui.SetupState.read(activity.getFilesDir()).env) {
+                        com.whaleonebot.ContainerService.start(activity);
+                    }
                     showAutostartDialog();
                 }
             }
         });
         g3.addView(groupSwitchRow(IconView.POWER, "自动重启保活", watchdogValue, watchdogSwitch, remote));
+
+        // ---------------- 分组 4：高级与开发者维护（折叠收纳，避免新手困惑） ----------------
+        col.addView(groupLabel("高级与开发者维护"));
+        LinearLayout g4 = Ui.addCard(col, activity, t, 0);
+        final LinearLayout devBody = Ui.column(activity);
+        devBody.setVisibility(View.GONE);
+        final TextView devToggleSub = Ui.text(activity, "点击展开：自定义运行端 · 批量创建核心 · 高级维护", Theme.T_CAP, t.textSecondary);
+        g4.addView(groupRowWithSub(
+                IconView.TUNE,
+                "开发者与底层维护",
+                devToggleSub,
+                "高级",
+                Ui.TONE_NEUTRAL,
+                v -> {
+                    boolean show = devBody.getVisibility() != View.VISIBLE;
+                    devBody.setVisibility(show ? View.VISIBLE : View.GONE);
+                    devToggleSub.setText(show ? "点击收起底层维护入口" : "点击展开：自定义运行端 · 批量创建核心 · 高级维护");
+                }));
+        devBody.addView(Ui.divider(activity, t));
+        devBody.addView(groupRow(
+                IconView.BOX,
+                "接入自定义运行端",
+                "通过描述文件、HTTPS 或本机回环接入自建第三方运行端",
+                "高级",
+                Ui.TONE_NEUTRAL,
+                v -> shell.corePage("custom", null)));
+        devBody.addView(Ui.divider(activity, t));
+        devBody.addView(groupRow(
+                IconView.GLOBE,
+                "批量下载空闲核心",
+                "按指定版本准备 1~5 份独立核心实例供多机器人分配",
+                "高级",
+                Ui.TONE_NEUTRAL,
+                v -> shell.corePage("download", null)));
+        g4.addView(devBody, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
     }
 
     private FrameLayout buildWizardHeroCard(boolean remote) {

@@ -302,10 +302,10 @@ final class MemoryScreen extends Screen {
 
     private ScrollView page() {
         LinearLayout col = Ui.column(activity);
-        col.addView(header("记忆"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("记忆库"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         col.addView(DashKit.facets(activity, t,
-                new String[]{"群印象", "最近的事", "人物", "长期记忆", "工具箱"}, facet, new DashKit.OnFacet() {
+                new String[]{"群印象", "最近的事", "人物", "长期记忆", "导入与工具"}, facet, new DashKit.OnFacet() {
                     @Override
                     public void onFacet(int index) {
                         if (index == facet) return;
@@ -348,6 +348,24 @@ final class MemoryScreen extends Screen {
                 Theme.T_CAP, t.textSecondary);
         sub.setLineSpacing(dp(3), 1f);
         col.addView(sub, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 顶部一键导入记忆快捷卡（文档或 .zip/.tar.gz 压缩包 → 提交记忆整理模型提炼入向量库）
+        DashKit.Card quickImp = DashKit.card(activity, t, "导入文档 / 压缩包到记忆库", null);
+        DashKit.kv(activity, t, quickImp.body, "提炼管线",
+                "支持 .md / .txt / .json / .csv 或整个 .zip / .tar.gz 压缩包，提交后由记忆整理模型自动提炼并写入向量库。");
+        LinearLayout qRow = Ui.row(activity);
+        TextView qBg = Ui.button(activity, t, "导入背景记忆", true);
+        Ui.enabled(qBg, !toolBusy);
+        qBg.setOnClickListener(v -> startMemoryFileImport("background"));
+        TextView qProf = Ui.button(activity, t, "提炼人物画像", false);
+        Ui.enabled(qProf, !toolBusy);
+        qProf.setOnClickListener(v -> startMemoryFileImport("profile"));
+        qRow.addView(qBg, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        qLp.leftMargin = dp(Theme.S2);
+        qRow.addView(qProf, qLp);
+        quickImp.body.addView(qRow, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(quickImp.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
         DashKit.Card c = DashKit.card(activity, t, "各群/私聊印象", null);
         if (files.isEmpty()) DashKit.kv(activity, t, c.body, "状态", "还没有印象记录");
@@ -860,9 +878,9 @@ final class MemoryScreen extends Screen {
         vCard.body.addView(dlPackBtn, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
         col.addView(vCard.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
-        // 卡 2：多选文件导入记忆库（后台排队提炼）
-        DashKit.Card iCard = DashKit.card(activity, t, "从手机多选文件导入记忆库", null);
-        DashKit.kv(activity, t, iCard.body, "说明", "支持多选 .txt / .md / .json，后台安全消化为人物画像或背景记忆卡片，不卡聊天。");
+        // 卡 2：多选文档或压缩包导入记忆库（经记忆整理模型提炼入向量库）
+        DashKit.Card iCard = DashKit.card(activity, t, "从手机导入文档或压缩包到记忆库", null);
+        DashKit.kv(activity, t, iCard.body, "说明", "支持多选 .txt / .md / .json / .csv 以及 .zip / .tar.gz / .tar 压缩包，自动安全解压并交由记忆整理模型提炼写入向量库。");
         TextView impProfileBtn = Ui.button(activity, t, "选文件 → 提炼为某人的 6 维人物画像", true);
         Ui.enabled(impProfileBtn, !toolBusy);
         impProfileBtn.setOnClickListener(new View.OnClickListener() {

@@ -831,10 +831,12 @@ export class NativeBridge extends EventEmitter {
       this.group = this.session.getGroupService?.();
       this.buddy = this.session.getBuddyService?.();
       this.profile = this.session.getProfileService?.();
-      // rkey provider binds to the freshly-acquired message service; without the
-      // sendSsoCmdReqByContend method it reports unavailable and pictures fall back
-      // to the md5 address (never a fabricated URL).
-      this.rkey = new RkeyProvider({ msg: this.msg, timeoutMs: this.timeoutMs });
+      // rkey 探测包在当前 Linux QQ build 上实测持续返 result:145（请求包解析失败），默认关闭以防触发腾讯风控审计；
+      // 仅当显式设置 WHALE_ENABLE_RKEY_PROBE=1 时启用，默认走内联下载 + md5 兜底。
+      this.rkey = new RkeyProvider({
+        msg: process.env.WHALE_ENABLE_RKEY_PROBE === '1' ? this.msg : undefined,
+        timeoutMs: this.timeoutMs
+      });
       // Rich media is optional. Some runtimes do not expose it at message-service readiness.
       try { this.richMedia = this.session.getRichMediaService?.(); } catch { this.richMedia = undefined; }
       try { this.robot = this.session.getRobotService?.(); } catch { this.robot = undefined; }
@@ -3606,10 +3608,40 @@ export class NativeBridge extends EventEmitter {
   async chatNames(groups, options) {
     const names = {};
     const failed = [];
+    const missing = [];
+    // ★ 非 Hook 优先查 Web CGI 群列表缓存（1 次 HTTP 即可拿到全量群名，避免逐群调原生 1502 超时）
+    if (this.webCgi?.hasAuthProvider?.()) {
+      try {
+        const list = await this.webCgi.getGroupList(options?.signal);
+        if (Array.isArray(list) && list.length > 0) {
+          const map = new Map();
+          for (const g of list) {
+            const gid = String(g?.group_id ?? '').trim();
+            const gname = typeof g?.group_name === 'string' ? g.group_name.trim() : '';
+            if (gid && gname && gname.length <= CHAT_NAME_MAX_LENGTH && !/[\x00-\x1f\x7f]/.test(gname)) {
+              map.set(gid, gname);
+            }
+          }
+          for (const code of groups) {
+            const hit = map.get(String(code));
+            if (hit) names[code] = hit;
+            else missing.push(code);
+          }
+        } else {
+          missing.push(...groups);
+        }
+      } catch {
+        missing.push(...groups);
+      }
+    } else {
+      missing.push(...groups);
+    }
+    if (missing.length === 0) return { names, failed };
+
     const deadline = Date.now() + CHAT_NAMES_BUDGET_MS;
     let consecutiveTimeouts = 0;
-    for (let index = 0; index < groups.length; index++) {
-      const code = groups[index];
+    for (let index = 0; index < missing.length; index++) {
+      const code = missing[index];
       if (options.signal?.aborted) throw new BridgeError('CANCELLED', 'Request cancelled');
       if (!this.attached) throw new BridgeError('OFFLINE', 'Native bridge is detached', { retcode: 1503 });
       const remaining = deadline - Date.now();
@@ -3633,7 +3665,7 @@ export class NativeBridge extends EventEmitter {
         failed.push(code);
         consecutiveTimeouts = error?.code === 'TIMEOUT' ? consecutiveTimeouts + 1 : 0;
         if (consecutiveTimeouts >= 2) {
-          for (const rest of groups.slice(index + 1)) failed.push(rest);
+          for (const rest of missing.slice(index + 1)) failed.push(rest);
           break;
         }
       }

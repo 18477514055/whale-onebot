@@ -67,15 +67,16 @@ public final class BiliWebLogin {
     /** Optional local dismissal notification, including Back/rotation/renderer loss; contains no URL or account data. */
     public static boolean open(Activity a, String url, Runnable onClosed) {
         if (Looper.myLooper() != Looper.getMainLooper() || a == null || a.isFinishing() || a.isDestroyed() || !accepts(url)) return false;
-        if ((a.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-            Toast.makeText(a, "请使用非调试版打开官方登录页。", Toast.LENGTH_LONG).show(); return false;
-        }
         if (busy) return false;
         busy = true;
         Window w = new Window(a);
         try {
             if (!isolated) {
-                WebView.setDataDirectorySuffix("bili-passport-only");
+                try {
+                    WebView.setDataDirectorySuffix("bili-passport-only");
+                } catch (IllegalStateException ignored) {
+                    // 同进程内先前已由 QQ 滑块或抖音登录初始化过 WebView：安全复用进程容器，不再崩溃报错
+                }
                 isolated = true;
             }
             WebView.setWebContentsDebuggingEnabled(false);
@@ -84,7 +85,7 @@ public final class BiliWebLogin {
             return true;
         } catch (RuntimeException unavailable) {
             w.close();
-            Toast.makeText(a, "无法打开独立登录窗口，请更新系统 WebView 后重试。", Toast.LENGTH_LONG).show();
+            Toast.makeText(a, "无法打开登录窗口，请确认系统 WebView 可用后重试。", Toast.LENGTH_LONG).show();
             return false;
         }
     }

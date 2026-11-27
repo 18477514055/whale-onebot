@@ -83,6 +83,10 @@ public class AppShell {
         default void qqSessionAction(String action, boolean clearSavedCred, String mode) {}
         default void wakeQqSession() {}
         default void openMobileQqAuth(String qrUrl) {}
+        default void restartQqOnly() {}
+        default void restartFullContainer() {}
+        default String networkDiagnosticSummary() { return ""; }
+        default String blackboxLog(int lines) { return ""; }
     }
 
     /** 选图请求码。宿主应在 onActivityResult 里把 requestCode 原样转给 {@link #onActivityResult}。 */
@@ -186,12 +190,24 @@ public class AppShell {
     static final int P_DOUYIN_ACCOUNT = 31;
     /** 设置内的一键部署向导（支持多平台与本地/远程模式，完成后自动退回设置主页）。 */
     static final int P_DEPLOY_WIZARD = 64;
+    /** 原生高级运营与自有生态工作台（skills / mcp / content-ops / living-memory）。 */
+    static final int P_NATIVE_MANAGE = 65;
+    /** 独立「模型库」：集中管理 OpenAI 兼容服务商与 API Key。 */
+    static final int P_MODEL_LIBRARY = 66;
+    /** 独立「联网搜索」：高质量 API 搜索引擎与独立 Key。 */
+    static final int P_WEB_SEARCH = 67;
+    /** 独立「创建/编辑人设」10 段结构化编辑器。 */
+    static final int P_PERSONA_EDIT = 68;
     void externalAccount(String bot,String binding){push(P_EXTERNAL_ACCOUNT,bot,binding==null?"":binding);}
     void corePage(String mode,String coreId){push(P_CORE_MANAGER,mode,coreId);}
 
     void pushBiliAccounts(String id,String tab) { push(P_BILI_ACCOUNT,id,tab); }
     void pushDouyinPlatform(String id, String tab) { push(P_DOUYIN_ACCOUNT, id, tab); }
     void pushDeployWizard() { push(P_DEPLOY_WIZARD, null); }
+    void pushNativeManage(String mode) { push(P_NATIVE_MANAGE, mode); }
+    void pushModelLibrary() { push(P_MODEL_LIBRARY, null); }
+    void pushWebSearch() { push(P_WEB_SEARCH, null); }
+    void pushPersonaEdit(String personaId) { push(P_PERSONA_EDIT, personaId); }
 
     final Activity activity;
     final Host host;
@@ -343,8 +359,8 @@ public class AppShell {
                 @Override
                 public void run() {
                     final java.util.List<PickedTextFile> out = new java.util.ArrayList<PickedTextFile>();
+                    ArchiveImporter.Result extracted = new ArchiveImporter.Result();
                     String err = null;
-                    long totalBytes = 0;
                     for (int i = 0; i < uris.size(); i++) {
                         android.net.Uri u = uris.get(i);
                         try {
@@ -352,27 +368,20 @@ public class AppShell {
                             java.io.InputStream in = activity.getContentResolver().openInputStream(u);
                             if (in == null) continue;
                             try {
-                                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-                                byte[] buf = new byte[8192];
-                                int n;
-                                while ((n = in.read(buf)) > 0) {
-                                    bos.write(buf, 0, n);
-                                    if (bos.size() > 2 * 1024 * 1024) break;
-                                }
-                                totalBytes += bos.size();
-                                if (totalBytes > 8 * 1024 * 1024) {
-                                    err = "所选文件总大小超过 8MB 上限，已截断部分文件";
-                                    break;
-                                }
-                                String text = new String(bos.toByteArray(), "UTF-8");
-                                if (text.length() > 0 && text.charAt(0) == '\uFEFF') text = text.substring(1);
-                                out.add(new PickedTextFile(name, text));
+                                ArchiveImporter.extractInto(name, in, extracted);
                             } finally {
                                 try { in.close(); } catch (Throwable ignored) { }
                             }
                         } catch (Throwable th) {
-                            err = "读取部分文件失败：" + th.getMessage();
+                            err = "读取或解压部分文件失败：" + th.getMessage();
                         }
+                    }
+                    for (ArchiveImporter.ExtractedFile ef : extracted.files) {
+                        out.add(new PickedTextFile(ef.name, ef.content));
+                    }
+                    if (err == null && (extracted.skippedOversize > 0 || extracted.skippedUnsafe > 0)) {
+                        err = "已提取 " + out.size() + " 份文档（跳过超限 " + extracted.skippedOversize
+                                + "、非法路径 " + extracted.skippedUnsafe + "）";
                     }
                     final String finalErr = err;
                     activity.runOnUiThread(new Runnable() {
@@ -685,6 +694,11 @@ public class AppShell {
         return b == null ? "" : b.id;
     }
 
+    /** 显式切换当前配置目标机器人（如向导/新建机器人刚落盘后，避免写入旧机器人 config.json）。 */
+    void setCurrentBotId(String id) {
+        this.botId = id == null ? "" : id.trim();
+    }
+
     /** 把可能为空 / 失效的机器人 id 收敛成一个能用的 id。 */
     private String resolveBotId(String want) {
         BotRegistry.Bot b = BotRegistry.get(want);
@@ -729,13 +743,9 @@ public class AppShell {
     // ------------------------------------------------------------------ 建页
 
     private Screen create(Entry e) {
-        // 返回上一层时复用同一个页面实例（保住页内状态，例如运行端配置停在「组页」）。
+        // 仅拦截自定义第三方外部运行端（不含内置托管核心）：托管核心现已打通看板与知识库面板。
         if(e!=null && e.kind!=P_HOME && e.kind!=P_SETTINGS && e.kind!=P_THEME && e.kind!=P_ENV && e.kind!=P_VERSION && e.kind!=P_QR_SCAN && e.kind!=P_REMOTE_DEVICES && e.kind!=P_DEPLOY_WIZARD && e.kind!=P_DOUYIN_ACCOUNT && e.kind!=P_BOT && e.kind!=P_BOTLIST && e.kind!=P_NEWBOT && e.kind!=P_PLATFORMBOTS && e.kind!=P_CORE_MANAGER) {
             BotRegistry.Bot owner=BotRegistry.get(currentBotId());
-            CoreInventory.Instance scope=owner==null?null:BotRegistry.coreForBot(owner.id);
-            if(scope!=null && CoreManagerScreen.managed(scope) && (e.kind==P_KB || (e.kind>=P_DASH && e.kind<=P_RECONCILE))) {
-                Screen scoped=placeholder("此实例未提供此面板","请回到机器人详情管理本实例的配置。");scoped.build();return scoped;
-            }
             if(owner!=null && !RuntimeSurfaces.builtin(owner)) {
                 Screen neutral=new CustomRuntimeScreen(this,owner,e.kind==P_BILI_ACCOUNT?BotRegistry.P_BILIBILI:platformOfStack());neutral.build();return neutral;
             }
@@ -866,12 +876,25 @@ public class AppShell {
                 case P_RUNTIMEDL:
                     s = new CoreManagerScreen(this,"download",""); // Old persisted navigation routes go to the signed installer only.
                     break;
+                case P_NATIVE_MANAGE:
+                    s = new NativeManageScreen(this, arg);
+                    break;
+                case P_MODEL_LIBRARY:
+                    s = new ModelLibraryScreen(this, (BotConfigHost) activity);
+                    break;
+                case P_WEB_SEARCH:
+                    s = new WebSearchScreen(this, (BotConfigHost) activity);
+                    break;
+                case P_PERSONA_EDIT:
+                    s = new PersonaEditScreen(this, (BotConfigHost) activity, arg);
+                    break;
                 default:
                     s = new HomeScreen(this);
                     break;
             }
             s.build();
-            if (e != null && kind != P_BOTLIST && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_DOUYIN_ACCOUNT && kind != P_DEPLOY_WIZARD && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION) screenCache.put(e, s);
+            // 不缓存写配置页与动态状态页，防止子页保存后返回父页用内存旧副本覆写丢失 API Key 或陷入 P_NEWBOT 空态死锁
+            if (e != null && kind != P_BOTLIST && kind != P_NEWBOT && kind != P_ENV && kind != P_PLATFORMBOTS && kind != P_PLATFORMBOT && kind != P_BOT && kind != P_QQ && kind != P_BILI_ACCOUNT && kind != P_DOUYIN_ACCOUNT && kind != P_DEPLOY_WIZARD && kind != P_CORE_MANAGER && kind != P_EXTERNAL_ACCOUNT && kind != P_VERSION && kind != P_MODELS && kind != P_MODELPICK && kind != P_PROVIDER && kind != P_PERGROUP && kind != P_PERSONATPL && kind != P_KB && kind != P_NATIVE_MANAGE && kind != P_MODEL_LIBRARY && kind != P_WEB_SEARCH && kind != P_PERSONA_EDIT) screenCache.put(e, s);
             return s;
         } catch (Throwable t) {
             // 兜底：任何一页的构造 / 铺版失败都退成占位页，绝不把整个 App 崩掉。
@@ -1041,17 +1064,22 @@ public class AppShell {
         }
     }
 
-    /** 调用系统文件选择器多选 .txt/.md/.json 文件（供知识库与记忆库一键导入使用）。 */
+    /** 调用系统文件选择器多选文本或压缩包（.zip / .tar.gz / .tgz / .tar / .md / .txt / .json / .csv）。 */
     void pickMultipleTextFiles(MultiTextCallback cb) {
         pendingMultiTextCb = cb;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "text/markdown", "application/json", "text/*"});
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "text/plain", "text/markdown", "text/csv", "application/json", "text/*",
+                "application/zip", "application/x-zip-compressed", "application/gzip",
+                "application/x-gzip", "application/x-tar", "application/octet-stream"
+        });
         try {
             activity.startActivityForResult(
-                    Intent.createChooser(intent, "选择要导入的文档（支持多选）"), REQ_PICK_MULTI_TEXT);
+                    Intent.createChooser(intent, "选择文档或压缩包（支持多选 .zip / .tar.gz / .md / .txt）"),
+                    REQ_PICK_MULTI_TEXT);
         } catch (Throwable t) {
             pendingMultiTextCb = null;
             host.toast("这台机器上没有可用的文件选择器");

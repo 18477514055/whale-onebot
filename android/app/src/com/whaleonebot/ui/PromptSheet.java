@@ -42,6 +42,13 @@ public final class PromptSheet {
                 positiveLabel, onPositive, null, null, negativeLabel);
     }
 
+    /** 确认弹窗便捷重载：默认带「取消」按钮。 */
+    static Dialog confirm(Activity activity, Theme t, String title, String message,
+                          String positiveLabel, boolean destructive, Runnable onPositive) {
+        return confirm(activity, t, title, message, positiveLabel, onPositive,
+                null, null, "取消", false, null);
+    }
+
     /** 确认弹窗：标题 + 正文 + 主操作 / 可选中性操作 / 取消。 */
     static Dialog confirm(Activity activity, Theme t, String title, String message,
                           String positiveLabel, Runnable onPositive,

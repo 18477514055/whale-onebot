@@ -571,6 +571,53 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         return tail(new File(getFilesDir(), "logs/container.log"), lines);
     }
 
+    @Override public void restartQqOnly() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    r.callActiveRpc("container.restartQq", null, 15000);
+                    r.triggerSnapshotRefresh();
+                    runOnUiThread(() -> toast("已触发远端仅重启 QQ 通道"));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端重启 QQ 失败：" + t.getMessage()));
+                }
+            }, "remote-restart-qq").start();
+            return;
+        }
+        ContainerService.restartQqOnly(this);
+        toast("正在重启 QQ 通道（不影响 B 站与容器主进程）…");
+    }
+
+    @Override public void restartFullContainer() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    r.callActiveRpc("container.restartFull", null, 20000);
+                    r.triggerSnapshotRefresh();
+                    runOnUiThread(() -> toast("已触发远端整容器全链路重启"));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端整容器重启失败：" + t.getMessage()));
+                }
+            }, "remote-restart-all").start();
+            return;
+        }
+        ContainerService.restartFullContainer(this);
+        toast("正在执行整容器全链路重启（关闭 QQ → 重启容器 → 启动 QQ）…");
+    }
+
+    @Override public String networkDiagnosticSummary() {
+        if (remoteOrNull() != null) return "远程控制中";
+        return ContainerService.networkDiagnosticSummary(this);
+    }
+
+    @Override public String blackboxLog(int lines) {
+        File f = new File(qqStateDir(), "blackbox.log");
+        if (!f.isFile()) return "（暂无防掉线黑匣子记录，发生 -10004 / 140022015 / 被踢下线时会自动落盘最近 120 条诊断上下文）";
+        return tail(f, lines);
+    }
+
     @Override public void toast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }

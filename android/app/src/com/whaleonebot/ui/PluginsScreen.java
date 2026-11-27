@@ -313,8 +313,10 @@ final class PluginsScreen extends Screen {
         }
     }
 
-    /** 点一行：全部标量 {@code 键=值} 逐行（含退一层的嵌套对象）+ description 全文。 */
-    private void showDetail(Map<String, Object> m) {
+    /** 点一行：根据当前页签（已装 / 自有市场目录 / 待批审批）提供直接交互管理 + 完整详情。 */
+    private void showDetail(final Map<String, Object> m) {
+        final String id = DashApi.str(m, "id");
+        final String title = titleOf(m);
         StringBuilder sb = new StringBuilder();
         appendScalars(sb, m, "");
         for (Map.Entry<String, Object> e : m.entrySet()) {
@@ -322,14 +324,78 @@ final class PluginsScreen extends Screen {
             if (sub == null) continue;
             appendScalars(sb, sub, e.getKey() + ".");
         }
-        // 实测：目录条目的 description 在顶层，已装条目的只在 manifest 里
         String desc = DashApi.str(m, "description");
         if (desc.length() == 0) desc = DashApi.str(m, "manifest.description");
         if (desc.length() > 0) {
             if (sb.length() > 0) sb.append("\n\n");
             sb.append(desc);
         }
-        ModelsScreen.W.infoDialog(activity, t, titleOf(m), sb.toString());
+        final String detailText = sb.toString();
+
+        if (id.length() == 0) {
+            ModelsScreen.W.infoDialog(activity, t, title, detailText);
+            return;
+        }
+        if (facet == F_PENDING) {
+            String preview = DashApi.str(m, "preview");
+            String msg = (preview.length() > 0 ? ("内容预览：" + preview + "\n\n") : "") + "请选择批准或拒绝该插件写入请求：";
+            PromptSheet.confirm(activity, t, "审批插件写操作 · " + title, msg, "批准执行", false,
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            postPluginAction("/api/plugins/approval",
+                                    "{\"id\":" + jsonQ(id) + ",\"decision\":\"approve\"}", "已批准执行", F_PENDING);
+                        }
+                    });
+            return;
+        }
+        if (facet == F_CATALOG) {
+            PromptSheet.confirm(activity, t, "从自有市场安装「" + title + "」？",
+                    desc.length() > 0 ? desc : "安装后需手动启用才会运行，过程严格校验 sha256。",
+                    "一键安装", false,
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            postPluginAction("/api/plugins/install",
+                                    "{\"id\":" + jsonQ(id) + "}", "已提交安装 " + title, F_INSTALLED);
+                        }
+                    });
+            return;
+        }
+        // F_INSTALLED：提供启用/停用或查看详情
+        final boolean on = ModelsScreen.U.truthy(BotConfigJson.get(m, "enabled"));
+        PromptSheet.confirm(activity, t, title + (on ? "（已启用）" : "（未启用）"),
+                (desc.length() > 0 ? desc + "\n\n" : "") + "点主按钮切换启停状态；如需卸载请在详情确认。",
+                on ? "停用插件" : "启用插件", on,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        postPluginAction("/api/plugins/toggle",
+                                "{\"id\":" + jsonQ(id) + ",\"enabled\":" + (!on) + "}",
+                                (!on ? "已启用 " : "已停用 ") + title, F_INSTALLED);
+                    }
+                });
+    }
+
+    private void postPluginAction(final String path, final String body, final String okMsg, final int reloadFacet) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final DashApi.Result r = DashApi.post(activity, path, body, 20000);
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        host().toast(r.ok ? okMsg : ("操作失败：" + (r.error == null ? "未知错误" : r.error)));
+                        load(reloadFacet);
+                    }
+                });
+            }
+        }, "plugin-act").start();
+    }
+
+    private static String jsonQ(String s) {
+        String v = s == null ? "" : s;
+        return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     // ---------------------------------------------------------------- 通用小函数

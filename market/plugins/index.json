@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Whale OneBot 官方插件市场",
+  "repository": "https://github.com/18477514055/whale-onebot",
+  "updatedAt": "2026-11-27",
+  "note": "本索引由 Whale OneBot 独立维护，脱离上游第三方插件源；安装时严格校验 sha256 并在手机端经国内镜像加速下载。",
+  "plugins": []
+}

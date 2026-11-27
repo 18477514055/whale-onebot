@@ -1,6 +1,6 @@
 package com.whaleonebot.ui;
 
-import android.graphics.Typeface;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
@@ -18,41 +18,47 @@ import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 /**
- * 「按群设置」：给每个群单独定对话模式与回复概率。
- *
- * <p>用户 2026-11-18 的要求：不想所有群统一模式 —— 不同群人数、活跃度都不一样，
- * 要能逐群调；且「每群回复概率」要与白名单群**一一对应**（所以群清单直接取 {@code allow.groups}）。
- *
- * <p>写回的三个位置（都是运行端现成字段，不造新结构）：
+ * 「按群设置」：独立单群详情子页架构（告别弹窗遮挡），支持：
  * <ul>
- *   <li>{@code conversation.unifiedMode} = false（要按群覆盖就必须先关掉统一模式）</li>
- *   <li>{@code conversation.groupModes[群号]} = legacy | threaded | lifecycle（跟随全局 = 删掉这个键）</li>
- *   <li>{@code store.groupSliderPos[群号]} = 0~100（该群的回复概率；100 = 每条都回）</li>
+ *   <li>非 Hook 一键刷新全部群名（Web CGI 优先）+ 本地群名缓存 + 手动修改群备注；</li>
+ *   <li>锁定「完整生命周期」模式，逐群精调回复概率（0~100）、被 @ 冷却、戳一戳冷却；</li>
+ *   <li>逐群独立人设覆盖（{@code personaPerChat["group:<id>"]}）与记忆隔离开关；</li>
+ *   <li>保存后严格保持当前滚动位置不回顶。</li>
  * </ul>
  */
 final class PerGroupScreen extends Screen {
-
-    private static final String[] MODE_IDS = {"legacy", "threaded", "lifecycle"};
-    private static final String[] MODE_NAMES = {"传统触发", "参与者续接", "完整生命周期"};
 
     private final BotConfigHost cfg;
 
     private Object data;
     private boolean loaded;
     private String loadError;
+    private boolean refreshingNames = false;
 
-    /** 群号 → 模式 id（空串 = 跟随全局）；null 值不存，代表跟随全局。 */
-    private final LinkedHashMap<String, String> modeDraft = new LinkedHashMap<String, String>();
-    /** 群号 → 概率（显示值 0~100）。 */
+    /** 当前点进编辑的群号；null = 群列表页，非空 = 独立单群设置子页。 */
+    private String selectedGroupId = null;
+
+    /** 群号 → 概率（0~100）。 */
     private final LinkedHashMap<String, Integer> probDraft = new LinkedHashMap<String, Integer>();
     /** 群号 → 被 @ 冷却（秒；null = 跟随全局，0 = 不限制）。 */
     private final LinkedHashMap<String, Integer> mentionCdDraft = new LinkedHashMap<String, Integer>();
     /** 群号 → 戳一戳冷却（秒；null = 跟随全局，0 = 不限制）。 */
     private final LinkedHashMap<String, Integer> pokeCdDraft = new LinkedHashMap<String, Integer>();
-    private boolean unifiedOffDraft;
+    /** 群号 → 独立人设模板 id / 名称（空串 = 跟随全局人设）。 */
+    private final LinkedHashMap<String, String> personaDraft = new LinkedHashMap<String, String>();
+    /** 群号 → 独立记忆隔离标志（true = 仅使用本群记忆，false = 默认全局/共享）。 */
+    private final LinkedHashMap<String, Boolean> isolatedMemDraft = new LinkedHashMap<String, Boolean>();
 
+    private ScrollView pageScroll;
+    private int savedListScrollY = 0;
+    private int savedDetailScrollY = 0;
     private LinearLayout body;
-    private FrameLayout overlay;
+    private FrameLayout bottomBar;
+
+    // 详情子页输入控件引用（用于保存前同步草稿）
+    private EditText detailProbInput;
+    private EditText detailMentionInput;
+    private EditText detailPokeInput;
 
     PerGroupScreen(AppShell shell, BotConfigHost host) {
         super(shell);
@@ -61,71 +67,70 @@ final class PerGroupScreen extends Screen {
 
     @Override
     void build() {
+        root.removeAllViews();
         FrameLayout page = new FrameLayout(activity);
         root.addView(page, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
         LinearLayout col = Ui.column(activity);
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
 
-        ScrollView scroll = new ScrollView(activity);
-        scroll.setFillViewport(true);
-        scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        page.addView(scroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-
-        col.addView(header("按群设置"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        pageScroll = new ScrollView(activity);
+        pageScroll.setFillViewport(true);
+        pageScroll.setVerticalScrollBarEnabled(false);
+        pageScroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        page.addView(pageScroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
         body = Ui.column(activity);
         col.addView(body, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // 保存栏固定在页面底部（原来是跟内容一起滚，12 个群时要滚到底才看得见）。
-        FrameLayout bar = Ui.card(activity, t);
+        // 底部固定保存栏（保存后严格保持当前滚动位置，绝不跳回顶部）
+        bottomBar = Ui.card(activity, t);
         LinearLayout row = Ui.row(activity);
         row.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S2), dp(Theme.S2));
-        TextView discard = Ui.button(activity, t, "放弃", false);
-        discard.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                loaded = false;
-                modeDraft.clear();
-                probDraft.clear();
-                mentionCdDraft.clear();
-                pokeCdDraft.clear();
-                ensureLoaded();
-                render();
-            }
+        TextView discard = Ui.button(activity, t, "重新载入", false);
+        discard.setOnClickListener(v -> {
+            loaded = false;
+            probDraft.clear();
+            mentionCdDraft.clear();
+            pokeCdDraft.clear();
+            personaDraft.clear();
+            isolatedMemDraft.clear();
+            ensureLoaded();
+            render();
+            host().toast("已恢复为已保存配置");
         });
-        TextView save = Ui.button(activity, t, "保存", true);
-        save.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                save();
-            }
+        TextView saveBtn = Ui.button(activity, t, "保存配置", true);
+        saveBtn.setOnClickListener(v -> {
+            if (selectedGroupId != null && !applyDetailInputs(selectedGroupId)) return;
+            save();
         });
         row.addView(discard, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
-        LinearLayout.LayoutParams slp2 = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
-        slp2.leftMargin = dp(Theme.S1);
-        row.addView(save, slp2);
-        bar.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        slp.leftMargin = dp(Theme.S1);
+        row.addView(saveBtn, slp);
+        bottomBar.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
         barLp.gravity = Gravity.BOTTOM;
         barLp.leftMargin = dp(Theme.S4);
         barLp.rightMargin = dp(Theme.S4);
         barLp.bottomMargin = dp(Theme.S3);
-        page.addView(bar, barLp);
-
-        // 覆盖层（改一行的浮层）挂最上层，点外面关掉。
-        overlay = new FrameLayout(activity);
-        overlay.setVisibility(View.GONE);
-        overlay.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closeOverlay();
-            }
-        });
-        page.addView(overlay, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        page.addView(bottomBar, barLp);
 
         ensureLoaded();
         render();
+    }
+
+    @Override
+    boolean handleBack() {
+        if (selectedGroupId != null) {
+            applyDetailInputs(selectedGroupId);
+            selectedGroupId = null;
+            savedDetailScrollY = 0;
+            render();
+            return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------ 数据
@@ -133,117 +138,154 @@ final class PerGroupScreen extends Screen {
     private void ensureLoaded() {
         if (loaded) return;
         loaded = true;
+        loadError = null;
         try {
             String json = cfg == null ? null : cfg.loadConfigJson();
-            if (json == null) {
+            if (json == null || json.trim().isEmpty()) {
                 loadError = "读不到 config.json";
                 return;
             }
             data = BotConfigJson.parse(json);
-            Object groups = BotConfigJson.get(data, "allow.groups");
-            List<Object> list = BotConfigJson.asArray(groups);
-            String unified = text("conversation.mode");
-            Object um = BotConfigJson.get(data, "conversation.unifiedMode");
-            unifiedOffDraft = !(um instanceof Boolean) || !((Boolean) um).booleanValue() || list == null;
-            Object modes = BotConfigJson.get(data, "conversation.groupModes");
-            Map<String, Object> gm = BotConfigJson.asObject(modes);
-            Object pos = BotConfigJson.get(data, "store.groupSliderPos");
-            Map<String, Object> ps = BotConfigJson.asObject(pos);
+            List<Object> list = BotConfigJson.asArray(BotConfigJson.get(data, "allow.groups"));
+            Map<String, Object> ps = BotConfigJson.asObject(BotConfigJson.get(data, "store.groupSliderPos"));
             Map<String, Object> mcd = BotConfigJson.asObject(BotConfigJson.get(data, "conversation.groupMentionCooldownSec"));
             Map<String, Object> pcd = BotConfigJson.asObject(BotConfigJson.get(data, "conversation.groupPokeCooldownSec"));
-            int fallback = intOf(BotConfigJson.get(data, "store.randomPercent"), 5);
+            Map<String, Object> ppc = BotConfigJson.asObject(BotConfigJson.get(data, "personaPerChat"));
+            Map<String, Object> mpc = BotConfigJson.asObject(BotConfigJson.get(data, "memoryPerChat"));
+            int fallback = intOf(BotConfigJson.get(data, "store.contextSliderPos"),
+                    intOf(BotConfigJson.get(data, "store.randomPercent"), 5));
+
+            probDraft.clear();
+            mentionCdDraft.clear();
+            pokeCdDraft.clear();
+            personaDraft.clear();
+            isolatedMemDraft.clear();
+
             for (int i = 0; list != null && i < list.size(); i++) {
                 String id = list.get(i) == null ? "" : String.valueOf(list.get(i)).trim();
-                if (id.length() == 0) continue;
-                String mode = gm == null ? null : str(gm.get(id));
-                modeDraft.put(id, mode == null ? "" : mode);
-                probDraft.put(id, ps != null && ps.get(id) != null
-                        ? intOf(ps.get(id), fallback) : fallback);
+                if (id.isEmpty()) continue;
+                probDraft.put(id, ps != null && ps.get(id) != null ? intOf(ps.get(id), fallback) : fallback);
                 mentionCdDraft.put(id, mcd != null ? optCooldown(mcd.get(id)) : null);
                 pokeCdDraft.put(id, pcd != null ? optCooldown(pcd.get(id)) : null);
+
+                String pTpl = "";
+                if (ppc != null) {
+                    Map<String, Object> gp = BotConfigJson.asObject(ppc.get("group:" + id));
+                    if (gp != null) {
+                        pTpl = str(gp.get("templateId")).trim();
+                        if (pTpl.isEmpty()) pTpl = str(gp.get("botName")).trim();
+                    }
+                }
+                personaDraft.put(id, pTpl);
+
+                boolean iso = false;
+                if (mpc != null) {
+                    Map<String, Object> gm = BotConfigJson.asObject(mpc.get("group:" + id));
+                    if (gm != null && Boolean.TRUE.equals(gm.get("isolated"))) iso = true;
+                }
+                isolatedMemDraft.put(id, iso);
             }
-        } catch (Throwable t) {
-            loadError = "读不到 config.json";
+        } catch (Throwable ex) {
+            loadError = "读取配置失败：" + ex.getMessage();
         }
-    }
-
-    private String text(String path) {
-        Object v = BotConfigJson.get(data, path);
-        return v instanceof String ? (String) v : "";
-    }
-
-    private static String str(Object v) {
-        return v instanceof String ? (String) v : "";
-    }
-
-    private static int intOf(Object v, int fallback) {
-        double d = BotConfigJson.numOf(v);
-        if (Double.isNaN(d)) return fallback;
-        int n = (int) Math.round(d);
-        if (n < 0) return 0;
-        return Math.min(n, 100);
-    }
-
-    private static Integer optCooldown(Object v) {
-        if (v == null) return null;
-        double d = BotConfigJson.numOf(v);
-        if (Double.isNaN(d)) return null;
-        int n = (int) Math.round(d);
-        if (n < 0) return 0;
-        return Math.min(n, 3600);
     }
 
     // ------------------------------------------------------------------ 渲染
 
     private void render() {
+        if (body == null) return;
+        if (pageScroll != null) {
+            if (selectedGroupId == null) savedListScrollY = pageScroll.getScrollY();
+            else savedDetailScrollY = pageScroll.getScrollY();
+        }
+        detailProbInput = null;
+        detailMentionInput = null;
+        detailPokeInput = null;
         body.removeAllViews();
 
-        if (loadError != null) {
-            body.addView(Ui.text(activity, loadError, Theme.T_BODY, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-            return;
-        }
-        if (modeDraft.isEmpty()) {
-            body.addView(Ui.text(activity, "白名单里还没有群", Theme.T_BODY, t.textSecondary),
-                    Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-            return;
+        if (selectedGroupId != null) {
+            renderGroupDetail(selectedGroupId);
+        } else {
+            renderGroupList();
         }
 
-        String globalMode = modeName(text("conversation.mode"));
-        TextView note = Ui.text(activity, "全局默认：" + globalMode
-                + (unifiedOffDraft ? "" : "（当前所有群统一，保存后按群生效）"),
-                Theme.T_CAP, t.textTertiary);
-        body.addView(note, marginTop(Theme.S1));
-
-        for (Iterator it = new Iterator(modeDraft.keySet()); it.hasNext(); ) {
-            final String id = it.next();
-            body.addView(groupCard(id), marginTop(Theme.S2));
-        }
-        // 底部给固定保存栏留出空间，免得最后一行被压住
         View spacer = new View(activity);
-        body.addView(spacer, Ui.llp(MATCH_PARENT, dp(Theme.TOUCH + Theme.S4)));
+        body.addView(spacer, Ui.llp(MATCH_PARENT, dp(Theme.TOUCH + Theme.S4 + 16)));
+
+        final int targetY = selectedGroupId == null ? savedListScrollY : savedDetailScrollY;
+        if (pageScroll != null) {
+            pageScroll.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, targetY); });
+        }
     }
 
-    private View groupCard(final String id) {
+    private void renderGroupList() {
+        body.addView(header("群聊与按群规则"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (loadError != null) {
+            body.addView(Ui.text(activity, loadError, Theme.T_BODY, t.textPrimary), marginTop(Theme.S2));
+            return;
+        }
+
+        // 顶部群名刷新与说明卡
+        FrameLayout topCard = Ui.card(activity, t);
+        LinearLayout topBox = Ui.column(activity);
+        topBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        topBox.addView(Ui.text(activity,
+                "统一运行完整生命周期模式 · 点击任意群进入独立配置页（回复概率、冷却、专属人设与记忆隔离）",
+                Theme.T_CAP, t.textSecondary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        TextView refreshBtn = Ui.button(activity, t,
+                refreshingNames ? "正在拉取群名（非 Hook Web CGI）…" : "一键刷新全部群名", false);
+        Ui.enabled(refreshBtn, !refreshingNames);
+        refreshBtn.setOnClickListener(v -> {
+            refreshingNames = true;
+            render();
+            WhitelistPicker.refreshAllGroupNames(activity, count -> {
+                refreshingNames = false;
+                host().toast(count > 0 ? ("已刷新 " + count + " 个群名") : "未拉取到新群名（可点进群手动设备注）");
+                render();
+            });
+        });
+        topBox.addView(refreshBtn, marginTop(Theme.S2));
+        topCard.addView(topBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(topCard, marginTop(Theme.S2));
+
+        if (probDraft.isEmpty()) {
+            body.addView(Ui.text(activity, "群白名单里还没有群，请先在「白名单 / 黑名单」中添加允许的群号。",
+                    Theme.T_BODY, t.textSecondary), marginTop(Theme.S3));
+            return;
+        }
+
+        Map<String, String> names = WhitelistPicker.loadMergedGroupNames(activity);
+        for (String id : probDraft.keySet()) {
+            body.addView(groupCard(id, names.get(id)), marginTop(Theme.S2));
+        }
+    }
+
+    private View groupCard(final String id, String cachedName) {
         FrameLayout card = Ui.card(activity, t);
         LinearLayout row = Ui.row(activity);
         row.setPadding(dp(Theme.S3), dp(Theme.S2 + 2), dp(Theme.S2 + 2), dp(Theme.S2 + 2));
         card.addView(row, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         LinearLayout box = Ui.column(activity);
-        TextView name = Ui.strong(activity, id, Theme.T_CARD, t.textPrimary);
-        box.addView(name, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        String displayTitle = (cachedName != null && !cachedName.trim().isEmpty())
+                ? (cachedName.trim() + "（" + id + "）")
+                : ("群 " + id);
+        box.addView(Ui.strong(activity, displayTitle, Theme.T_BODY, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        String mode = modeDraft.get(id);
-        String shown = mode == null || mode.length() == 0 ? "跟随全局" : modeName(mode);
         Integer p = probDraft.get(id);
         Integer mcd = mentionCdDraft.get(id);
         Integer pcd = pokeCdDraft.get(id);
+        String pTpl = personaDraft.get(id);
+        boolean iso = Boolean.TRUE.equals(isolatedMemDraft.get(id));
+
         StringBuilder meta = new StringBuilder();
-        meta.append(shown).append(" · ").append(p == null ? 0 : p).append("%");
+        meta.append("概率 ").append(p == null ? 0 : p).append("%");
         if (mcd != null) meta.append(" · @冷却 ").append(mcd == 0 ? "关" : (mcd + "s"));
         if (pcd != null) meta.append(" · 戳冷却 ").append(pcd == 0 ? "关" : (pcd + "s"));
-        TextView sub = Ui.text(activity, meta.toString(), Theme.T_CAP, t.textSecondary);
-        box.addView(sub, marginTop(Theme.S1));
+        if (pTpl != null && !pTpl.isEmpty()) meta.append(" · 人设 ").append(pTpl);
+        if (iso) meta.append(" · 独立记忆");
+        box.addView(Ui.text(activity, meta.toString(), Theme.T_CAP, t.textSecondary), marginTop(Theme.S1));
         row.addView(box, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
 
         row.addView(new IconView(activity, IconView.CHEV_R, t.textTertiary), Ui.llp(dp(20), dp(20)));
@@ -251,198 +293,167 @@ final class PerGroupScreen extends Screen {
         card.setClickable(true);
         card.setFocusable(true);
         Ui.press(card, 0.985f);
-        card.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openEditor(id);
-            }
+        card.setOnClickListener(v -> {
+            if (pageScroll != null) savedListScrollY = pageScroll.getScrollY();
+            selectedGroupId = id;
+            savedDetailScrollY = 0;
+            render();
         });
         return card;
     }
 
-    // ------------------------------------------------------------------ 单群编辑浮层
+    // ------------------------------------------------------------------ 独立单群设置子页
 
-    private void openEditor(final String id) {
-        overlay.removeAllViews();
-        overlay.setBackgroundColor(0x99000000);
-        overlay.setVisibility(View.VISIBLE);
+    private void renderGroupDetail(final String id) {
+        String name = WhitelistPicker.cachedGroupName(activity, id);
+        String title = name.isEmpty() ? ("群 " + id) : name;
+        body.addView(header(title), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        FrameLayout card = Ui.card(activity, t);
-        LinearLayout box = Ui.column(activity);
-        box.setPadding(dp(Theme.S4), dp(Theme.S3), dp(Theme.S4), dp(Theme.S3));
-        card.addView(box, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        // 卡 1：群身份与本地备注
+        FrameLayout idCard = Ui.card(activity, t);
+        LinearLayout idBox = Ui.column(activity);
+        idBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        idBox.addView(Ui.strong(activity, "群号：" + id, Theme.T_BODY, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        idBox.addView(Ui.text(activity, name.isEmpty() ? "当前无缓存群名（可手动设备注或回列表刷新）" : ("展示名称：" + name),
+                Theme.T_CAP, t.textSecondary), marginTop(4));
+        TextView remarkBtn = Ui.button(activity, t, "修改本群备注名", false);
+        remarkBtn.setOnClickListener(v -> ModelsScreen.W.textDialog(activity, t, "修改群备注（群 " + id + "）",
+                "仅保存于本机，优先于拉取群名展示；留空则恢复默认", name, InputType.TYPE_CLASS_TEXT, false, null,
+                val -> {
+                    WhitelistPicker.saveGroupRemark(activity, id, val);
+                    host().toast("已更新群备注");
+                    render();
+                }));
+        idBox.addView(remarkBtn, marginTop(Theme.S2));
+        idCard.addView(idBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(idCard, marginTop(Theme.S2));
 
-        box.addView(Ui.strong(activity, "群 " + id, Theme.T_CARD, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        // 卡 2：回复概率与冷却
+        FrameLayout freqCard = Ui.card(activity, t);
+        LinearLayout freqBox = Ui.column(activity);
+        freqBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        freqBox.addView(Ui.strong(activity, "回复概率与冷却", Theme.T_CARD, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // 模式：4 个胶囊，2×2 排（一行放不下，「完整生命周期」会被挤出去）
-        box.addView(Ui.text(activity, "对话模式", Theme.T_CAP, t.textTertiary), marginTop(Theme.S3));
-        final String curMode = modeDraft.get(id) == null ? "" : modeDraft.get(id);
-        final TextView[] chipViews = new TextView[4];
-        final String[] ids = {"", MODE_IDS[0], MODE_IDS[1], MODE_IDS[2]};
-        final String[] names = {"跟随全局", MODE_NAMES[0], MODE_NAMES[1], MODE_NAMES[2]};
-        final String[] picked = {curMode};
-        for (int rowIdx = 0; rowIdx < 2; rowIdx++) {
-            LinearLayout chips = Ui.row(activity);
-            chips.setPadding(0, dp(rowIdx == 0 ? 6 : 6), 0, 0);
-            for (int col = 0; col < 2; col++) {
-                final int i = rowIdx * 2 + col;
-                final int idx = i;
-                TextView chip = Ui.text(activity, names[i], Theme.T_CAP, t.textPrimary);
-                chip.setPadding(dp(12), dp(8), dp(12), dp(8));
-                chip.setGravity(Gravity.CENTER);
-                chip.setClickable(true);
-                chip.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        picked[0] = ids[idx];
-                        for (int k = 0; k < chipViews.length; k++) {
-                            boolean on = k == idx;
-                            chipViews[k].setBackground(Drawables.round(on ? t.accent : t.ghostFill,
-                                    on ? 0 : t.ghostStroke, dp(1), dp(Theme.R_PILL)));
-                            chipViews[k].setTextColor(on ? t.onAccent : t.textPrimary);
-                        }
-                    }
-                });
-                chipViews[i] = chip;
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-                if (col > 0) lp.leftMargin = dp(6);
-                chips.addView(chip, lp);
-            }
-            LinearLayout.LayoutParams rowLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
-            rowLp.topMargin = dp(6);
-            box.addView(chips, rowLp);
-        }
-        // 初始态
-        for (int k = 0; k < ids.length; k++) {
-            boolean on = ids[k].equals(curMode);
-            chipViews[k].setBackground(Drawables.round(on ? t.accent : t.ghostFill,
-                    on ? 0 : t.ghostStroke, dp(1), dp(Theme.R_PILL)));
-            chipViews[k].setTextColor(on ? t.onAccent : t.textPrimary);
-        }
+        freqBox.addView(Ui.text(activity, "回复概率 %（0 = 仅响应 @ 与关键词，100 = 每条都回）", Theme.T_CAP, t.textSecondary), marginTop(Theme.S2));
+        detailProbInput = numBox(String.valueOf(probDraft.get(id) == null ? 0 : probDraft.get(id)), "0~100");
+        freqBox.addView(detailProbInput, marginTop(Theme.S1));
 
-        // 概率
-        box.addView(Ui.text(activity, "回复概率 %（0~100）", Theme.T_CAP, t.textTertiary), marginTop(Theme.S3));
-        final EditText input = new EditText(activity);
-        input.setText(String.valueOf(probDraft.get(id) == null ? 0 : probDraft.get(id)));
-        input.setTextSize(Theme.T_BODY);
-        input.setSingleLine(true);
-        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        input.setTextColor(t.textPrimary);
-        input.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(1), dp(Theme.R_BTN)));
-        input.setPadding(dp(12), dp(8), dp(12), dp(8));
-        box.addView(input, marginTop(Theme.S1));
-
-        // 被 @ 冷却（秒）
-        box.addView(Ui.text(activity, "被 @ 冷却（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textTertiary), marginTop(Theme.S2));
-        final EditText mentionInput = new EditText(activity);
+        freqBox.addView(Ui.text(activity, "被 @ 最小回复间隔（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textSecondary), marginTop(Theme.S2));
         Integer curMcd = mentionCdDraft.get(id);
-        mentionInput.setText(curMcd == null ? "" : String.valueOf(curMcd));
-        mentionInput.setHint("留空跟随全局（默认 60）");
-        mentionInput.setHintTextColor(t.textTertiary);
-        mentionInput.setTextSize(Theme.T_BODY);
-        mentionInput.setSingleLine(true);
-        mentionInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        mentionInput.setTextColor(t.textPrimary);
-        mentionInput.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(1), dp(Theme.R_BTN)));
-        mentionInput.setPadding(dp(12), dp(8), dp(12), dp(8));
-        box.addView(mentionInput, marginTop(Theme.S1));
+        detailMentionInput = numBox(curMcd == null ? "" : String.valueOf(curMcd), "留空跟随全局");
+        freqBox.addView(detailMentionInput, marginTop(Theme.S1));
 
-        // 戳一戳冷却（秒）
-        box.addView(Ui.text(activity, "戳一戳冷却（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textTertiary), marginTop(Theme.S2));
-        final EditText pokeInput = new EditText(activity);
+        freqBox.addView(Ui.text(activity, "戳一戳最小回复间隔（秒，留空=跟随全局，0=不限制）", Theme.T_CAP, t.textSecondary), marginTop(Theme.S2));
         Integer curPcd = pokeCdDraft.get(id);
-        pokeInput.setText(curPcd == null ? "" : String.valueOf(curPcd));
-        pokeInput.setHint("留空跟随全局（默认 60）");
-        pokeInput.setHintTextColor(t.textTertiary);
-        pokeInput.setTextSize(Theme.T_BODY);
-        pokeInput.setSingleLine(true);
-        pokeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        pokeInput.setTextColor(t.textPrimary);
-        pokeInput.setBackground(Drawables.round(t.ghostFill, t.ghostStroke, dp(1), dp(Theme.R_BTN)));
-        pokeInput.setPadding(dp(12), dp(8), dp(12), dp(8));
-        box.addView(pokeInput, marginTop(Theme.S1));
+        detailPokeInput = numBox(curPcd == null ? "" : String.valueOf(curPcd), "留空跟随全局");
+        freqBox.addView(detailPokeInput, marginTop(Theme.S1));
 
-        LinearLayout bar = Ui.row(activity);
-        TextView cancel = Ui.button(activity, t, "取消", false);
-        cancel.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closeOverlay();
-            }
-        });
-        TextView ok = Ui.button(activity, t, "确定", true);
-        ok.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                String raw = input.getText() == null ? "" : input.getText().toString().trim();
-                int p;
-                try {
-                    p = Integer.parseInt(raw);
-                } catch (NumberFormatException e) {
-                    host().toast("概率要填 0~100 的数字");
-                    return;
-                }
-                if (p < 0 || p > 100) {
-                    host().toast("概率要在 0~100 之间");
-                    return;
-                }
-                Integer mVal = null;
-                String rawM = mentionInput.getText() == null ? "" : mentionInput.getText().toString().trim();
-                if (rawM.length() > 0) {
-                    try {
-                        int n = Integer.parseInt(rawM);
-                        if (n < 0 || n > 3600) {
-                            host().toast("被 @ 冷却要在 0~3600 秒之间");
-                            return;
-                        }
-                        mVal = n;
-                    } catch (NumberFormatException e) {
-                        host().toast("被 @ 冷却要填整数或留空");
-                        return;
-                    }
-                }
-                Integer pVal = null;
-                String rawP = pokeInput.getText() == null ? "" : pokeInput.getText().toString().trim();
-                if (rawP.length() > 0) {
-                    try {
-                        int n = Integer.parseInt(rawP);
-                        if (n < 0 || n > 3600) {
-                            host().toast("戳一戳冷却要在 0~3600 秒之间");
-                            return;
-                        }
-                        pVal = n;
-                    } catch (NumberFormatException e) {
-                        host().toast("戳一戳冷却要填整数或留空");
-                        return;
-                    }
-                }
-                modeDraft.put(id, picked[0]);
-                probDraft.put(id, p);
-                mentionCdDraft.put(id, mVal);
-                pokeCdDraft.put(id, pVal);
-                closeOverlay();
-                render();
-            }
-        });
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
-        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
-        olp.leftMargin = dp(Theme.S1);
-        bar.addView(cancel, blp);
-        bar.addView(ok, olp);
-        box.addView(bar, marginTop(Theme.S3));
+        freqCard.addView(freqBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(freqCard, marginTop(Theme.S2));
 
-        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
-                Math.min(dp(Theme.S4 * 10), activity.getResources().getDisplayMetrics().widthPixels - dp(Theme.S4) * 2),
-                WRAP_CONTENT);
-        clp.gravity = Gravity.CENTER;
-        overlay.addView(card, clp);
-        // 卡片自己吃掉点击，别让外面的"点空白关闭"把编辑打断
-        card.setClickable(true);
+        // 卡 3：本群专属人设与记忆范围
+        FrameLayout extCard = Ui.card(activity, t);
+        LinearLayout extBox = Ui.column(activity);
+        extBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        extBox.addView(Ui.strong(activity, "专属人设与记忆范围", Theme.T_CARD, t.textPrimary), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        final String curPersona = personaDraft.get(id) == null ? "" : personaDraft.get(id);
+        extBox.addView(Ui.text(activity, "当前人设：" + (curPersona.isEmpty() ? "跟随全局默认人设" : curPersona),
+                Theme.T_CAP, t.textSecondary), marginTop(Theme.S1));
+        TextView pickPersonaBtn = Ui.button(activity, t, "选择本群专属人设", false);
+        pickPersonaBtn.setOnClickListener(v -> {
+            applyDetailInputs(id);
+            choosePersonaForGroup(id);
+        });
+        extBox.addView(pickPersonaBtn, marginTop(Theme.S2));
+
+        final boolean iso = Boolean.TRUE.equals(isolatedMemDraft.get(id));
+        extBox.addView(ModelsScreen.W.switchRow(activity, t, "本群记忆独立隔离",
+                "开启后本群仅召回本群历史，不与其他群交叉联想", iso, now -> {
+                    applyDetailInputs(id);
+                    isolatedMemDraft.put(id, now);
+                }), marginTop(Theme.S2));
+        extCard.addView(extBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(extCard, marginTop(Theme.S2));
     }
 
-    private void closeOverlay() {
-        overlay.setVisibility(View.GONE);
-        overlay.removeAllViews();
+    private EditText numBox(String val, String hint) {
+        EditText et = new EditText(activity);
+        et.setText(val);
+        et.setHint(hint);
+        et.setSingleLine(true);
+        et.setInputType(InputType.TYPE_CLASS_NUMBER);
+        Ui.styleInput(et, activity, t);
+        return et;
+    }
+
+    private boolean applyDetailInputs(String id) {
+        if (detailProbInput != null) {
+            String raw = detailProbInput.getText().toString().trim();
+            try {
+                int p = Integer.parseInt(raw);
+                if (p < 0 || p > 100) { host().toast("回复概率要在 0~100 之间"); return false; }
+                probDraft.put(id, p);
+            } catch (NumberFormatException e) {
+                host().toast("回复概率需填写整数");
+                return false;
+            }
+        }
+        if (detailMentionInput != null) {
+            String raw = detailMentionInput.getText().toString().trim();
+            if (raw.isEmpty()) mentionCdDraft.put(id, null);
+            else {
+                try {
+                    int n = Integer.parseInt(raw);
+                    if (n < 0 || n > 3600) { host().toast("被 @ 冷却需在 0~3600 秒之间"); return false; }
+                    mentionCdDraft.put(id, n);
+                } catch (NumberFormatException e) { host().toast("被 @ 冷却需为整数或留空"); return false; }
+            }
+        }
+        if (detailPokeInput != null) {
+            String raw = detailPokeInput.getText().toString().trim();
+            if (raw.isEmpty()) pokeCdDraft.put(id, null);
+            else {
+                try {
+                    int n = Integer.parseInt(raw);
+                    if (n < 0 || n > 3600) { host().toast("戳一戳冷却需在 0~3600 秒之间"); return false; }
+                    pokeCdDraft.put(id, n);
+                } catch (NumberFormatException e) { host().toast("戳一戳冷却需为整数或留空"); return false; }
+            }
+        }
+        return true;
+    }
+
+    private void choosePersonaForGroup(final String id) {
+        List<String> labels = new ArrayList<String>();
+        List<String> values = new ArrayList<String>();
+        labels.add("跟随全局默认人设");
+        values.add("");
+
+        List<Object> customs = BotConfigJson.asArray(BotConfigJson.get(data, "customPersonas"));
+        if (customs != null) {
+            for (Object o : customs) {
+                Map<String, Object> m = BotConfigJson.asObject(o);
+                if (m == null) continue;
+                String n = str(m.get("name")).trim();
+                if (!n.isEmpty()) {
+                    labels.add("自定义：" + n);
+                    values.add(n);
+                }
+            }
+        }
+        for (String[] role : PersonaEditScreen.BUILTIN_ROLES) {
+            labels.add("内置：" + role[1]);
+            values.add(role[0]);
+        }
+        ModelsScreen.W.chooseDialog(activity, t, "选择本群专属人设",
+                "仅对群 " + id + " 生效",
+                labels.toArray(new String[0]), values.toArray(new String[0]),
+                personaDraft.get(id) == null ? "" : personaDraft.get(id),
+                picked -> {
+                    personaDraft.put(id, picked);
+                    render();
+                });
     }
 
     // ------------------------------------------------------------------ 保存
@@ -450,23 +461,15 @@ final class PerGroupScreen extends Screen {
     private void save() {
         try {
             Object out = BotConfigJson.deepCopy(data);
-            // 1) 关掉统一模式（否则 groupModes 不生效）
-            BotConfigJson.set(out, "conversation.unifiedMode", Boolean.FALSE);
-            // 2) 逐群模式：跟随全局 = 删键
-            for (Map.Entry<String, String> e : modeDraft.entrySet()) {
-                String mode = e.getValue();
-                if (mode == null || mode.length() == 0) {
-                    removeKey(out, "conversation.groupModes", e.getKey());
-                } else {
-                    setObjectKey(out, "conversation.groupModes", e.getKey(), mode);
-                }
-            }
-            // 3) 逐群概率
+            // 锁定完整生命周期模式并关闭概率统一档位，让按群概率立即生效
+            BotConfigJson.set(out, "conversation.mode", "lifecycle");
+            BotConfigJson.set(out, "conversation.unifiedMode", Boolean.TRUE);
+            BotConfigJson.set(out, "store.unifiedTier", Boolean.FALSE);
+
             for (Map.Entry<String, Integer> e : probDraft.entrySet()) {
                 setObjectKey(out, "store.groupSliderPos", e.getKey(),
                         new BotConfigJson.Num(String.valueOf(e.getValue())));
             }
-            // 4) 逐群被 @ / 戳一戳冷却（null = 删键跟随全局）
             for (Map.Entry<String, Integer> e : mentionCdDraft.entrySet()) {
                 if (e.getValue() == null) removeKey(out, "conversation.groupMentionCooldownSec", e.getKey());
                 else setObjectKey(out, "conversation.groupMentionCooldownSec", e.getKey(),
@@ -477,50 +480,85 @@ final class PerGroupScreen extends Screen {
                 else setObjectKey(out, "conversation.groupPokeCooldownSec", e.getKey(),
                         new BotConfigJson.Num(String.valueOf(e.getValue())));
             }
-            String json = BotConfigJson.write(out);
-            if (!cfg.saveConfigJson(json)) {
-                host().toast("保存失败，改动还在");
+            for (Map.Entry<String, String> e : personaDraft.entrySet()) {
+                String key = "group:" + e.getKey();
+                String val = e.getValue() == null ? "" : e.getValue().trim();
+                if (val.isEmpty()) {
+                    removeKey(out, "personaPerChat", key);
+                } else {
+                    LinkedHashMap<String, Object> entry = new LinkedHashMap<String, Object>();
+                    entry.put("templateId", val);
+                    String md = findPersonaText(val);
+                    if (!md.isEmpty()) entry.put("roleText", md);
+                    setObjectKey(out, "personaPerChat", key, entry);
+                }
+            }
+            for (Map.Entry<String, Boolean> e : isolatedMemDraft.entrySet()) {
+                String key = "group:" + e.getKey();
+                if (!Boolean.TRUE.equals(e.getValue())) {
+                    removeKey(out, "memoryPerChat", key);
+                } else {
+                    LinkedHashMap<String, Object> entry = new LinkedHashMap<String, Object>();
+                    entry.put("isolated", Boolean.TRUE);
+                    setObjectKey(out, "memoryPerChat", key, entry);
+                }
+            }
+
+            if (!cfg.saveConfigJson(BotConfigJson.write(out))) {
+                host().toast("保存失败，改动仍在当前页面");
                 return;
             }
-            loaded = false;
             data = out;
-            loaded = true;
-            host().toast("已保存");
+            host().toast("已保存按群配置");
             render();
-        } catch (Throwable th) {
-            host().toast("保存失败：" + (th.getMessage() == null ? th.getClass().getSimpleName() : th.getMessage()));
+        } catch (Throwable ex) {
+            host().toast("保存失败：" + ex.getMessage());
         }
     }
 
-    /** 在 parent 对象里写一个键（对象不存在就建）。 */
-    private void setObjectKey(Object root, String parentPath, String key, Object value) {
-        Object parent = BotConfigJson.get(root, parentPath);
-        if (!(parent instanceof Map)) {
-            Map<String, Object> created = new LinkedHashMap<String, Object>();
-            BotConfigJson.set(root, parentPath, created);
-            parent = created;
+    private String findPersonaText(String idOrName) {
+        List<Object> customs = BotConfigJson.asArray(BotConfigJson.get(data, "customPersonas"));
+        if (customs != null) {
+            for (Object o : customs) {
+                Map<String, Object> m = BotConfigJson.asObject(o);
+                if (m != null && idOrName.equals(str(m.get("name")).trim())) {
+                    String tx = str(m.get("text")).trim();
+                    return tx.isEmpty() ? str(m.get("roleText")).trim() : tx;
+                }
+            }
         }
-        @SuppressWarnings("unchecked")
-        Map<String, Object> map = (Map<String, Object>) parent;
-        map.put(key, value);
+        return PersonaEditScreen.readBuiltinRoleMarkdown(activity, idOrName);
     }
 
-    private void removeKey(Object root, String parentPath, String key) {
-        Object parent = BotConfigJson.get(root, parentPath);
-        if (parent instanceof Map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) parent;
-            map.remove(key);
+    private static void setObjectKey(Object root, String parentPath, String key, Object value) {
+        Map<String, Object> m = BotConfigJson.asObject(BotConfigJson.get(root, parentPath));
+        if (m == null) {
+            m = new LinkedHashMap<String, Object>();
+            BotConfigJson.set(root, parentPath, m);
         }
+        m.put(key, value);
     }
 
-    // ------------------------------------------------------------------ 小工具
+    private static void removeKey(Object root, String parentPath, String key) {
+        Map<String, Object> m = BotConfigJson.asObject(BotConfigJson.get(root, parentPath));
+        if (m != null) m.remove(key);
+    }
 
-    private static String modeName(String id) {
-        if ("legacy".equals(id)) return "传统触发";
-        if ("threaded".equals(id)) return "参与者续接";
-        if ("lifecycle".equals(id)) return "完整生命周期";
-        return "跟随全局";
+    private static String str(Object v) { return v instanceof String ? (String) v : ""; }
+
+    private static int intOf(Object v, int fallback) {
+        double d = BotConfigJson.numOf(v);
+        if (Double.isNaN(d)) return fallback;
+        int n = (int) Math.round(d);
+        return Math.max(0, Math.min(n, 100));
+    }
+
+    private static Integer optCooldown(Object v) {
+        if (v == null) return null;
+        double d = BotConfigJson.numOf(v);
+        if (Double.isNaN(d)) return null;
+        int n = (int) Math.round(d);
+        return Math.max(0, Math.min(n, 3600));
     }
 
     private LinearLayout.LayoutParams marginTop(int token) {
@@ -528,22 +566,4 @@ final class PerGroupScreen extends Screen {
         lp.topMargin = dp(token);
         return lp;
     }
-
-    /** 极简迭代器：只为把 keySet 的顺序遍历写成 for 语句（避免 import 额外集合）。 */
-    private static final class Iterator {
-        private final java.util.Iterator<String> it;
-
-        Iterator(java.util.Set<String> keys) {
-            this.it = keys.iterator();
-        }
-
-        boolean hasNext() {
-            return it.hasNext();
-        }
-
-        String next() {
-            return it.next();
-        }
-    }
 }
-

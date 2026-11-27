@@ -37,99 +37,32 @@ final class DashboardHubScreen extends Screen {
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
         scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
-        col.addView(header("看板"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("运行看板"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "运行端只读观测", Theme.T_CAP, t.textSecondary);
+        TextView sub = Ui.text(activity, "运行状态观测、调用追踪、异常对账与关系监控（插件/技能/MCP 已独立至扩展中心）",
+                Theme.T_CAP, t.textSecondary);
         sub.setLineSpacing(dp(3), 1f);
         col.addView(sub, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
 
-        DashKit.Card c = DashKit.card(activity, t, "看板", null);
-        entry(c.body, "总览", "连接 · 心情 · 用量 · 存储",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushDashboard();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "会话", "每个群/私聊的活跃度与最近调用",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushChatMonitor();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "调用", "单次调用的注入与推理",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushCallLog();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "记忆", "群印象管理 · 最近的事 · 人物近况与转折",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushMemory();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "运维", "观测 · 异常 · 用量 · 技能",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushOps();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "亲密度与心情", "熟人榜 · 单人事件补记 · 心情精力调节",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushIntimacy();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "好友", "机器人认识的人与好友申请",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushPeople();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "控制", "协议端 · 主机 · 自更新 · 健康",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushControl();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "插件", "已装 · 目录 · 待处理",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushPlugins();
-                    }
-                });
-        DashKit.divider(activity, t, c.body);
-        entry(c.body, "待对账", "发送待确认 / 失败 · 解锁与重试",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        shell.pushReconcile();
-                    }
-                });
+        // 卡 1：实时观测与对账
+        DashKit.Card c1 = DashKit.card(activity, t, "运行观测与对账", null);
+        entry(c1.body, "总览与体检", "连接状态 · 心情精力 · 今日用量 · 存储占用", v -> shell.pushDashboard());
+        DashKit.divider(activity, t, c1.body);
+        entry(c1.body, "会话监控", "各群与私聊的活跃度及最近响应", v -> shell.pushChatMonitor());
+        DashKit.divider(activity, t, c1.body);
+        entry(c1.body, "调用明细", "单次模型推理上下文、耗时与工具调用", v -> shell.pushCallLog());
+        DashKit.divider(activity, t, c1.body);
+        entry(c1.body, "待对账与纠偏", "发送待确认 / 失败记录与二次确认补发", v -> shell.pushReconcile());
+        DashKit.divider(activity, t, c1.body);
+        entry(c1.body, "异常与主机状态", "系统异常告警 · 7 天用量趋势 · 运行体检", v -> shell.pushOps());
+        col.addView(c1.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
 
-        col.addView(c.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
-
-        TextView note = Ui.text(activity, "支持在「记忆」「亲密度与心情」「待对账」里进行快捷纠偏与微调，其余页面只读。",
-                Theme.T_CAP, t.textTertiary);
-        note.setLineSpacing(dp(3), 1f);
-        col.addView(note, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
+        // 卡 2：关系与待审记录
+        DashKit.Card c2 = DashKit.card(activity, t, "关系与待审", null);
+        entry(c2.body, "亲密度与心情", "熟人排行 · 互动事件记录 · 心情精力状态", v -> shell.pushIntimacy());
+        DashKit.divider(activity, t, c2.body);
+        entry(c2.body, "好友申请", "被动好友申请审核与处理记录", v -> shell.pushPeople());
+        col.addView(c2.view, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
     }
 
     private void entry(LinearLayout parent, String title, String sub, View.OnClickListener click) {

@@ -94,6 +94,20 @@ final class NewBotScreen extends Screen {
             CoreInventory.Instance c = free.get(cores.getSelectedItemPosition());
             BotRegistry.Bot bot = BotRegistry.createOnCore(c.id, n, persona.getText().toString(), new ArrayList<>(selected));
             if (bot == null) { host().toast("无法分配此核心，请刷新后重试"); return; }
+            shell.setCurrentBotId(bot.id);
+            try {
+                if (activity instanceof BotConfigHost) {
+                    BotConfigHost cfgHost = (BotConfigHost) activity;
+                    String raw = cfgHost.loadConfigJson();
+                    Object doc = (raw != null && !raw.trim().isEmpty())
+                            ? BotConfigJson.parse(raw)
+                            : new java.util.LinkedHashMap<String, Object>();
+                    BotConfigJson.set(doc, "persona.botName", n);
+                    String pText = persona.getText().toString().trim();
+                    if (!pText.isEmpty()) BotConfigJson.set(doc, "persona.roleText", pText);
+                    cfgHost.saveConfigJson(BotConfigJson.write(doc));
+                }
+            } catch (Throwable ignored) {}
             save.setEnabled(false);
             shell.popTo(AppShell.P_BOTLIST);
             if (BotRegistry.KIND_BUILTIN.equals(c.kind)) shell.corePage("plugins", c.id);

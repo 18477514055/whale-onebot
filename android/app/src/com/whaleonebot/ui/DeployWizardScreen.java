@@ -410,6 +410,8 @@ final class DeployWizardScreen extends Screen {
             String err = r.error;
             if (r.file != null && r.file.isFile()) {
                 try {
+                    // ★ 干净机必做：先释放 busybox，避免 install() 报「缺少 busybox」
+                    QqClientInstaller.ensureBusybox(activity);
                     QqClientInstaller.Result ir = QqClientInstaller.install(
                             activity.getFilesDir(), r.file, stage -> activity.runOnUiThread(() -> {
                                 busyMessage = stage;
@@ -608,27 +610,27 @@ final class DeployWizardScreen extends Screen {
         final BotRegistry.Bot bot = b;
 
         LinearLayout card = Ui.addCard(stepHost, activity, t, 0);
-        card.addView(Ui.strong(activity, "最后一步：逐个完成所选平台登录", Theme.T_CARD, t.textPrimary));
+        card.addView(Ui.strong(activity, "最后一步：完成登录并选首批允许说话的群", Theme.T_CARD, t.textPrimary));
         card.addView(Ui.text(activity,
-                "点下方对应平台按钮完成登录与启动即可；全部处理完后点底部「完成部署，返回设置」自动回到设置主页。",
+                "1) 点下方对应平台完成登录；2) 在下方勾选或填入首批允许回复的 QQ 群并点「保存并开启回复」即可立即对话。",
                 Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
 
         for (final String pid : selectedPlatforms) {
             card.addView(Ui.divider(activity, t));
             LinearLayout row = Ui.column(activity);
-            String title = BotRegistry.PLATFORM_LABEL(pid) + (BotRegistry.P_DOUYIN.equals(pid) ? "（测试版）" : "");
+            String title = BotRegistry.PLATFORM_LABEL(pid) + (BotRegistry.P_DOUYIN.equals(pid) ? "（实验预览）" : "");
             row.addView(Ui.strong(activity, title, Theme.T_BODY, t.textPrimary));
             String desc;
             String btnText;
             if (BotRegistry.P_QQ.equals(pid)) {
-                desc = "进入 QQ 启动页启动容器并扫码登录，之后即可在群聊/私聊对话。";
-                btnText = "去 QQ 启动与扫码登录";
+                desc = "进入 QQ 启动页启动容器并一键拉起 QQ / 扫码登录；若缺少 QQ 插件也可点下方检查补装。";
+                btnText = "去 QQ 启动与上线";
             } else if (BotRegistry.P_BILIBILI.equals(pid)) {
-                desc = "进入 B 站平台页打开官方网页登录并启用服务。";
+                desc = "进入 B 站平台页打开官方网页登录（安全默认仅浏览，写操作需你手动开启）。";
                 btnText = "去 bilibili 登录与启动";
             } else {
-                desc = "进入抖音测试版页完成实验性网页登录并确认写操作授权策略。";
-                btnText = "去抖音（测试版）配置与登录";
+                desc = "进入抖音实验预览页查看本地授权策略与候选队列配置。";
+                btnText = "去抖音（实验预览）";
             }
             row.addView(Ui.text(activity, desc, Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
             TextView go = Ui.button(activity, t, btnText, false);
@@ -637,6 +639,7 @@ final class DeployWizardScreen extends Screen {
                     host().toast("请先完成上一步机器人建档");
                     return;
                 }
+                shell.setCurrentBotId(bot.id);
                 if (BotRegistry.P_QQ.equals(pid)) shell.pushBotStart(bot.id);
                 else if (BotRegistry.P_BILIBILI.equals(pid)) shell.pushBiliAccounts(bot.id, "start");
                 else if (BotRegistry.P_DOUYIN.equals(pid)) shell.pushDouyinPlatform(bot.id, "start");
@@ -644,6 +647,134 @@ final class DeployWizardScreen extends Screen {
             row.addView(go, topMargin(dp(Theme.S2)));
             card.addView(row, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         }
+
+        // 若所选核心缺少平台插件，给一个显式一键补装入口
+        if (bot != null) {
+            final CoreInventory.Instance coreInst = BotRegistry.coreForBot(bot.id);
+            if (coreInst != null && BotRegistry.KIND_BUILTIN.equals(coreInst.kind)) {
+                card.addView(Ui.divider(activity, t));
+                TextView pluginBtn = Ui.button(activity, t, "检查并一键补装缺失平台插件", false);
+                pluginBtn.setOnClickListener(v -> shell.corePage("plugins", coreInst.id));
+                card.addView(pluginBtn, topMargin(dp(Theme.S2)));
+            }
+        }
+
+        // ★ 新手临门一脚：配置首批白名单群 + 回复积极度安全档 + 自动切 active（解决装完不说话 & 解锁烧钱两大痛点）
+        if (selectedPlatforms.contains(BotRegistry.P_QQ)) {
+            LinearLayout wlCard = Ui.addCard(stepHost, activity, t, Theme.S3);
+            wlCard.addView(Ui.strong(activity, "让机器人开口说话（首批群白名单与安全护栏）", Theme.T_CARD, t.textPrimary));
+            wlCard.addView(Ui.text(activity,
+                    "机器人默认出于安全不回复陌生群。填入至少 1 个测试 QQ 群号（逗号/换行分隔）或直接从会话勾选，保存时自动切到「启用回复」并开启保守限频保护。",
+                    Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
+
+            final EditText etGroups = new EditText(activity);
+            etGroups.setSingleLine(false);
+            etGroups.setMinLines(2);
+            etGroups.setHint("输入允许回复的 QQ 群号，例如 123456789（多个用换行或逗号隔开）");
+            Ui.styleInput(etGroups, activity, t);
+            wlCard.addView(etGroups, topMargin(dp(Theme.S2)));
+
+            TextView pickBtn = Ui.button(activity, t, "从已登录的 QQ 会话里勾选群", false);
+            pickBtn.setOnClickListener(v -> {
+                java.util.List<String> cur = parseGroupIds(etGroups.getText().toString());
+                WhitelistPicker.show(activity, t, "选择首批允许回复的 QQ 群", cur, WhitelistPicker.KIND_GROUP, new WhitelistPicker.Callback() {
+                    @Override
+                    public void onPicked(java.util.List<String> ids, java.util.List<String> removed) {
+                        java.util.List<String> merged = WhitelistModel.merge(cur, ids);
+                        StringBuilder sb = new StringBuilder();
+                        for (int i = 0; i < merged.size(); i++) {
+                            if (i > 0) sb.append('\n');
+                            sb.append(merged.get(i));
+                        }
+                        etGroups.setText(sb.toString());
+                    }
+                });
+            });
+            wlCard.addView(pickBtn, topMargin(dp(Theme.S1)));
+
+            wlCard.addView(Ui.strong(activity, "群聊回复积极度（可随时改）", Theme.T_BODY, t.textPrimary), topMargin(dp(Theme.S2)));
+            final int[] chosenSlider = new int[] { 0 };
+            final TextView[] tierChips = new TextView[3];
+            final String[] tierLabels = new String[] { "仅被 @（推荐省钱）", "适度插话 20%", "积极参与 50%" };
+            final int[] tierVals = new int[] { 0, 20, 50 };
+            LinearLayout tierRow = Ui.row(activity);
+            Runnable refreshTiers = () -> {
+                for (int i = 0; i < 3; i++) {
+                    boolean sel = chosenSlider[0] == tierVals[i];
+                    tierChips[i].setTextColor(sel ? t.onAccent : t.textPrimary);
+                    tierChips[i].setBackground(Drawables.round(
+                            sel ? t.accent : t.ghostFill,
+                            sel ? t.accent : t.ghostStroke, dp(1), dp(Theme.R_PILL)));
+                }
+            };
+            for (int i = 0; i < 3; i++) {
+                final int idx = i;
+                TextView ch = modeChip(tierLabels[i], i == 0);
+                ch.setOnClickListener(v -> {
+                    chosenSlider[0] = tierVals[idx];
+                    refreshTiers.run();
+                });
+                tierChips[i] = ch;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                if (i > 0) lp.leftMargin = dp(Theme.S1);
+                tierRow.addView(ch, lp);
+            }
+            wlCard.addView(tierRow, topMargin(dp(Theme.S1)));
+
+            TextView saveWlBtn = Ui.button(activity, t, "保存首批群聊并启用回复（含预算安全护栏）", true);
+            saveWlBtn.setOnClickListener(v -> {
+                java.util.List<String> groups = parseGroupIds(etGroups.getText().toString());
+                if (groups.isEmpty()) {
+                    host().toast("请先输入或勾选至少 1 个 QQ 群号");
+                    return;
+                }
+                try {
+                    if (bot != null) shell.setCurrentBotId(bot.id);
+                    BotConfigHost cfgHost = (activity instanceof BotConfigHost) ? (BotConfigHost) activity : null;
+                    if (cfgHost == null) return;
+                    String raw = cfgHost.loadConfigJson();
+                    Object doc = (raw != null && !raw.trim().isEmpty())
+                            ? BotConfigJson.parse(raw)
+                            : new java.util.LinkedHashMap<String, Object>();
+                    java.util.List<Object> existing = BotConfigJson.asArray(BotConfigJson.get(doc, "allow.groups"));
+                    java.util.List<Object> merged = new java.util.ArrayList<Object>();
+                    if (existing != null) merged.addAll(existing);
+                    for (String g : groups) {
+                        if (!merged.contains(g)) merged.add(g);
+                    }
+                    BotConfigJson.set(doc, "allow.groups", merged);
+                    BotConfigJson.set(doc, "store.contextSliderPos", new BotConfigJson.Num(String.valueOf(chosenSlider[0])));
+                    BotConfigJson.set(doc, "runtime.mode", "active");
+                    // 安全护栏：仅在未设置过时补上温和限频与 10 元预算保护，绝不覆盖老用户已有配置
+                    if (BotConfigJson.get(doc, "send.maxPerMinute") == BotConfigJson.MISSING) {
+                        BotConfigJson.set(doc, "send.maxPerMinute", new BotConfigJson.Num("20"));
+                    }
+                    if (BotConfigJson.get(doc, "api.budget.enabled") == BotConfigJson.MISSING) {
+                        BotConfigJson.set(doc, "api.budget.enabled", Boolean.TRUE);
+                        BotConfigJson.set(doc, "api.budget.dailyYuan", new BotConfigJson.Num("10"));
+                    }
+                    if (cfgHost.saveConfigJson(BotConfigJson.write(doc))) {
+                        host().toast("已加入 " + groups.size() + " 个群并启用回复！现在可在群里 @ 机器人试试");
+                    } else {
+                        host().toast("写入配置失败，请确认容器已启动过一次");
+                    }
+                } catch (Throwable ex) {
+                    host().toast("保存失败：" + ex.getMessage());
+                }
+            });
+            wlCard.addView(saveWlBtn, topMargin(dp(Theme.S2)));
+        }
+    }
+
+    private static java.util.List<String> parseGroupIds(String raw) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        if (raw == null) return out;
+        String[] parts = raw.split("[,，\\s;；]+");
+        for (String p : parts) {
+            String s = p.trim();
+            if (s.matches("\\d{5,15}") && !out.contains(s)) out.add(s);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ 导航按钮逻辑
@@ -729,8 +860,29 @@ final class DeployWizardScreen extends Screen {
             return false;
         }
         createdBotId = bot.id;
+        shell.setCurrentBotId(createdBotId);
+        syncPersonaToConfig(draftName, draftPersona);
         host().toast("已创建机器人「" + bot.name + "」");
         return true;
+    }
+
+    /** 将向导填写的机器人名称与人设真实同步写入目标机器人的 config.json。 */
+    private void syncPersonaToConfig(String botName, String roleText) {
+        try {
+            BotConfigHost cfgHost = (activity instanceof BotConfigHost) ? (BotConfigHost) activity : null;
+            if (cfgHost == null) return;
+            String raw = cfgHost.loadConfigJson();
+            Object doc = (raw != null && !raw.trim().isEmpty())
+                    ? BotConfigJson.parse(raw)
+                    : new java.util.LinkedHashMap<String, Object>();
+            if (botName != null && !botName.trim().isEmpty()) {
+                BotConfigJson.set(doc, "persona.botName", botName.trim());
+            }
+            if (roleText != null && !roleText.trim().isEmpty()) {
+                BotConfigJson.set(doc, "persona.roleText", roleText.trim());
+            }
+            cfgHost.saveConfigJson(BotConfigJson.write(doc));
+        } catch (Throwable ignored) {}
     }
 
     private void commitStep4() {
@@ -740,25 +892,78 @@ final class DeployWizardScreen extends Screen {
         if (draftBaseUrl.isEmpty() && draftModel.isEmpty() && draftApiKey.isEmpty()) {
             return;
         }
+        if (draftApiKey.isEmpty()) {
+            host().toast("未填写 API Key（已跳过写入，稍后可在「模型与 Key」中填写）");
+            return;
+        }
         try {
+            if (!createdBotId.isEmpty()) shell.setCurrentBotId(createdBotId);
             BotConfigHost cfgHost = (activity instanceof BotConfigHost) ? (BotConfigHost) activity : null;
             if (cfgHost == null) return;
             String raw = cfgHost.loadConfigJson();
             Object doc = (raw != null && !raw.trim().isEmpty())
                     ? BotConfigJson.parse(raw)
                     : new java.util.LinkedHashMap<String, Object>();
+            String providerId = inferWizardProviderId(draftBaseUrl, presetIdx);
+            String providerName = (presetIdx >= 0 && presetIdx < LLM_PRESETS.length) ? LLM_PRESETS[presetIdx][0] : "自定义渠道";
             if (!draftBaseUrl.isEmpty()) BotConfigJson.set(doc, "api.baseUrl", draftBaseUrl);
             if (!draftModel.isEmpty()) BotConfigJson.set(doc, "api.model", draftModel);
-            if (!draftApiKey.isEmpty()) BotConfigJson.set(doc, "api.apiKey", draftApiKey);
+            BotConfigJson.set(doc, "api.provider", providerId);
+            BotConfigJson.set(doc, "api.apiKey", draftApiKey);
+            // 同步写入与 ModelsScreen 统一的多渠道结构（providers[] + providerKeys[id]），确保打开「模型与 Key」可见
+            upsertWizardProvider(doc, providerId, providerName, draftBaseUrl, draftModel, draftApiKey);
             if (cfgHost.saveConfigJson(BotConfigJson.write(doc))) {
                 modelSaved = true;
-                host().toast("大模型配置已保存");
+                host().toast("大模型渠道与 Key 已保存");
             } else {
                 host().toast("大模型配置未保存，稍后可在机器人配置中修改");
             }
         } catch (Throwable ex) {
             host().toast("保存大模型配置失败，可稍后在机器人配置中填写");
         }
+    }
+
+    private static String inferWizardProviderId(String baseUrl, int idx) {
+        String u = baseUrl == null ? "" : baseUrl.toLowerCase(java.util.Locale.US);
+        if (u.contains("deepseek.com")) return "deepseek";
+        if (u.contains("dashscope.aliyuncs.com")) return "qwen";
+        if (u.contains("bigmodel.cn")) return "zhipu";
+        if (u.contains("siliconflow.cn")) return "siliconflow";
+        if (u.contains("moonshot.cn")) return "moonshotai-cn";
+        return "wizard-" + Math.max(0, idx);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void upsertWizardProvider(Object doc, String id, String name, String baseUrl, String model, String apiKey) {
+        if (!(doc instanceof java.util.Map)) return;
+        java.util.List<Object> providers = BotConfigJson.asArray(BotConfigJson.get(doc, "providers"));
+        if (providers == null) {
+            providers = new java.util.ArrayList<Object>();
+            BotConfigJson.set(doc, "providers", providers);
+        }
+        java.util.Map<String, Object> target = null;
+        for (int i = 0; i < providers.size(); i++) {
+            java.util.Map<String, Object> item = BotConfigJson.asObject(providers.get(i));
+            if (item != null && id.equals(String.valueOf(item.get("id")))) {
+                target = item;
+                break;
+            }
+        }
+        if (target == null) {
+            target = new java.util.LinkedHashMap<String, Object>();
+            target.put("id", id);
+            providers.add(target);
+        }
+        target.put("name", name);
+        target.put("type", "openai");
+        if (!baseUrl.isEmpty()) target.put("baseUrl", baseUrl);
+        java.util.List<Object> models = BotConfigJson.asArray(target.get("models"));
+        if (models == null) {
+            models = new java.util.ArrayList<Object>();
+            target.put("models", models);
+        }
+        if (!model.isEmpty() && !models.contains(model)) models.add(model);
+        BotConfigJson.set(doc, "providerKeys." + id, apiKey);
     }
 
     // ------------------------------------------------------------------ 辅助方法

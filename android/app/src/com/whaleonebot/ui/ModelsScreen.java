@@ -218,31 +218,47 @@ final class ModelsScreen extends Screen {
 
     // ================================================================ 渲染
 
+    private ScrollView activeScroll;
+    private int savedScrollY = 0;
+
     private void renderPage() {
         if (body == null) return;
+        if (activeScroll != null) savedScrollY = activeScroll.getScrollY();
         View v = loaded ? page() : errorPage(loadError == null ? "配置尚未载入" : loadError);
+        activeScroll = (v instanceof ScrollView) ? (ScrollView) v : null;
         body.removeAllViews();
         body.addView(v, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         refreshSaveBar();
+        if (activeScroll != null && savedScrollY > 0) {
+            final int y = savedScrollY;
+            final ScrollView sv = activeScroll;
+            sv.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (sv != null) sv.scrollTo(0, y);
+                }
+            });
+        }
     }
 
     private ScrollView page() {
         LinearLayout col = Ui.column(activity);
 
-        col.addView(header("模型与 Key"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("模型分配"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView sub = Ui.text(activity, "每个用途各配一套",
+        TextView sub = Ui.text(activity, "从「模型库」为聊天、记忆整理、自动路由与语音分配模型和思考强度",
                 Theme.T_CAP, t.textSecondary);
         sub.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         subLp.topMargin = dp(Theme.S1);
         col.addView(sub, subLp);
 
-        col.addView(roleCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
-        col.addView(channelCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(modelLibraryShortcutCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S3)));
+        col.addView(roleCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(autoRouteCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
+        col.addView(thinkingCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         col.addView(chatApiCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         col.addView(voiceCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
-        col.addView(thinkingCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         col.addView(advancedCard(), marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
 
         FrameLayout foot = Ui.card(activity, t);
@@ -678,13 +694,79 @@ final class ModelsScreen extends Screen {
                     }
                 });
         line(holder);
-        holder.addView(W.switchRow(activity, t, "预算开关", "默认关",
+        holder.addView(W.switchRow(activity, t, "预算开关", "防止大群意外超额扣费（推荐开启）",
                 flagValue("api.budget.enabled", false), new BotConfigToggle.OnChange() {
                     @Override
                     public void onChanged(boolean on) {
                         setFlag("api.budget.enabled", on);
                     }
                 }), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        if (flagValue("api.budget.enabled", false)) {
+            line(holder);
+            addRow(holder, "每日预算上限（元）", U.numText(data, "api.budget.dailyYuan", "未填（默认 10 元）"),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            editApiNumber("api.budget.dailyYuan", "每日预算上限（元）", 0.1d, 10000d, false,
+                                    "当日估算花费达到此金额后触发超预算动作");
+                        }
+                    });
+            line(holder);
+            final String exceedCur = textValue("api.budget.onExceed", "pause");
+            String exceedLabel = "warn".equals(exceedCur) ? "仅提醒继续聊"
+                    : ("fallback".equals(exceedCur) ? "自动切换备用模型" : "暂停回复直到次日");
+            addRow(holder, "超出预算后动作", exceedLabel, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    W.chooseDialog(activity, t, "超出每日预算后做什么？", "达到每日预算上限时的保护策略",
+                            new String[] { "暂停回复直到次日（最省钱）", "自动切换备用模型", "仅提醒，继续回复" },
+                            new String[] { "pause", "fallback", "warn" },
+                            exceedCur,
+                            new W.TextCb() {
+                                @Override
+                                public void onText(String value) {
+                                    U.putText(data, "api.budget.onExceed", value);
+                                    dirty.add("api.budget.onExceed");
+                                    renderPage();
+                                }
+                            });
+                }
+            });
+        }
+        line(holder);
+        addRow(holder, "备用模型地址（故障/超预算兜底）", textValue("api.fallback.baseUrl", "未配置（可选）"),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        editApiText("api.fallback.baseUrl", "备用模型接口地址", "主模型出错或超预算时切换的 OpenAI 兼容地址", true);
+                    }
+                });
+        line(holder);
+        addRow(holder, "备用模型名", textValue("api.fallback.model", "未配置（可选）"),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        editApiText("api.fallback.model", "备用模型名", "例如 deepseek-chat / qwen-turbo", false);
+                    }
+                });
+        line(holder);
+        addRow(holder, "备用模型 Key",
+                keyValue(U.s(BotConfigJson.get(data, "api.fallback.apiKey")).trim().length() > 0),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        W.textDialog(activity, t, "填写备用模型 API Key", "保存后写入，永不回显；留空则复用同渠道 Key",
+                                "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, false,
+                                null, new W.TextCb() {
+                                    @Override
+                                    public void onText(String text) {
+                                        U.putText(data, "api.fallback.apiKey", text);
+                                        dirty.add("api.fallback.apiKey");
+                                        renderPage();
+                                    }
+                                });
+                    }
+                });
         return c.view;
     }
 
@@ -820,6 +902,247 @@ final class ModelsScreen extends Screen {
         note.setLineSpacing(dp(3), 1f);
         holder.addView(note, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));
         return c.view;
+    }
+
+    /** 模型库快捷入口卡：服务商与 API Key 独立集中管理，不与分配页混杂。 */
+    private View modelLibraryShortcutCard() {
+        List<Object> providers = BotConfigJson.asArray(BotConfigJson.get(data, "providers"));
+        int pCount = providers == null ? 0 : providers.size();
+        Card c = cardShell("模型库（服务商与密钥）", "已配置 " + pCount + " 家服务商 · 先在模型库配好渠道与 Key，再在下方按区域分配");
+        LinearLayout holder = c.body;
+        addRow(holder, "管理服务商与 API Key", "新增预设（含 OpenCode）/ 编辑 / 连通测试", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shell.pushModelLibrary();
+            }
+        });
+        line(holder);
+        // 一键解决「记忆整理复用聊天主模型并关闭思考」的高频需求
+        boolean reuseChat = flagValue("memory.useChatModel", true);
+        String memThink = textValue("api.thinking.memory", "未单独设");
+        addRow(holder, "记忆整理快捷策略",
+                reuseChat ? ("复用聊天主模型 · 思考：" + memThink) : ("使用专用模型（点此一键改为复用主模型并关思考）"),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        U.putFlag(data, "memory.useChatModel", true);
+                        U.putText(data, "api.thinking.memory", "off");
+                        dirty.add("memory.useChatModel");
+                        dirty.add("api.thinking.memory");
+                        W.toast(activity, "已设为：记忆整理复用聊天主模型并关闭思考（请点保存生效）");
+                        renderPage();
+                    }
+                });
+        return c.view;
+    }
+
+    /** 自动路由卡：场景分流（快模型 / 强模型）+ 有序故障降级池，全部直接从模型库点选。 */
+    private View autoRouteCard() {
+        Card c = cardShell("自动路由与故障降级池", "短聊走快模型，带图/长文/多工具走强模型；遇限流或报错沿备用池自动顺延");
+        LinearLayout holder = c.body;
+
+        boolean enabled = flagValue("api.routing.enabled", false);
+        holder.addView(W.switchRow(activity, t, "启用自动路由", enabled ? "已开启场景分流与降级池" : "关闭时统一使用聊天主模型",
+                enabled, new BotConfigToggle.OnChange() {
+                    @Override
+                    public void onChanged(boolean on) {
+                        setFlag("api.routing.enabled", on);
+                    }
+                }), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (enabled) {
+            line(holder);
+            addRow(holder, "快速日常模型（短聊/闲聊）", routeSlotSummary("api.routing.fast"),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            pickModelFromLibrary("选择快速日常模型", "api.routing.fast");
+                        }
+                    });
+            line(holder);
+            addRow(holder, "强推理 / 多模态模型（带图/长文/工具）", routeSlotSummary("api.routing.strong"),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            pickModelFromLibrary("选择强推理/多模态模型", "api.routing.strong");
+                        }
+                    });
+            line(holder);
+            List<Object> pool = BotConfigJson.asArray(BotConfigJson.get(data, "api.routing.pool"));
+            int poolSize = pool == null ? 0 : pool.size();
+            addRow(holder, "有序故障备用池（已选 " + poolSize + " 个）",
+                    poolSize == 0 ? "点击从模型库添加备用候选" : summarizePool(pool),
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            manageRoutingPool();
+                        }
+                    });
+        }
+        return c.view;
+    }
+
+    private String routeSlotSummary(String prefix) {
+        String p = textValue(prefix + ".provider", "");
+        String m = textValue(prefix + ".model", "");
+        String th = textValue(prefix + ".thinking", "");
+        if (p.isEmpty() || m.isEmpty()) return "未指定（点击从模型库选择）";
+        return p + " / " + m + (th.isEmpty() ? "" : (" · 思考:" + th));
+    }
+
+    private String summarizePool(List<Object> pool) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(pool.size(), 3); i++) {
+            Map<String, Object> item = BotConfigJson.asObject(pool.get(i));
+            if (item == null) continue;
+            if (sb.length() > 0) sb.append(" → ");
+            sb.append(U.s(item.get("model")));
+        }
+        if (pool.size() > 3) sb.append(" …共").append(pool.size()).append("个");
+        return sb.toString();
+    }
+
+    /** 从手机已配置的「模型库」里列出全部 (服务商 / 模型) 供一键点选。 */
+    private void pickModelFromLibrary(final String title, final String targetPrefix) {
+        final List<String> labels = new ArrayList<String>();
+        final List<String> vals = new ArrayList<String>();
+        List<Object> providers = BotConfigJson.asArray(BotConfigJson.get(data, "providers"));
+        if (providers != null) {
+            for (int i = 0; i < providers.size(); i++) {
+                Map<String, Object> pv = BotConfigJson.asObject(providers.get(i));
+                if (pv == null) continue;
+                String pid = U.s(pv.get("id")).trim();
+                String pname = U.s(pv.get("displayName")).trim();
+                if (pname.isEmpty()) pname = U.s(pv.get("name")).trim();
+                if (pname.isEmpty()) pname = pid;
+                List<Object> ms = BotConfigJson.asArray(pv.get("models"));
+                if (ms == null) continue;
+                for (int j = 0; j < ms.size(); j++) {
+                    String mid = U.s(ms.get(j)).trim();
+                    if (mid.isEmpty()) continue;
+                    labels.add(pname + " · " + mid);
+                    vals.add(pid + "||" + mid);
+                }
+            }
+        }
+        if (labels.isEmpty()) {
+            W.toast(activity, "模型库中还没有模型，请先进入「模型库」添加服务商和模型");
+            return;
+        }
+        W.chooseDialog(activity, t, title, "直接从手机「模型库」中选择",
+                labels.toArray(new String[0]), vals.toArray(new String[0]), "",
+                new W.TextCb() {
+                    @Override
+                    public void onText(String picked) {
+                        if (picked == null || !picked.contains("||")) return;
+                        String[] parts = picked.split("\\|\\|", 2);
+                        final String pid = parts[0];
+                        final String mid = parts[1];
+                        W.chooseDialog(activity, t, "该区域思考强度", "可为当前模型单独设定思考强度",
+                                new String[] { "跟随默认", "关闭思考 (off)", "低强度 (low)", "中强度 (medium)", "高强度 (high)" },
+                                new String[] { "", "off", "low", "medium", "high" }, "",
+                                new W.TextCb() {
+                                    @Override
+                                    public void onText(String th) {
+                                        U.putText(data, targetPrefix + ".provider", pid);
+                                        U.putText(data, targetPrefix + ".model", mid);
+                                        U.putText(data, targetPrefix + ".thinking", th == null ? "" : th);
+                                        dirty.add(targetPrefix);
+                                        renderPage();
+                                    }
+                                });
+                    }
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void manageRoutingPool() {
+        List<Object> pool = BotConfigJson.asArray(BotConfigJson.get(data, "api.routing.pool"));
+        final List<String> opts = new ArrayList<String>();
+        final List<String> vals = new ArrayList<String>();
+        opts.add("＋ 从模型库追加一个备用模型");
+        vals.add("__add__");
+        if (pool != null) {
+            for (int i = 0; i < pool.size(); i++) {
+                Map<String, Object> it = BotConfigJson.asObject(pool.get(i));
+                if (it == null) continue;
+                opts.add("移除 #" + (i + 1) + "：" + U.s(it.get("provider")) + " / " + U.s(it.get("model")));
+                vals.add("del:" + i);
+            }
+        }
+        W.chooseDialog(activity, t, "管理故障备用池", "主路由模型限流/超时/报错时按顺序顺延切换",
+                opts.toArray(new String[0]), vals.toArray(new String[0]), "",
+                new W.TextCb() {
+                    @Override
+                    public void onText(String act) {
+                        if ("__add__".equals(act)) {
+                            addModelToRoutingPool();
+                        } else if (act != null && act.startsWith("del:")) {
+                            int idx = Integer.parseInt(act.substring(4));
+                            List<Object> cur = BotConfigJson.asArray(BotConfigJson.get(data, "api.routing.pool"));
+                            if (cur != null && idx >= 0 && idx < cur.size()) {
+                                cur.remove(idx);
+                                dirty.add("api.routing.pool");
+                                renderPage();
+                            }
+                        }
+                    }
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void addModelToRoutingPool() {
+        final List<String> labels = new ArrayList<String>();
+        final List<String> vals = new ArrayList<String>();
+        List<Object> providers = BotConfigJson.asArray(BotConfigJson.get(data, "providers"));
+        if (providers != null) {
+            for (int i = 0; i < providers.size(); i++) {
+                Map<String, Object> pv = BotConfigJson.asObject(providers.get(i));
+                if (pv == null) continue;
+                String pid = U.s(pv.get("id")).trim();
+                String pname = U.s(pv.get("displayName")).trim();
+                if (pname.isEmpty()) pname = U.s(pv.get("name")).trim();
+                if (pname.isEmpty()) pname = pid;
+                List<Object> ms = BotConfigJson.asArray(pv.get("models"));
+                if (ms == null) continue;
+                for (int j = 0; j < ms.size(); j++) {
+                    String mid = U.s(ms.get(j)).trim();
+                    if (mid.isEmpty()) continue;
+                    labels.add(pname + " · " + mid);
+                    vals.add(pid + "||" + mid);
+                }
+            }
+        }
+        if (labels.isEmpty()) {
+            W.toast(activity, "模型库为空，请先在「模型库」添加模型");
+            return;
+        }
+        W.chooseDialog(activity, t, "追加备用模型", "从模型库勾选加入备用降级池末尾",
+                labels.toArray(new String[0]), vals.toArray(new String[0]), "",
+                new W.TextCb() {
+                    @Override
+                    public void onText(String picked) {
+                        if (picked == null || !picked.contains("||")) return;
+                        String[] parts = picked.split("\\|\\|", 2);
+                        List<Object> cur = BotConfigJson.asArray(BotConfigJson.get(data, "api.routing.pool"));
+                        if (cur == null) {
+                            cur = new ArrayList<Object>();
+                            BotConfigJson.set(data, "api.routing.pool", cur);
+                        }
+                        Map<String, Object> entry = new LinkedHashMap<String, Object>();
+                        entry.put("provider", parts[0]);
+                        entry.put("model", parts[1]);
+                        cur.add(entry);
+                        dirty.add("api.routing.pool");
+                        renderPage();
+                    }
+                });
+    }
+
+    /** 原联网搜索卡已独立至 WebSearchScreen，此处仅保留 hasUnsavedChanges 契约。 */
+    @Override
+    boolean hasUnsavedChanges() {
+        return !dirty.isEmpty() || asrKeyPending || ttsKeyPending;
     }
 
     /** ASR 凭据槽位（与 {@link ModelPickerScreen} 同一口径，不在这里重写一遍）。 */

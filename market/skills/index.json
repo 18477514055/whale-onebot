@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "name": "Whale OneBot 官方技能市场",
+  "repository": "https://github.com/18477514055/whale-onebot",
+  "updatedAt": "2026-11-27",
+  "skills": [
+    {
+      "id": "group-summary",
+      "name": "群聊纪要",
+      "description": "按主题把近期群聊整理成「结论 / 争议 / 待办」三段摘要，不编造未说过的决定。",
+      "version": "1.0.0",
+      "author": "whale-onebot",
+      "category": "群聊",
+      "allowedTools": [
+        "send_message"
+      ],
+      "triggers": [
+        "总结一下刚刚聊了什么",
+        "帮我爬楼",
+        "群聊纪要"
+      ],
+      "homepage": "https://github.com/18477514055/whale-onebot/tree/main/market/skills/packs/group-summary",
+      "files": {
+        "skill.json": {
+          "path": "./packs/group-summary/skill.json",
+          "sha256": "b2a9c1e24e8d217622910051755495fa9758e66d3a3dad954bf979ff4c04ddac",
+          "bytes": 375
+        },
+        "SKILL.md": {
+          "path": "./packs/group-summary/SKILL.md",
+          "sha256": "e0306f4a1ebcc3d2454028929b25bafb63527686a4706a746b8508ba14ec3a24",
+          "bytes": 574
+        }
+      },
+      "preview": "# 群聊纪要 目标：把近期群聊内容提炼成一眼能看懂的短纪要，不水字数、不编造群友没说过的话。 ## 执行步骤 1. 先按时间线找出讨论的核心话题（最多合并为 3 个主题）。 2. 每个主题只写三件事： - **聊了什么**：1 句话概括背景。 - **结论或共识**：若还没定论，明确写「暂未定论」。 - **待办或约定**：标明时间/人物；没有则省略。 3."
+    },
+    {
+      "id": "recipe-helper",
+      "name": "菜谱助手",
+      "description": "按现有食材给出今晚就能做的家常菜做法，写清用量、火候与省事替代方案。",
+      "version": "1.0.0",
+      "author": "whale-onebot",
+      "category": "生活",
+      "allowedTools": [
+        "web_search",
+        "send_message"
+      ],
+      "triggers": [
+        "这些食材能做什么",
+        "教我做一道菜",
+        "冰箱里只有"
+      ],
+      "homepage": "https://github.com/18477514055/whale-onebot/tree/main/market/skills/packs/recipe-helper",
+      "files": {
+        "skill.json": {
+          "path": "./packs/recipe-helper/skill.json",
+          "sha256": "d558653eb013608a3832cf399298940d7abac8171b8e1796e976c27886e1235a",
+          "bytes": 386
+        },
+        "SKILL.md": {
+          "path": "./packs/recipe-helper/SKILL.md",
+          "sha256": "60967dbd63299c28be30b1768ac68b43c9ab0fcfe5a3a18bdeedd89f3f9a21eb",
+          "bytes": 424
+        }
+      },
+      "preview": "# 菜谱助手 目标：根据用户手头已有的食材和厨具，直接给出最少额外采购、零废话的可执行菜谱。 ## 执行步骤 1. 先按现有食材推荐 2-3 道最省事的菜，优先零额外采购的做法。 2. 每道菜依次写清：**主料与大致用量**、**备菜处理**、**火候与耗时**、**最容易翻车的点**。 3. 如缺常见调料，主动给 1 个家常替代方案。"
+    },
+    {
+      "id": "trip-planner",
+      "name": "出行规划",
+      "description": "先问清日期、预算和同行人，再给 2-3 套可执行的行程方案，不编造车次与票价。",
+      "version": "1.0.0",
+      "author": "whale-onebot",
+      "category": "生活",
+      "allowedTools": [
+        "web_search",
+        "web_fetch",
+        "send_message"
+      ],
+      "triggers": [
+        "帮我规划行程",
+        "周末去哪玩",
+        "旅游攻略"
+      ],
+      "homepage": "https://github.com/18477514055/whale-onebot/tree/main/market/skills/packs/trip-planner",
+      "files": {
+        "skill.json": {
+          "path": "./packs/trip-planner/skill.json",
+          "sha256": "d9091cd78af24610a8df2e90e6baa764340471abfafb492ccd3b5f523a475664",
+          "bytes": 391
+        },
+        "SKILL.md": {
+          "path": "./packs/trip-planner/SKILL.md",
+          "sha256": "507353cea0b0a2ce1e6ba82662d9dfecfc4c29f95d768764916a817ece42c6e8",
+          "bytes": 615
+        }
+      },
+      "preview": "# 出行规划 目标：把「想去哪玩」整理成能直接照着走的清晰行程，而不是景点堆砌清单。 ## 执行步骤 1. 缺少关键条件时先用 1 句话确认：出发地、日期/天数、大概预算、同行人数与偏好（轻松/特种兵）。 2. 如开启了联网搜索，优先核查目的地天气、预约/限流与交通接驳信息；没联网则诚实标注「实时票价与开放时间请以官方为准」。 3. 输出 2 套不同节奏的方"
+    }
+  ]
+}

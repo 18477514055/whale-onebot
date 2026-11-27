@@ -68,17 +68,22 @@ final class DouyinPlatformScreen extends Screen {
 
         content.addView(header(botName + " · 抖音"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // ---------------- 顶部测试版声明卡 ----------------
+        // ---------------- 顶部实验配置预览声明卡 ----------------
         LinearLayout betaCard = Ui.addCard(content, activity, t, Theme.S3);
         LinearLayout betaHead = Ui.row(activity);
-        betaHead.addView(Ui.strong(activity, "抖音平台接口", Theme.T_CARD, t.textPrimary),
+        betaHead.addView(Ui.strong(activity, "抖音平台 · 本地配置预览", Theme.T_CARD, t.textPrimary),
                 new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        betaHead.addView(Ui.pill(activity, t, "测试版 · 实验通道", Ui.TONE_WARN));
+        betaHead.addView(Ui.pill(activity, t, "实验预览", Ui.TONE_WARN));
         betaCard.addView(betaHead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         betaCard.addView(Ui.text(activity,
-                "已合入抖音转接层、媒体理解、公开作品读取、机器人插件与本机审批台（Desk）。"
-                        + "当前网页凭证登录属于实验性功能，实网风控下不保证个人号长期在线；所有写操作默认「需要主人授权」。",
+                "当前为实验配置预览页：保存的策略与候选链接暂存本机，尚未接入后台自动收发执行链；"
+                        + "所有写操作默认「需要主人授权」。"
+                        + (RemoteBridge.isRemote() ? "\n提示：当前处于远程控制模式，抖音本机配置需在被控机上直接查看与修改。" : ""),
                 Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S2)));
+
+        if (RemoteBridge.isRemote()) {
+            return;
+        }
 
         // ---------------- 1. 账号与实验性网页登录 ----------------
         content.addView(sectionLabel("账号登录（实验性 WebView）"));
@@ -96,7 +101,7 @@ final class DouyinPlatformScreen extends Screen {
         if (sum.saved) {
             String when = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(sum.savedAt));
             loginCard.addView(Ui.text(activity,
-                    "已落盘于应用私有加密目录（共 " + sum.cookieFieldCount + " 项字段，更新于 " + when + "；明文永不打印）。",
+                    "已落盘于应用私有目录（仅本应用可读，共 " + sum.cookieFieldCount + " 项字段，更新于 " + when + "；明文永不打印）。",
                     Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S1)));
         } else {
             loginCard.addView(Ui.text(activity,

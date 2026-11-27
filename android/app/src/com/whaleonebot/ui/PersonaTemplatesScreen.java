@@ -58,6 +58,8 @@ final class PersonaTemplatesScreen extends Screen {
     private String loadError;
 
     /** 列表容器：页头固定，只重建这一块。 */
+    private ScrollView pageScroll;
+    private int savedScrollY = 0;
     private LinearLayout body;
     /** 页内浮层：改名 / 删除确认 / 覆盖确认共用同一个实例，换内容不换层。 */
     private FrameLayout overlay;
@@ -82,13 +84,13 @@ final class PersonaTemplatesScreen extends Screen {
         LinearLayout col = Ui.column(activity);
         col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
 
-        ScrollView scroll = new ScrollView(activity);
-        scroll.setFillViewport(true);
-        scroll.setClipChildren(false);
-        scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        page.addView(scroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        pageScroll = new ScrollView(activity);
+        pageScroll.setFillViewport(true);
+        pageScroll.setClipChildren(false);
+        pageScroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        page.addView(pageScroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
-        col.addView(header("人格模板"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        col.addView(header("人设管理"), Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
         body = Ui.column(activity);
         col.addView(body, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
@@ -106,6 +108,12 @@ final class PersonaTemplatesScreen extends Screen {
 
         ensureLoaded();
         render();
+    }
+
+    @Override
+    void onAttach() {
+        super.onAttach();
+        if (body != null) reload();
     }
 
     /** 浮层开着时，返回键先关浮层，而不是直接退出本页。 */
@@ -179,6 +187,7 @@ final class PersonaTemplatesScreen extends Screen {
 
     private void render() {
         if (body == null) return;
+        if (pageScroll != null) savedScrollY = pageScroll.getScrollY();
         body.removeAllViews();
 
         if (loadError != null) {
@@ -186,39 +195,113 @@ final class PersonaTemplatesScreen extends Screen {
             return;
         }
 
-        TextView current = Ui.text(activity, currentLine(), Theme.T_BODY, t.textPrimary);
+        // 当前人设状态 + 新建/保存快捷卡
+        FrameLayout headCard = Ui.card(activity, t);
+        LinearLayout headBox = Ui.column(activity);
+        headBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
+        TextView current = Ui.strong(activity, currentLine(), Theme.T_BODY, t.textPrimary);
         current.setSingleLine(true);
         current.setEllipsize(TextUtils.TruncateAt.END);
-        body.addView(current, marginTop(Theme.S2));
+        headBox.addView(current, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        TextView hint = Ui.text(activity, "点「应用」切换人格", Theme.T_CAP, t.textTertiary);
-        body.addView(hint, marginTop(4));
+        TextView hint = Ui.text(activity, "支持 10 段结构化人设编辑与管理员附加规则，也可直接启用或二创内置角色",
+                Theme.T_CAP, t.textSecondary);
+        headBox.addView(hint, marginTop(4));
 
+        TextView createBtn = Ui.button(activity, t, "＋ 新建人设（10 段结构化编辑）", true);
+        createBtn.setOnClickListener(v -> shell.pushPersonaEdit(null));
+        headBox.addView(createBtn, marginTop(Theme.S2));
+
+        TextView save = Ui.button(activity, t, "把当前人设存为自定义模板", false);
+        save.setOnClickListener(v -> openNameEditor(-1, "模板名字", ""));
+        headBox.addView(save, marginTop(Theme.S1));
+        headCard.addView(headBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        body.addView(headCard, marginTop(Theme.S2));
+
+        // 1. 自定义人设库
+        body.addView(Ui.strong(activity, "自定义人设", Theme.T_CAP, t.accent), marginTop(Theme.S3));
         List<Object> list = BotConfigJson.asArray(BotConfigJson.get(data, "customPersonas"));
         order = orderDesc(list);
-
         if (order.length == 0) {
-            TextView empty = Ui.text(activity, "还没有模板", Theme.T_BODY, t.textSecondary);
-            body.addView(empty, marginTop(Theme.S2));
+            body.addView(Ui.text(activity, "还没有自定义人设，点上方「＋ 新建人设」或从下方内置人设复制二创。",
+                    Theme.T_CAP, t.textSecondary), marginTop(Theme.S1));
         } else {
             for (int i = 0; i < order.length; i++) {
                 body.addView(templateRow(order[i]), marginTop(Theme.S2));
             }
         }
 
-        FrameLayout foot = Ui.card(activity, t);
-        LinearLayout footBox = Ui.column(activity);
-        footBox.setPadding(dp(Theme.S3), dp(Theme.S3), dp(Theme.S3), dp(Theme.S3));
-        TextView save = Ui.button(activity, t, "把当前人格存为模板", true);
-        save.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openNameEditor(-1, "模板名字", "");
-            }
-        });
-        footBox.addView(save, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
-        foot.addView(footBox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        body.addView(foot, marginTop(Theme.S3));
+        // 2. 内置角色模板（9 款经典角色）
+        body.addView(Ui.strong(activity, "内置人设模板（" + PersonaEditScreen.BUILTIN_ROLES.length + " 款）",
+                Theme.T_CAP, t.textTertiary), marginTop(Theme.S4));
+        for (int i = 0; i < PersonaEditScreen.BUILTIN_ROLES.length; i++) {
+            body.addView(builtinRow(PersonaEditScreen.BUILTIN_ROLES[i]), marginTop(Theme.S2));
+        }
+
+        final int y = savedScrollY;
+        if (pageScroll != null && y > 0) {
+            pageScroll.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, y); });
+        }
+    }
+
+    private View builtinRow(final String[] role) {
+        final String roleId = role[0];
+        final String roleName = role[1];
+        final String roleDesc = role[3];
+        boolean applied = isApplied(roleId) || isApplied(roleName);
+
+        FrameLayout card = Ui.card(activity, t);
+        LinearLayout row = Ui.row(activity);
+        row.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S2), dp(Theme.S2));
+        card.addView(row, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        LinearLayout box = Ui.column(activity);
+        TextView name = Ui.strong(activity, roleName, Theme.T_CARD, t.textPrimary);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        box.addView(name, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        TextView sub = Ui.text(activity, applied ? ("已应用 · " + roleDesc) : roleDesc,
+                Theme.T_CAP, applied ? t.accent : t.textSecondary);
+        LinearLayout.LayoutParams subLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        subLp.topMargin = dp(3);
+        box.addView(sub, subLp);
+
+        LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        boxLp.rightMargin = dp(Theme.S2);
+        row.addView(box, boxLp);
+
+        TextView copyEdit = Ui.button(activity, t, "复制编辑", false);
+        copyEdit.setOnClickListener(v -> shell.pushPersonaEdit("builtin:" + roleId));
+        row.addView(copyEdit, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+
+        TextView apply = Ui.button(activity, t, "应用", !applied);
+        apply.setOnClickListener(v -> applyBuiltinRole(roleId, roleName));
+        LinearLayout.LayoutParams aLp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+        aLp.leftMargin = dp(Theme.S1);
+        row.addView(apply, aLp);
+        return card;
+    }
+
+    private void applyBuiltinRole(String roleId, String roleName) {
+        if (!loaded || data == null) {
+            host().toast("读取配置失败");
+            return;
+        }
+        String md = PersonaEditScreen.readBuiltinRoleMarkdown(activity, roleId);
+        if (md.isEmpty()) {
+            host().toast("未找到内置角色文件（请先确认容器运行端已就绪）");
+            return;
+        }
+        try {
+            Object out = BotConfigJson.deepCopy(data);
+            BotConfigJson.set(out, "persona.roleText", md);
+            BotConfigJson.set(out, "persona.templateId", roleId);
+            BotConfigJson.set(out, "persona.changedAt", new BotConfigJson.Num(String.valueOf(System.currentTimeMillis())));
+            if (save(out)) host().toast("已应用内置人设「" + roleName + "」");
+        } catch (Throwable ex) {
+            host().toast("应用失败：" + ex.getMessage());
+        }
     }
 
     /**
@@ -644,6 +727,18 @@ final class PersonaTemplatesScreen extends Screen {
         title.setEllipsize(TextUtils.TruncateAt.END);
         box.addView(title, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
+        TextView editBtn = Ui.button(activity, t, "编辑正文（10 段结构化）", true);
+        editBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeOverlay();
+                String target = str(item.get("id")).trim();
+                if (target.isEmpty()) target = raw;
+                shell.pushPersonaEdit(target);
+            }
+        });
+        box.addView(editBtn, topMargin(Theme.S2, MATCH_PARENT));
+
         TextView rename = Ui.button(activity, t, "重命名", false);
         rename.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -651,7 +746,7 @@ final class PersonaTemplatesScreen extends Screen {
                 openNameEditor(index, "重命名", raw);
             }
         });
-        box.addView(rename, topMargin(Theme.S2, MATCH_PARENT));
+        box.addView(rename, topMargin(Theme.S1, MATCH_PARENT));
 
         TextView del = Ui.button(activity, t, "删掉模板", false);
         del.setOnClickListener(new View.OnClickListener() {

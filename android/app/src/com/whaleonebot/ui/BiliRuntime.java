@@ -51,6 +51,18 @@ public final class BiliRuntime {
         File legacy = new File(files, "rootfs/agent/data");
         if (legacy.isDirectory()) out.add(legacy);
         if (botId == null || botId.isEmpty()) return out;
+        // 补齐旧版伴生目录（rootfs/opt/whale/bindings/<botId>/workers/<bindingId>/*），消除 B 站伴生静默断层
+        File legacyWorkers = new File(files, "rootfs/opt/whale/bindings/" + botId + "/workers");
+        File[] legacyBindingDirs = legacyWorkers.listFiles();
+        if (legacyBindingDirs != null) {
+            for (File wb : legacyBindingDirs) {
+                File[] inner = wb.listFiles();
+                if (inner == null) continue;
+                for (File w : inner) {
+                    if (w.isDirectory() && !out.contains(w)) out.add(w);
+                }
+            }
+        }
         File dataRoot = new File(files, "rootfs/opt/whale/instance-data");
         File[] instances = dataRoot.listFiles();
         if (instances == null) return out;

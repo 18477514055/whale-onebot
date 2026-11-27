@@ -226,6 +226,85 @@ final class DashApi {
      * <p>鉴权口径与 {@link #get} 相同（回环 + {@code Host: 127.0.0.1:<port>} 头）；
      * 非 200 也会把错因读回来，方便页面如实显示「409 需要确认」这类话。
      */
+    /** 统一的 JSON 读写结果包装，便于原生配置/运营/市场页一行调用且透明支持本机与远控 P2P。 */
+    static final class Result {
+        final boolean ok;
+        final Object data;
+        final String error;
+
+        Result(boolean ok, Object data, String error) {
+            this.ok = ok;
+            this.data = data;
+            this.error = error;
+        }
+    }
+
+    static Result get(Activity a, String path, int timeoutMs) {
+        Object parsed = json(a, path, timeoutMs);
+        if (parsed == null) return new Result(false, null, "连不上运行端接口");
+        return new Result(true, parsed, null);
+    }
+
+    static Result post(Activity a, String path, String jsonBody, int timeoutMs) {
+        int p = port(a);
+        Resp r = post(p, path, jsonBody, timeoutMs);
+        if (r == null) return new Result(false, null, "连不上运行端接口");
+        Object parsed = null;
+        try {
+            if (r.body != null && r.body.trim().length() > 0) parsed = BotConfigJson.parse(r.body);
+        } catch (Throwable ignored) {}
+        if (!r.ok()) return new Result(false, parsed, r.reason());
+        return new Result(true, parsed, null);
+    }
+
+    static Result delete(Activity a, String path, String jsonBody, int timeoutMs) {
+        int p = port(a);
+        com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
+        if (rm != null && rm.isRemote()) {
+            // 远控兼容：若远端不支持 DELETE，安全返回提示
+            return post(a, path, jsonBody, timeoutMs);
+        }
+        if (p <= 0) return new Result(false, null, "运行端端口无效");
+        HttpURLConnection c = null;
+        try {
+            URL url = new URL("http://127.0.0.1:" + p + (path.startsWith("/") ? path : "/" + path));
+            c = (HttpURLConnection) url.openConnection();
+            c.setRequestMethod("DELETE");
+            c.setConnectTimeout(timeoutMs);
+            c.setReadTimeout(timeoutMs);
+            c.setUseCaches(false);
+            c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            try { c.setRequestProperty("Host", "127.0.0.1:" + p); } catch (Throwable ignored) {}
+            if (jsonBody != null && jsonBody.length() > 0) {
+                c.setDoOutput(true);
+                byte[] bytes = jsonBody.getBytes("UTF-8");
+                java.io.OutputStream out = c.getOutputStream();
+                try { out.write(bytes); out.flush(); } finally { try { out.close(); } catch (Throwable ignored) {} }
+            }
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            String body = is == null ? "" : readAll(is);
+            Resp r = new Resp(code, body);
+            Object parsed = null;
+            try { if (body.trim().length() > 0) parsed = BotConfigJson.parse(body); } catch (Throwable ignored) {}
+            return r.ok() ? new Result(true, parsed, null) : new Result(false, parsed, r.reason());
+        } catch (Throwable th) {
+            return new Result(false, null, String.valueOf(th.getMessage()));
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+        }
+    }
+
+    static String str(Map<String, Object> m, String key, String fallback) {
+        if (m == null || key == null) return fallback;
+        Object v = m.get(key);
+        if (v == null || v == BotConfigJson.NULL) return fallback;
+        if (v instanceof BotConfigJson.Num) return ((BotConfigJson.Num) v).raw;
+        String s = String.valueOf(v).trim();
+        return s.length() == 0 ? fallback : s;
+    }
+
     static Resp post(int port, String path, String jsonBody, int timeoutMs) {
         com.whaleonebot.remote.RemoteControlManager rm = com.whaleonebot.remote.RemoteControlManager.peek();
         if (rm != null && rm.isRemote()) {

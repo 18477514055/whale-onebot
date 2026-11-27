@@ -85,6 +85,8 @@ final class KnowledgeScreen extends Screen {
     // ---------------------------------------------------------------- 状态
 
     private FrameLayout body;
+    private ScrollView pageScroll;
+    private int savedScrollY = 0;
 
     /** config.json 树（只读：渠道清单 + providerKeys 是否有值）。 */
     private Object config;
@@ -193,8 +195,13 @@ final class KnowledgeScreen extends Screen {
 
     private void render() {
         if (body == null) return;
+        if (pageScroll != null) savedScrollY = pageScroll.getScrollY();
         body.removeAllViews();
-        body.addView(page(), new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        ScrollView sv = page();
+        pageScroll = sv;
+        body.addView(sv, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        final int y = savedScrollY;
+        if (y > 0) sv.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, y); });
     }
 
     private void loadAll() {
@@ -440,7 +447,7 @@ final class KnowledgeScreen extends Screen {
         }
 
         TextView importBtn = Ui.button(activity, t,
-                rebuilding ? "正在导入并建索引…" : "从手机多选文件导入资料", true);
+                rebuilding ? "正在导入并建索引…" : "从手机导入文档 / 压缩包（.zip/.tar.gz）", true);
         Ui.enabled(importBtn, !rebuilding);
         importBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -456,7 +463,17 @@ final class KnowledgeScreen extends Screen {
         rebuild.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                triggerSafeRebuild("");
+                PromptSheet.confirm(activity, t,
+                        "确认刷新知识库索引？",
+                        "将重新扫描各已启用资料库的原始文档并更新索引（若某库源目录为空，将自动保护原有预建索引不被清空）。数据量大时耗时较长。",
+                        "开始刷新",
+                        false,
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                triggerSafeRebuild("");
+                            }
+                        });
             }
         });
         c.body.addView(rebuild, marginTop(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S1)));
@@ -780,7 +797,7 @@ final class KnowledgeScreen extends Screen {
     private View modelCard(final Vars v, String title, String subtitle, String footer) {
         Card c = card(title, subtitle);
 
-        Map<String, String> env = readEnv(envFile());
+        Map<String, String> env = readCurrentEnv(envFile());
 
         String envBase = envValue(env, v.baseKey);
         String envModel = envValue(env, v.modelKey);
@@ -895,7 +912,7 @@ final class KnowledgeScreen extends Screen {
     }
 
     private void askCustomBase(final Vars v) {
-        Map<String, String> env = readEnv(envFile());
+        Map<String, String> env = readCurrentEnv(envFile());
         ModelsScreen.W.textDialog(activity, t, "接口地址", "填到 /v1",
                 envValue(env, v.baseKey), InputType.TYPE_CLASS_TEXT, false,
                 new ModelsScreen.W.Check() {
@@ -909,7 +926,7 @@ final class KnowledgeScreen extends Screen {
                 new ModelsScreen.W.TextCb() {
                     @Override
                     public void onText(String text) {
-                        Map<String, String> env2 = readEnv(envFile());
+                        Map<String, String> env2 = readCurrentEnv(envFile());
                         String model = envValue(env2, v.modelKey);
                         String key = envValue(env2, v.keyKey);
                         if (saveVars(v, text, model.length() == 0 ? v.defaultModel : model, key)) {
@@ -930,7 +947,7 @@ final class KnowledgeScreen extends Screen {
             ModelsScreen.W.toast(activity, "这个渠道没填地址");
             return;
         }
-        Map<String, String> env = readEnv(envFile());
+        Map<String, String> env = readCurrentEnv(envFile());
         String model = envValue(env, v.modelKey);
         String key = envValue(env, v.keyKey);
         if (key.length() == 0) key = providerKeyOf(id);
@@ -946,7 +963,7 @@ final class KnowledgeScreen extends Screen {
     }
 
     private void editModel(final Vars v) {
-        Map<String, String> env = readEnv(envFile());
+        Map<String, String> env = readCurrentEnv(envFile());
         String cur = envValue(env, v.modelKey);
         ModelsScreen.W.textDialog(activity, t, "模型名称", "如 " + v.defaultModel,
                 cur.length() == 0 ? v.defaultModel : cur, InputType.TYPE_CLASS_TEXT, false,
@@ -960,7 +977,7 @@ final class KnowledgeScreen extends Screen {
                 new ModelsScreen.W.TextCb() {
                     @Override
                     public void onText(String text) {
-                        Map<String, String> env2 = readEnv(envFile());
+                        Map<String, String> env2 = readCurrentEnv(envFile());
                         String base = envValue(env2, v.baseKey);
                         String key = envValue(env2, v.keyKey);
                         if (base.length() == 0) {
@@ -992,7 +1009,7 @@ final class KnowledgeScreen extends Screen {
                 new ModelsScreen.W.TextCb() {
                     @Override
                     public void onText(String text) {
-                        Map<String, String> env = readEnv(envFile());
+                        Map<String, String> env = readCurrentEnv(envFile());
                         String base = envValue(env, v.baseKey);
                         String model = envValue(env, v.modelKey);
                         if (base.length() == 0) {

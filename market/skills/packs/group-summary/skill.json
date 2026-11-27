@@ -1,0 +1,10 @@
+{
+  "id": "group-summary",
+  "name": "群聊纪要",
+  "description": "按主题把近期群聊整理成「结论 / 争议 / 待办」三段摘要，不编造未说过的决定。",
+  "version": "1.0.0",
+  "author": "whale-onebot",
+  "category": "群聊",
+  "allowedTools": ["send_message"],
+  "triggers": ["总结一下刚刚聊了什么", "帮我爬楼", "群聊纪要"]
+}

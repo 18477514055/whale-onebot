@@ -47,7 +47,7 @@ public final class BiliSettings {
             o.put("read.order", "hot");
             o.put("read.storeToLibrary", true);
 
-            o.put("write.enabled", true);
+            o.put("write.enabled", false);
             o.put("write.commentPerDay", 10);
             o.put("write.commentPerVideo", 1);
             o.put("write.likePerDay", 50);
@@ -56,9 +56,9 @@ public final class BiliSettings {
             o.put("write.replyOnly", true);
             o.put("write.minChars", 15);
             o.put("write.maxChars", 80);
-            o.put("write.reviewBeforeSend", false);
+            o.put("write.reviewBeforeSend", true);
 
-            o.put("dm.enabled", true);
+            o.put("dm.enabled", false);
             o.put("dm.maxPerDay", 20);
             o.put("dm.pollSeconds", 15);
 

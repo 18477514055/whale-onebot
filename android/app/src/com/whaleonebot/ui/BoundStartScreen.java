@@ -44,6 +44,7 @@ final class BoundStartScreen extends Screen {
     private TextView status;
     private TextView startBtn;
     private TextView stopBtn;
+    private TextView restartQqBtn;
     private TextView wakeBtn;
     private String previous;
 
@@ -58,7 +59,6 @@ final class BoundStartScreen extends Screen {
     private LinearLayout qrChannelPane;
     private LinearLayout pwdChannelPane;
     private TextView reqQrBtn;
-    private TextView openQqAuthBtn;
     private TextView copyQrUrlBtn;
     private TextView saveBtn;
     private QrPanel qr;
@@ -124,7 +124,7 @@ final class BoundStartScreen extends Screen {
             return;
         }
 
-        // 容器启停 + 温和重连 + 会话管理菜单
+        // 容器启停 + 双级重启 + 温和重连 + 会话管理菜单
         LinearLayout ctrlRow = Ui.row(activity);
         startBtn = Ui.button(activity, t, "启动容器", false);
         startBtn.setOnClickListener(v -> {
@@ -136,16 +136,21 @@ final class BoundStartScreen extends Screen {
             host().stopContainer();
             host().toast("正在停止容器");
         });
+        restartQqBtn = Ui.button(activity, t, "重启 QQ", true);
+        restartQqBtn.setOnClickListener(v -> host().restartQqOnly());
         ctrlRow.addView(startBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
         LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
-        sLp.leftMargin = dp(Theme.S2);
+        sLp.leftMargin = dp(Theme.S1);
         ctrlRow.addView(stopBtn, sLp);
+        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        rLp.leftMargin = dp(Theme.S1);
+        ctrlRow.addView(restartQqBtn, rLp);
         healthCard.addView(ctrlRow, topMargin(dp(Theme.S3)));
 
         LinearLayout sessRow = Ui.row(activity);
         wakeBtn = Ui.button(activity, t, "温和重连唤醒", false);
         wakeBtn.setOnClickListener(v -> host().wakeQqSession());
-        TextView manageSessBtn = Ui.button(activity, t, "下线 / 换号 / 强登", false);
+        TextView manageSessBtn = Ui.button(activity, t, "下线 / 换号 / 整容器重启", false);
         manageSessBtn.setOnClickListener(v -> openSessionActionsSheet());
         sessRow.addView(wakeBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
         LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
@@ -153,8 +158,8 @@ final class BoundStartScreen extends Screen {
         sessRow.addView(manageSessBtn, mLp);
         healthCard.addView(sessRow, topMargin(dp(Theme.S2)));
 
-        // ---------------- 2. 多通道上线卡（免截图：一键拉起 QQ / 按需扫码 / 账密+滑块） ----------------
-        col.addView(sectionLabel("QQ 多通道上线（免截图 · 严格按需出码）"), sectionLp());
+        // ---------------- 2. 登录通道（按需扫码 / 账密+滑块） ----------------
+        col.addView(sectionLabel("QQ 登录通道（按需出码 · 绝不后台刷码）"), sectionLp());
         loginCard = Ui.addCard(col, activity, t, 0);
 
         loginFoldBtn = Ui.button(activity, t, "当前已在线 · 展开重新登录选项", false);
@@ -183,9 +188,9 @@ final class BoundStartScreen extends Screen {
         verifyBanner.setVisibility(View.GONE);
         loginBody.addView(verifyBanner, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        // 分段切换按钮：通道 A（一键拉起 QQ / 按需扫码） vs 通道 B（账密登录）
+        // 分段切换按钮：通道 A（按需扫码） vs 通道 B（账密登录）
         LinearLayout tabs = Ui.row(activity);
-        tabQrBtn = tabChip("一键拉起 QQ / 扫码", activeTab == 0);
+        tabQrBtn = tabChip("扫码登录", activeTab == 0);
         tabQrBtn.setOnClickListener(v -> {
             activeTab = 0;
             syncTabs();
@@ -201,13 +206,13 @@ final class BoundStartScreen extends Screen {
         tabs.addView(tabPwdBtn, t2Lp);
         loginBody.addView(tabs, topMargin(dp(Theme.S2)));
 
-        // ---- 通道 A：一键拉起手机 QQ 授权 + 按需高清扫码 ----
+        // ---- 通道 A：按需高清扫码 ----
         qrChannelPane = Ui.column(activity);
         qrChannelPane.addView(Ui.text(activity,
-                "提示：腾讯常拒绝「相册截图扫码」。推荐点击下方先按需生成 1 张授权码，然后直接点「一键拉起手机 QQ 授权」或用另一台手机相机直扫（不会后台循环刷码）。",
+                "提示：点击下方按需生成 1 张二维码，推荐使用另一台设备相机直扫（或切到「账密登录」免扫码）。QQ 下线不影响 B 站与主运行端。",
                 Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S2)));
 
-        reqQrBtn = Ui.button(activity, t, "按需获取 1 张新授权码", true);
+        reqQrBtn = Ui.button(activity, t, "按需获取 1 张新二维码", true);
         reqQrBtn.setOnClickListener(v -> {
             if (RemoteBridge.qqClientVersion(activity) == null) {
                 host().toast("容器里还没有 QQ：先去「环境配置」装 QQ 安装包，回来再登录");
@@ -217,11 +222,6 @@ final class BoundStartScreen extends Screen {
             shell.requestQr();
         });
         qrChannelPane.addView(reqQrBtn, topMargin(dp(Theme.S2)));
-
-        openQqAuthBtn = Ui.button(activity, t, "一键拉起手机 QQ 确认登录（免截图）", true);
-        openQqAuthBtn.setOnClickListener(v -> host().openMobileQqAuth(host().qrUrl()));
-        Ui.enabled(openQqAuthBtn, false);
-        qrChannelPane.addView(openQqAuthBtn, topMargin(dp(Theme.S2)));
 
         LinearLayout qrAux = Ui.row(activity);
         copyQrUrlBtn = Ui.button(activity, t, "复制授权链接", false);
@@ -355,14 +355,15 @@ final class BoundStartScreen extends Screen {
 
     private void openSessionActionsSheet() {
         String[] options = {
-                "安全下线（保留聊天/记忆/知识库，仅退 QQ 会话）",
+                "安全下线（仅退 QQ 会话，B 站与主运行端继续运行）",
                 "切换账号（清除旧号登录态与快登，准备登新机器人号）",
-                "强制重新登录（释放旧连接并立即按需出 1 张新码）"
+                "强制重新登录（释放旧连接并立即按需出 1 张新码）",
+                "整容器全链路重启（关闭 QQ → 重启容器 → 启动 QQ）"
         };
-        PromptSheet.choose(activity, t, "QQ 会话控制", options, idx -> {
+        PromptSheet.choose(activity, t, "QQ 会话与重启控制", options, idx -> {
             if (idx == 0) {
                 PromptSheet.showConfirm(activity, "确认安全下线？",
-                        "将优雅退出当前 QQ 会话并落盘保护数据库，聊天记录、记忆库与知识库完整保留。",
+                        "将优雅退出当前 QQ 会话并落盘保护数据库，B 站运行端、聊天记录、记忆库与知识库完整保留。",
                         "安全下线", () -> host().qqSessionAction("safe_logout", false, ""), "取消");
             } else if (idx == 1) {
                 PromptSheet.showConfirm(activity, "确认切换机器人账号？",
@@ -373,13 +374,17 @@ final class BoundStartScreen extends Screen {
                         }, "取消");
             } else if (idx == 2) {
                 PromptSheet.showConfirm(activity, "确认强制重新登录？",
-                        "将释放当前会话并立即按需请求 1 张新授权码，不会影响聊天与记忆数据。",
+                        "将释放当前会话并立即按需请求 1 张新二维码，不会影响聊天与记忆数据。",
                         "强制重登", () -> {
                             manualExpandWhenOnline = true;
                             activeTab = 0;
                             syncTabs();
                             host().qqSessionAction("force_relogin", false, "qr");
                         }, "取消");
+            } else if (idx == 3) {
+                PromptSheet.showConfirm(activity, "确认执行整容器全链路重启？",
+                        "将依次关闭 QQ、关闭容器、重启容器并自动拉起 QQ。注意：同容器内的 B 站或其他多开机器人也会短暂中断并随容器重启。",
+                        "确认全链路重启", () -> host().restartFullContainer(), "取消");
             }
         }, null, null);
     }
@@ -497,6 +502,8 @@ final class BoundStartScreen extends Screen {
                 if (!auth.hostname.isEmpty()) meta.append(meta.length() > 0 ? " · " : "").append("设备 ").append(auth.hostname);
                 if (!auth.kernelRelease.isEmpty()) meta.append(meta.length() > 0 ? " · " : "").append(auth.kernelRelease);
                 if (running) meta.append(meta.length() > 0 ? " · " : "").append("快登票据：").append(auth.canQuickLogin ? "可用" : "需重新登录");
+                String netDiag = host().networkDiagnosticSummary();
+                if (netDiag != null && !netDiag.isEmpty()) meta.append(meta.length() > 0 ? "\n网络出口：" : "网络出口：").append(netDiag);
                 healthMeta.setText(meta.toString());
             }
             syncOnlineCollapse(auth);
@@ -520,7 +527,6 @@ final class BoundStartScreen extends Screen {
         boolean qrLive = host().qrLive();
         String qrUrl = host().qrUrl();
         boolean hasQrUrl = QqAuthState.isSafeHttpsTencentUrl(qrUrl);
-        if (openQqAuthBtn != null) Ui.enabled(openQqAuthBtn, hasQrUrl);
         if (copyQrUrlBtn != null) Ui.enabled(copyQrUrlBtn, hasQrUrl);
         if (saveBtn != null) Ui.enabled(saveBtn, qrLive);
         if (qr != null) qr.refresh();
@@ -604,6 +610,12 @@ final class BoundStartScreen extends Screen {
         lbox.setPadding(dp(Theme.S2 + 2), dp(Theme.S2), dp(Theme.S2 + 2), dp(Theme.S2));
         LinearLayout lhead = Ui.row(activity);
         lhead.addView(sectionLabel("实时诊断日志"), new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        TextView bbBtn = Ui.text(activity, "防掉线黑匣子", Theme.T_CAP, t.accent);
+        bbBtn.setPadding(dp(8), dp(4), dp(4), dp(4));
+        bbBtn.setClickable(true);
+        bbBtn.setOnClickListener(v -> ModelsScreen.W.infoDialog(activity, t,
+                "防掉线黑匣子记录（blackbox.log）", host().blackboxLog(120)));
+        lhead.addView(bbBtn, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
         lbox.addView(lhead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         logScroll = new ScrollView(activity);
         logScroll.setVerticalScrollBarEnabled(false);

@@ -270,37 +270,21 @@ final class BotConfigSchema {
                                                 "默认 600 秒（10 分钟）。要先在「语音（ASR / TTS）」里配好语音合成。", 0, 3600, 1000),
                                         i("humanize.actions.reactCooldownMs", "两次贴表情回应的间隔（秒）",
                                                 "默认 30 秒。指给别人消息贴 👍 这类回应，不是发图。", 0, 3600, 1000)),
-                                sec("作息与省 token",
+                                sec("作息时段",
                                         "「休息时段」喂给心情/状态链路：到点它显得更疲惫、话更短，不是停机。跨夜照写，例如 23:30 ~ 07:00。",
                                         s("humanize.personaState.sleepStart", "休息开始（HH:MM）",
                                                 "24 小时制，例如 23:30。默认 00:00。", "23:30"),
                                         s("humanize.personaState.sleepEnd", "休息结束（HH:MM）",
-                                                "24 小时制，例如 07:00。默认 07:00。", "07:00"),
-                                        e("tokenSaver.mode", "省 token 强度",
-                                                "轻度或明显压缩历史条数与单轮 token；默认关闭。",
-                                                arr("off", "balanced", "aggressive"),
-                                                arr("关闭（完全按设置）", "省（轻度压缩）", "很省（明显压缩）")))
+                                                "24 小时制，例如 07:00。默认 07:00。", "07:00"))
                         }),
 
                 // -------------------------------------------------- 3 回复与发送
                 new Group("回复与发送",
-                        "什么时候回、回多快、一次发几条，以及拟人化表达的全部开关。",
+                        "什么时候回、回多快、一次发几条，以及完整生命周期与拟人化表达参数。",
                         IconView.CHAT,
                         new Section[]{
-                                sec("对话模式",
-                                        "三种模式共用下面这套参数，群聊只是选择用哪一种。",
-                                        e("conversation.mode", "对话模式",
-                                                "传统触发 / 参与者续接 / 完整生命周期。",
-                                                arr("legacy", "threaded", "lifecycle"),
-                                                arr("传统触发", "参与者续接", "完整生命周期")),
-                                        b("conversation.unifiedMode", "所有群聊统一使用默认模式",
-                                                "关掉后可以按群覆盖，但按群覆盖的编辑在手机端没有（控制台才能改）。", true),
-                                        i("conversation.continuationWindowMs", "确定性续接窗口（秒）",
-                                                "机器人发言后，为当前参与者保留多久的续接窗口。", 10, 1800, 1000),
-                                        i("conversation.threadTtlMs", "线程空闲过期（分钟）",
-                                                "超过这个时间没消息，线程作废。", 5, 1440, 60000),
-                                        i("conversation.continuationContextCount", "续接读取历史条数",
-                                                "续接那一轮读多少条历史。", 1, 500, 1),
+                                sec("完整生命周期参数",
+                                        "默认统一采用完整生命周期对话引擎，以下参数控制活跃/安静转换与换代上限。",
                                         i("conversation.silentIdleMs", "监听空闲结束（分钟）",
                                                 "完整生命周期：安静多久算监听结束。", 1, 60, 60000),
                                         i("conversation.activeIdleMs", "活跃空闲结束（分钟）",
@@ -1100,7 +1084,7 @@ final class BotConfigSchema {
                                                 "默认 100。", 0, 1000, 1),
                                         i("onebot.textTimeoutMs", "单条动作超时（毫秒）",
                                                 "单次 OneBot 动作超时（毫秒），默认 120000；勿调过小。",
-                                                5000, 600000, 1000))
+                                                5000, 600000, 1))
                         }),
 
                 // -------------------------------------------------- 20 Web 搜索
@@ -1225,9 +1209,8 @@ final class BotConfigSchema {
                 out.add(new Group("知识库", null, all[i].icon, new Section[0]));
                 continue;
             }
-            // 「模型与接口」组：字段全部收进「模型与 Key」页（用户 2026-11-18：两处重复，合成一页）。
-            // 这一组只留一张入口卡，所以把 sections 清空。
-            if (title.startsWith("模型与接口")) {
+            // 「模型与接口」「Web 搜索」已各自拥有独立专页，此处不再重复展示冗余条目。
+            if (title.startsWith("模型与接口") || title.startsWith("Web 搜索")) {
                 out.add(new Group(all[i].title, null, all[i].icon, new Section[0]));
                 continue;
             }

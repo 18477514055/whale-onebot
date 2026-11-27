@@ -71,6 +71,12 @@ public final class RemoteHostDispatcher implements RemoteTransport.RpcHandler, R
             case "container.stop":
                 ContainerService.stop(ctx);
                 return "{\"ok\":true}";
+            case "container.restartQq":
+                ContainerService.restartQqOnly(ctx);
+                return "{\"ok\":true}";
+            case "container.restartFull":
+                ContainerService.restartFullContainer(ctx);
+                return "{\"ok\":true}";
             case "login.requestQr":
                 return handleRequestQr();
             case "login.password":

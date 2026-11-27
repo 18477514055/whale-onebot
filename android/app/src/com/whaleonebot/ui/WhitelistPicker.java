@@ -180,21 +180,161 @@ final class WhitelistPicker {
                 List<WhitelistModel.Chat> friendList = friends == null ? null : WhitelistModel.parseFriends(friends);
                 chats = WhitelistModel.mergeSources(friendList, chats);
             } else if (kind == KIND_GROUP) {
-                String groups = queryProtocol(activity, "get_group_list", "{}", 6000);
+                // 冷启动首次走非 Hook Web CGI 拉群列表需 10~15s，放宽超时避免提前截断
+                String groups = queryProtocol(activity, "get_group_list", "{}", 15000);
                 List<WhitelistModel.Chat> groupList = groups == null ? null : WhitelistModel.parseGroups(groups);
                 chats = WhitelistModel.mergeSources(groupList, chats);
             }
 
             if (kind == KIND_GROUP && chats != null && !chats.isEmpty()) {
+                // 先把本次从 get_group_list 拿到的真群名落盘缓存
+                Map<String, String> fresh = new java.util.LinkedHashMap<String, String>();
+                for (WhitelistModel.Chat ch : chats) {
+                    if (ch != null && ch.id != null && ch.name != null && ch.name.trim().length() > 0) {
+                        fresh.put(ch.id, ch.name.trim());
+                    }
+                }
+                if (!fresh.isEmpty()) saveCachedGroupNames(activity, fresh);
+
                 String reqJson = WhitelistModel.groupsRequest(chats);
                 if (!reqJson.contains("[]")) {
                     String namesBody = queryProtocol(activity, "get_chat_names", reqJson, NAMES_TIMEOUT_MS);
                     Map<String, String> names = namesBody == null ? null : WhitelistModel.parseNames(namesBody);
+                    if (names != null && !names.isEmpty()) saveCachedGroupNames(activity, names);
                     chats = WhitelistModel.withNames(chats, names);
+                }
+            }
+            // 远程控制模式或本机无协议端时，回退经 DashApi 读取运行端已记录的会话列表（自动走 P2P 隧道）
+            if ((chats == null || chats.isEmpty()) && activity != null) {
+                List<WhitelistModel.Chat> fromApi = loadChatsFromDashApi(activity, kind);
+                if (fromApi != null && !fromApi.isEmpty()) {
+                    chats = WhitelistModel.mergeSources(chats, fromApi);
+                }
+            }
+            // 群聊用本地持久化群名缓存 + 手动备注兜底（即使 QQ 暂离线也显示清晰群名）
+            if (kind == KIND_GROUP && chats != null && !chats.isEmpty() && activity != null) {
+                Map<String, String> mergedNames = loadMergedGroupNames(activity);
+                if (!mergedNames.isEmpty()) {
+                    chats = WhitelistModel.withNames(chats, mergedNames);
                 }
             }
             return chats;
         } catch (Throwable th) {
+            return null;
+        }
+    }
+
+    private static final String GROUP_CACHE_FILE = "group-names-cache.json";
+    private static final String GROUP_REMARK_FILE = "group-remarks.json";
+
+    /** 读取「手动备注 > 最近一次非 Hook Web CGI 缓存」合并后的群名映射。 */
+    static Map<String, String> loadMergedGroupNames(android.content.Context ctx) {
+        Map<String, String> out = new java.util.LinkedHashMap<String, String>();
+        if (ctx == null) return out;
+        mergeJsonMap(out, new File(ctx.getFilesDir(), GROUP_CACHE_FILE));
+        mergeJsonMap(out, new File(ctx.getFilesDir(), GROUP_REMARK_FILE));
+        return out;
+    }
+
+    static String cachedGroupName(android.content.Context ctx, String groupId) {
+        if (ctx == null || groupId == null || groupId.trim().isEmpty()) return "";
+        String v = loadMergedGroupNames(ctx).get(groupId.trim());
+        return v == null ? "" : v;
+    }
+
+    static void saveGroupRemark(android.content.Context ctx, String groupId, String remark) {
+        if (ctx == null || groupId == null || groupId.trim().isEmpty()) return;
+        File f = new File(ctx.getFilesDir(), GROUP_REMARK_FILE);
+        Map<String, String> cur = new java.util.LinkedHashMap<String, String>();
+        mergeJsonMap(cur, f);
+        String clean = remark == null ? "" : remark.trim();
+        if (clean.isEmpty()) cur.remove(groupId.trim());
+        else cur.put(groupId.trim(), clean);
+        writeStringMap(f, cur);
+    }
+
+    static void saveCachedGroupNames(android.content.Context ctx, Map<String, String> fresh) {
+        if (ctx == null || fresh == null || fresh.isEmpty()) return;
+        File f = new File(ctx.getFilesDir(), GROUP_CACHE_FILE);
+        Map<String, String> cur = new java.util.LinkedHashMap<String, String>();
+        mergeJsonMap(cur, f);
+        cur.putAll(fresh);
+        writeStringMap(f, cur);
+    }
+
+    /** 一键异步刷新全部群名（非 Hook Web CGI 优先，刷新完成回调刷新界面）。 */
+    static void refreshAllGroupNames(final Activity activity, final java.util.function.Consumer<Integer> onDone) {
+        if (activity == null) return;
+        new Thread(() -> {
+            int count = 0;
+            try {
+                List<WhitelistModel.Chat> list = loadChats(activity, KIND_GROUP);
+                if (list != null) {
+                    for (WhitelistModel.Chat ch : list) {
+                        if (ch != null && ch.name != null && !ch.name.trim().isEmpty()) count++;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            final int total = count;
+            activity.runOnUiThread(() -> { if (onDone != null) onDone.accept(total); });
+        }, "whale-refresh-groups").start();
+    }
+
+    private static void mergeJsonMap(Map<String, String> dst, File f) {
+        String raw = readText(f);
+        if (raw == null || raw.trim().isEmpty()) return;
+        try {
+            Map<String, Object> obj = BotConfigJson.asObject(BotConfigJson.parse(raw));
+            if (obj == null) return;
+            for (Map.Entry<String, Object> e : obj.entrySet()) {
+                if (e.getKey() == null || e.getValue() == null) continue;
+                String v = String.valueOf(e.getValue()).trim();
+                if (!v.isEmpty()) dst.put(e.getKey().trim(), v);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void writeStringMap(File f, Map<String, String> m) {
+        try {
+            Map<String, Object> obj = new java.util.LinkedHashMap<String, Object>();
+            for (Map.Entry<String, String> e : m.entrySet()) obj.put(e.getKey(), e.getValue());
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            try {
+                fos.write(BotConfigJson.write(obj).getBytes("UTF-8"));
+            } finally {
+                fos.close();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 兜底从运行端 /api/chats 拉取已知群/好友（兼容远程 P2P 模式）。 */
+    private static List<WhitelistModel.Chat> loadChatsFromDashApi(Activity activity, int kind) {
+        try {
+            DashApi.Result r = DashApi.get(activity, "/api/chats", 5000);
+            if (r == null || !r.ok || r.data == null) return null;
+            List<Object> arr = null;
+            if (r.data instanceof List) {
+                arr = BotConfigJson.asArray(r.data);
+            } else {
+                Map<String, Object> m = BotConfigJson.asObject(r.data);
+                if (m != null) arr = BotConfigJson.asArray(m.get("chats"));
+            }
+            if (arr == null || arr.isEmpty()) return null;
+            List<WhitelistModel.Chat> out = new ArrayList<WhitelistModel.Chat>();
+            String prefix = kind == KIND_GROUP ? "group:" : "private:";
+            for (int i = 0; i < arr.size(); i++) {
+                Map<String, Object> item = BotConfigJson.asObject(arr.get(i));
+                if (item == null) continue;
+                String chatKey = DashApi.str(item, "chatKey", "");
+                if (!chatKey.startsWith(prefix)) continue;
+                String id = chatKey.substring(prefix.length()).trim();
+                if (id.length() == 0) continue;
+                String name = DashApi.str(item, "name", "");
+                if (name.length() == 0) name = DashApi.str(item, "displayName", "");
+                out.add(new WhitelistModel.Chat(id, 0L, 0, name));
+            }
+            return out;
+        } catch (Throwable ignored) {
             return null;
         }
     }
@@ -220,6 +360,16 @@ final class WhitelistPicker {
                 }
             }
         }
+    }
+
+    /** 包装 OneBot 根路径请求体（若 paramsJson 已是完整 {"action":...} 信封则避免双重包裹）。 */
+    static String buildOneBotEnvelope(String action, String json) {
+        String trimmed = (json == null || json.trim().length() == 0) ? "{}" : json.trim();
+        if (trimmed.startsWith("{") && trimmed.contains("\"action\"") && trimmed.contains("\"params\"")) {
+            return trimmed;
+        }
+        String safeAction = action == null ? "" : action.replace("\\", "\\\\").replace("\"", "\\\"");
+        return "{\"action\":\"" + safeAction + "\",\"params\":" + trimmed + "}";
     }
 
     /** POST 空对象 {@code {}} 到本机协议端。返回响应文本；任何异常 / 非 200 都返回 null。 */
@@ -255,7 +405,9 @@ final class WhitelistPicker {
             } catch (Throwable ignored) {
                 // 忽略：默认 Host 本来就是它
             }
-            byte[] body = (json == null ? "{}" : json).getBytes("UTF-8");
+            // 正确包装 OneBot 根路径请求体；若调用方（如 WhitelistModel.groupsRequest）已构造完整 {"action":...} 信封则直接透传，杜绝双重嵌套返 1400
+            String envelope = buildOneBotEnvelope(action, json);
+            byte[] body = envelope.getBytes("UTF-8");
             c.setFixedLengthStreamingMode(body.length);
             OutputStream os = c.getOutputStream();
             try {

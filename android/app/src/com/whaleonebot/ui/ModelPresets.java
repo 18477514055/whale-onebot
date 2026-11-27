@@ -127,10 +127,10 @@ public final class ModelPresets {
             ep("Token Plan（阿姆斯特丹）", "https://token-plan-ams.xiaomimimo.com/v1", false)
         },
         strs()),
-        pv("minimax", "MiniMax", "", "★ DSH 里记的是 Anthropic 端点，OpenAI 兼容请自行确认", "",
+        pv("minimax", "MiniMax", "", "OpenAI 兼容接口请确认服务商控制台端点", "",
         new Endpoint[] {
-            ep("国际站", "https://api.minimax.io/anthropic", false),
-            ep("国内站", "https://api.minimaxi.com/anthropic", false)
+            ep("国际站", "https://api.minimax.io/v1", false),
+            ep("国内站", "https://api.minimaxi.com/v1", false)
         },
         strs()),
         pv("siliconflow", "硅基流动", "https://docs.siliconflow.cn/docs/api/chat-completions-post", "聚合平台，模型名带组织前缀", "",
@@ -138,7 +138,7 @@ public final class ModelPresets {
             ep("官方", "https://api.siliconflow.cn/v1", true)
         },
         strs("deepseek-ai/DeepSeek-V4-Flash", "moonshotai/Kimi-K2.7-Code", "Qwen/Qwen3-235B")),
-        pv("openai", "OpenAI", "https://platform.openai.com/api-keys", "★ Chat Completions 不返回推理内容；推理走 Responses API（未接）", "",
+        pv("openai", "OpenAI", "https://platform.openai.com/api-keys", "标准 OpenAI Chat Completions 接口", "",
         new Endpoint[] {
             ep("官方", "https://api.openai.com/v1", true)
         },
@@ -198,13 +198,13 @@ public final class ModelPresets {
             ep("官方", "https://integrate.api.nvidia.com/v1", true)
         },
         strs()),
-        pv("ollama", "Ollama（本地）", "https://github.com/ollama/ollama/blob/main/docs/openai.md", "需在 network_security_config 放行明文", "",
+        pv("ollama", "Ollama（本地）", "https://github.com/ollama/ollama/blob/main/docs/openai.md", "本机或局域网本地模型服务", "",
         new Endpoint[] {
             ep("本机", "http://127.0.0.1:11434/v1", true),
             ep("局域网另一台机器", "http://192.168.1.x:11434/v1", false)
         },
         strs("llama3.2", "qwen2.5", "deepseek-r1")),
-        pv("lmstudio", "LM Studio（本地）", "https://lmstudio.ai/docs/api/openai-api", "需放行明文", "",
+        pv("lmstudio", "LM Studio（本地）", "https://lmstudio.ai/docs/api/openai-api", "局域网本地模型服务", "",
         new Endpoint[] {
             ep("本机", "http://127.0.0.1:1234/v1", false)
         },
@@ -214,41 +214,16 @@ public final class ModelPresets {
             ep("官方", "https://api.ant-ling.com/v1", true)
         },
         strs()),
-        pv("anthropic", "Anthropic（Claude）", "", "★ 原生 Messages 协议，本版未实现，会提示不支持；如需可用请走自定义 API 填兼容网关", "",
-        new Endpoint[] {
-            ep("官方", "https://api.anthropic.com", true)
-        },
-        strs()),
-        pv("github-copilot", "GitHub Copilot", "", "需要 Copilot 订阅签发的 token，不是普通 API Key", "",
-        new Endpoint[] {
-            ep("个人版", "https://api.individual.githubcopilot.com", true)
-        },
-        strs()),
-        pv("google", "Google（Gemini）", "", "★ 原生 generateContent 协议，本版未实现；如需可用请走自定义 API 填兼容网关", "",
-        new Endpoint[] {
-            ep("官方", "https://generativelanguage.googleapis.com/v1beta", true)
-        },
-        strs()),
         pv("meta", "Meta", "", "OpenAI 兼容", "",
         new Endpoint[] {
             ep("官方", "https://api.meta.ai/v1", true)
         },
         strs()),
-        pv("minimax-cn", "MiniMax（国内站）", "", "需兼容网关或客户端支持", "",
-        new Endpoint[] {
-            ep("Anthropic 兼容", "https://api.minimaxi.com/anthropic", false)
-        },
-        strs()),
-        pv("moonshotai-cn", "Kimi（国内站 .cn）", "", "★ 与 .ai 站的 Key 不通用", "",
+        pv("moonshotai-cn", "Kimi（国内站 .cn）", "", "与国际站 Key 不通用", "",
         new Endpoint[] {
             ep("国内站", "https://api.moonshot.cn/v1", true)
         },
         strs("kimi-k2-0905-preview", "moonshot-v1-128k")),
-        pv("openai-codex", "OpenAI Codex", "", "★ 走 ChatGPT 订阅登录态，不是 API Key，本版未实现", "",
-        new Endpoint[] {
-            ep("ChatGPT 后端", "https://chatgpt.com/backend-api", false)
-        },
-        strs()),
         pv("qwen-token-plan", "通义 Token Plan（新加坡）", "", "★ 套餐 Key 与按量计费 Key 不通用；区域绑错会 401", "",
         new Endpoint[] {
             ep("新加坡", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", true)
@@ -304,27 +279,12 @@ public final class ModelPresets {
             ep("账户级", "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", true)
         },
         strs("@cf/meta/llama-3.1-8b-instruct")),
-        pv("cloudflare-ai-gateway", "Cloudflare AI Gateway", "", "★ 把 {account_id} / {gateway_id} 换成你自己的；网关需先在 CF 后台建好", "",
+        pv("cloudflare-ai-gateway", "Cloudflare AI Gateway", "", "将 {account_id} / {gateway_id} 替换为你的网关信息", "",
         new Endpoint[] {
             ep("网关", "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat", true)
         },
         strs()),
-        pv("google-vertex", "Google Vertex AI", "", "★ 替换 {region} 与 {project}；鉴权走 Google 凭据，不是普通 API Key", "",
-        new Endpoint[] {
-            ep("OpenAI 兼容", "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/endpoints/openapi", true)
-        },
-        strs()),
-        pv("amazon-bedrock", "Amazon Bedrock", "", "★ 替换 {region}；鉴权用 AWS SigV4（不是 Bearer Key），本版不支持签名", "",
-        new Endpoint[] {
-            ep("OpenAI 兼容", "https://bedrock-runtime.{region}.amazonaws.com/openai/v1", true)
-        },
-        strs()),
-        pv("azure", "Azure OpenAI", "", "★ 路径与鉴权头都非标准（api-key + api-version），本版未实现；建议走自定义网关", "",
-        new Endpoint[] {
-            ep("资源级", "https://{resource}.openai.azure.com/openai/deployments/{deployment}", false)
-        },
-        strs()),
-        pv("qwen-token-plan-individual", "通义 Token Plan（个人版）", "", "★ 个人版套餐 Key，与按量计费 / 企业版都不通用", "",
+        pv("qwen-token-plan-individual", "通义 Token Plan（个人版）", "", "个人版套餐 Key，与按量计费 / 企业版不通用", "",
         new Endpoint[] {
             ep("新加坡", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", true)
         },
@@ -399,6 +359,18 @@ public final class ModelPresets {
      *
      * <p>注意：返回值可能不含 {@code off}（opencode / commandcode 就是这样），别自行补。
      */
+    public static Provider[] all() {
+        return PROVIDERS.clone();
+    }
+
+    public static Provider byId(String id) {
+        if (id == null || id.isEmpty()) return null;
+        for (int i = 0; i < PROVIDERS.length; i++) {
+            if (id.equals(PROVIDERS[i].id)) return PROVIDERS[i];
+        }
+        return null;
+    }
+
     public static String[] levelsFor(String baseUrl) {
         Service s = serviceForBaseUrl(baseUrl);
         if (s == null || s.uiLevels.length == 0) {

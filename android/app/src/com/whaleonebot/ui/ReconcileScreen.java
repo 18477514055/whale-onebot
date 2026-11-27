@@ -365,7 +365,17 @@ final class ReconcileScreen extends Screen {
         retry.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                act(it, "retry-failed");
+                PromptSheet.confirm(activity, t,
+                        "确认补发历史失败消息？",
+                        "将向「" + it.name + "」立即补发 " + it.failed + " 条之前发送失败的消息。若这些消息已过时，建议改点「解锁（不重发）」以免刷屏。",
+                        "确认补发",
+                        true,
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                act(it, "retry-failed");
+                            }
+                        });
             }
         });
         box.addView(retry, DashKit.mt(Ui.llp(MATCH_PARENT, WRAP_CONTENT), dp(Theme.S2)));

@@ -480,50 +480,42 @@ final class ProviderEditScreen extends Screen {
             return;
         }
         final String key = keyInput == null ? "" : keyInput;
+        final String pid = providerId == null ? "" : providerId.trim();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 boolean ok = false;
-                HttpURLConnection c = null;
+                String detail = "";
                 try {
-                    URL url = new URL("http://127.0.0.1:" + TEST_PORT + "/api/providers/test-one");
-                    c = (HttpURLConnection) url.openConnection();
-                    c.setRequestMethod("POST");
-                    c.setConnectTimeout(3000);
-                    c.setReadTimeout(3000);
-                    c.setDoOutput(true);
-                    c.setRequestProperty("Host", "127.0.0.1:" + TEST_PORT);
-                    c.setRequestProperty("Content-Type", "application/json");
-                    byte[] body = testBody(base, key).getBytes("UTF-8");
-                    c.setFixedLengthStreamingMode(body.length);
-                    OutputStream out = c.getOutputStream();
-                    try {
-                        out.write(body);
-                    } finally {
-                        out.close();
-                    }
-                    int code = c.getResponseCode();
-                    ok = code >= 200 && code < 300;
-                    // body 必须读掉，否则连接不一定归还
-                    drain(code >= 400 ? c.getErrorStream() : c.getInputStream());
-                } catch (Throwable ignored) {
-                    ok = false;
-                } finally {
-                    if (c != null) {
-                        try {
-                            c.disconnect();
-                        } catch (Throwable ignored) {
-                            // 断不开也无所谓
+                    DashApi.Result r = DashApi.post(activity, "/api/providers/test-one", testBody(pid, base, key), 10000);
+                    if (r != null && r.ok && r.data != null) {
+                        Map<String, Object> root = BotConfigJson.asObject(r.data);
+                        Map<String, Object> inner = root == null ? null : BotConfigJson.asObject(root.get("result"));
+                        if (inner != null) {
+                            ok = Boolean.TRUE.equals(inner.get("ok"));
+                            detail = DashApi.str(inner, "error", "");
+                            if (detail.length() == 0) detail = DashApi.str(inner, "message", "");
+                        } else if (root != null) {
+                            ok = Boolean.TRUE.equals(root.get("ok"));
+                            detail = DashApi.str(root, "error", "");
                         }
+                    } else if (r != null && r.error != null) {
+                        detail = r.error;
                     }
+                } catch (Throwable ex) {
+                    ok = false;
+                    detail = ex.getMessage() == null ? "" : ex.getMessage();
                 }
                 final boolean result = ok;
+                final String msg = result
+                        ? "连通成功"
+                        : (detail != null && detail.length() > 0 ? ("连接失败：" + detail) : "连接失败（请检查地址、Key 或运行端状态）");
                 try {
                     activity.runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
                             restoreTestButton(btn);
-                            ModelsScreen.W.toast(activity, result ? "连通" : "失败");
+                            ModelsScreen.W.toast(activity, msg);
                         }
                     });
                 } catch (Throwable ignored) {
@@ -539,10 +531,11 @@ final class ProviderEditScreen extends Screen {
         Ui.enabled(btn, true);
     }
 
-    /** 请求体：{@code {"baseUrl":"…"}}，Key 非空才带 {@code "apiKey"}。 */
-    private static String testBody(String base, String key) {
-        StringBuilder sb = new StringBuilder(200);
+    /** 请求体：{@code {"baseUrl":"…"}}，带 providerId（复用已存 Key）及非空 apiKey。 */
+    private static String testBody(String providerId, String base, String key) {
+        StringBuilder sb = new StringBuilder(220);
         sb.append("{\"baseUrl\":").append(jsonString(base));
+        if (providerId != null && providerId.length() > 0) sb.append(",\"providerId\":").append(jsonString(providerId));
         if (key != null && key.length() > 0) sb.append(",\"apiKey\":").append(jsonString(key));
         sb.append('}');
         return sb.toString();
@@ -769,6 +762,12 @@ final class ProviderEditScreen extends Screen {
             provider.put("needsBaseUrl", Boolean.FALSE);
             provider.put("models", stringList(models));
             provider.put("modelNames", nameMap(models));
+            // OpenCode 渠道自动写入固定会话头标识（对应 99-Alkaid 实证：x-opencode-session）
+            ModelPresets.Provider pvMeta = presetId == null ? null : ModelPresets.byId(presetId);
+            String sh = (pvMeta != null && pvMeta.sessionHeader != null && pvMeta.sessionHeader.length() > 0)
+                    ? pvMeta.sessionHeader
+                    : (base.toLowerCase(java.util.Locale.US).contains("opencode.ai") ? "x-opencode-session" : "");
+            if (sh.length() > 0) provider.put("sessionHeader", sh);
             if (!appendProvider(working, provider)) {
                 ModelsScreen.W.toast(activity, "providers[] 不是数组，没法新增渠道");
                 return;
@@ -785,6 +784,10 @@ final class ProviderEditScreen extends Screen {
             provider.put("api", "anthropic".equals(api) ? "anthropic" : "openai");
             provider.put("models", stringList(models));
             provider.put("modelNames", mergeNames(provider.get("modelNames"), models));
+            if (base.toLowerCase(java.util.Locale.US).contains("opencode.ai")
+                    && ModelsScreen.U.s(provider.get("sessionHeader")).trim().isEmpty()) {
+                provider.put("sessionHeader", "x-opencode-session");
+            }
         }
 
         boolean wroteKey = keyInput != null && keyInput.length() > 0;

@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "name": "Whale OneBot 精选 MCP 目录（手机适配版）",
+  "repository": "https://github.com/18477514055/whale-onebot",
+  "updatedAt": "2026-11-27",
+  "note": "面向手机端容器优化：优先推荐使用远程 HTTP / SSE MCP 服务，或运行容器内已装 Node 的轻量脚本，避免在手机上依赖 npx/uvx 下载失败。",
+  "servers": [
+    {
+      "id": "context7-remote",
+      "title": "Context7 开源文档（远程 HTTP）",
+      "category": "知识",
+      "transport": "http",
+      "mobileFriendly": true,
+      "description": "免本地安装，直接通过 HTTPS 查询主流开源框架与库的最新文档和示例。",
+      "config": {
+        "id": "context7-remote",
+        "enabled": true,
+        "transport": "http",
+        "url": "https://mcp.context7.com/mcp",
+        "headers": {},
+        "timeoutMs": 20000,
+        "maxCallsPerMinute": 30,
+        "toolMounting": "direct"
+      }
+    },
+    {
+      "id": "remote-http-template",
+      "title": "自定义远程 MCP（HTTP / Streamable）",
+      "category": "通用",
+      "transport": "http",
+      "mobileFriendly": true,
+      "description": "接入任意支持 MCP Streamable HTTP 协议的云端或局域网服务（如自建笔记、日程、私有工具网关），支持 Bearer Token 请求头。",
+      "config": {
+        "id": "my-remote-mcp",
+        "enabled": true,
+        "transport": "http",
+        "url": "https://example.com/mcp",
+        "headers": {
+          "Authorization": ""
+        },
+        "timeoutMs": 20000,
+        "maxCallsPerMinute": 30,
+        "toolMounting": "direct"
+      }
+    },
+    {
+      "id": "local-node-script",
+      "title": "本机 Node 脚本 MCP（stdio）",
+      "category": "进阶",
+      "transport": "stdio",
+      "mobileFriendly": true,
+      "description": "直接用容器内置的 node 运行你放到数据目录里的自定义 MCP 脚本，无需 npx/uvx 联网装依赖。",
+      "config": {
+        "id": "local-node-mcp",
+        "enabled": false,
+        "transport": "stdio",
+        "command": "node",
+        "args": ["/agent/data/mcp/server.mjs"],
+        "env": {},
+        "timeoutMs": 20000,
+        "maxCallsPerMinute": 30,
+        "toolMounting": "direct"
+      }
+    }
+  ]
+}

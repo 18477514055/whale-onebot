@@ -1,0 +1,10 @@
+{
+  "id": "trip-planner",
+  "name": "出行规划",
+  "description": "先问清日期、预算和同行人，再给 2-3 套可执行的行程方案，不编造车次与票价。",
+  "version": "1.0.0",
+  "author": "whale-onebot",
+  "category": "生活",
+  "allowedTools": ["web_search", "web_fetch", "send_message"],
+  "triggers": ["帮我规划行程", "周末去哪玩", "旅游攻略"]
+}

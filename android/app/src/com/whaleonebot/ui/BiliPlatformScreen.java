@@ -43,6 +43,8 @@ final class BiliPlatformScreen extends Screen {
 
     private TextView connectBtn;
     private TextView connectStatus;
+    private ScrollView pageScroll;
+    private int savedScrollY = 0;
 
     // 看板动作流水翻页状态
     private int logPage = 0;
@@ -57,6 +59,7 @@ final class BiliPlatformScreen extends Screen {
     }
 
     void build() {
+        if (pageScroll != null) savedScrollY = pageScroll.getScrollY();
         root.removeAllViews();
         statuses.clear();
         verifyLines.clear();
@@ -69,11 +72,13 @@ final class BiliPlatformScreen extends Screen {
         logOlderBtn = null;
         logLatestBtn = null;
 
-        ScrollView scroll = new ScrollView(activity);
-        root.addView(scroll);
+        pageScroll = new ScrollView(activity);
+        root.addView(pageScroll);
         LinearLayout col = Ui.column(activity);
         col.setPadding(dp(Theme.S4), dp(Theme.S3), dp(Theme.S4), dp(Theme.S4));
-        scroll.addView(col);
+        pageScroll.addView(col);
+        final int keepY = savedScrollY;
+        if (keepY > 0) pageScroll.post(() -> { if (pageScroll != null) pageScroll.scrollTo(0, keepY); });
 
         if (tab.startsWith("edit:")) {
             col.addView(header("B 站账号设置"));
@@ -341,9 +346,17 @@ final class BiliPlatformScreen extends Screen {
                 pendingBox.addView(Ui.text(activity, bvid + "  ·  " + text.length() + " 字", Theme.T_CAP, t.textTertiary), padTight());
                 LinearLayout row2 = Ui.row(activity);
                 final String pendingId = row.optString("id", "");
-                // button() 自己会 addView，所以直接放进 row2，不要再 addView 一次
-                button(row2, "通过", true, () -> decidePending(bot.id, "approve", pendingId));
-                button(row2, "不通过", false, () -> decidePending(bot.id, "reject", pendingId));
+                TextView approveBtn = Ui.button(activity, t, "通过", true);
+                approveBtn.setOnClickListener(v -> decidePending(bot.id, "approve", pendingId));
+                LinearLayout.LayoutParams lpA = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                lpA.rightMargin = dp(Theme.S1);
+                row2.addView(approveBtn, lpA);
+
+                TextView rejectBtn = Ui.button(activity, t, "不通过", false);
+                rejectBtn.setOnClickListener(v -> decidePending(bot.id, "reject", pendingId));
+                LinearLayout.LayoutParams lpR = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+                lpR.leftMargin = dp(Theme.S1);
+                row2.addView(rejectBtn, lpR);
                 pendingBox.addView(row2, padTight());
             }
             if (pendingRows.size() > 5) {
@@ -401,74 +414,111 @@ final class BiliPlatformScreen extends Screen {
     private void buildBehaviorSettings(LinearLayout col, final String bindingId) {
         JSONObject cfg = RemoteBridge.getBiliSettings(activity, bot.id, bindingId);
 
-        col.addView(Ui.strong(activity, "B 站行为", Theme.T_CARD, t.textPrimary), padSection());
+        col.addView(Ui.strong(activity, "B 站常用行为开关", Theme.T_CARD, t.textPrimary), padSection());
 
-        // 巡看
-        LinearLayout browseBox = addSectionCard(col, "巡看");
-        final EditText adminUid = textInput(browseBox, "管理员 UID（可留空）", BiliSettings.getString(cfg, "admin.uid", ""));
-        final CheckBox browseEnabled = check(browseBox, "启用巡看", BiliSettings.getBool(cfg, "browse.enabled", true));
-        final EditText browseSources = textInput(browseBox, "来源（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.sources")));
-        // 自由巡看 = 不限定分区（综合推荐流）。不自由时才按选中的分区取流，分区名从线上分区表里挑。
-        final CheckBox browseFree = check(browseBox, "自由巡看（不限分区）", BiliSettings.getBool(cfg, "browse.freeBrowse", true));
+        // 一级常用卡：只放新手最关心的核心开关与中文选项（安全默认：仅浏览，写操作与私信默认关）
+        LinearLayout basicBox = addSectionCard(col, "基础开关与安全护栏");
+        final EditText adminUid = textInput(basicBox, "管理员 UID（可留空）", BiliSettings.getString(cfg, "admin.uid", ""));
+        final CheckBox browseEnabled = check(basicBox, "启用定时巡看视频", BiliSettings.getBool(cfg, "browse.enabled", true));
+        final CheckBox browseFree = check(basicBox, "自由巡看（不限分区）", BiliSettings.getBool(cfg, "browse.freeBrowse", true));
         final List<String> chosenZones = new ArrayList<String>(BiliSettings.getStringList(cfg, "browse.partitions"));
         final TextView[] zoneBtn = new TextView[1];
-        zoneBtn[0] = button(browseBox, zoneLabel(chosenZones), false, () -> pickZones(chosenZones, zoneBtn[0]));
+        zoneBtn[0] = button(basicBox, zoneLabel(chosenZones), false, () -> pickZones(chosenZones, zoneBtn[0]));
         final TextView browseZones = zoneBtn[0];
         browseZones.setEnabled(!browseFree.isChecked());
         browseFree.setOnCheckedChangeListener((view, checked) -> browseZones.setEnabled(!checked));
-        final EditText browseKeywords = textInput(browseBox, "关键词（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.keywords")));
-        final EditText browseMaxPerRun = numInput(browseBox, "单次上限（1-10）", BiliSettings.getInt(cfg, "browse.maxPerRun", 3));
-        final EditText browseMaxPerDay = numInput(browseBox, "每日上限（1-200）", BiliSettings.getInt(cfg, "browse.maxPerDay", 20));
+
+        final CheckBox readEnabled = check(basicBox, "启用评论区读取", BiliSettings.getBool(cfg, "read.enabled", true));
+        final CheckBox writeEnabled = check(basicBox, "启用评论/点赞/投币等写操作（默认关）", BiliSettings.getBool(cfg, "write.enabled", false));
+        final CheckBox writeReview = check(basicBox, "发评论前先由我审核（推荐开启）", BiliSettings.getBool(cfg, "write.reviewBeforeSend", true));
+        final CheckBox dmEnabled = check(basicBox, "启用私信自动回复（默认关）", BiliSettings.getBool(cfg, "dm.enabled", false));
+        final CheckBox liveEnabled = check(basicBox, "启用直播间互动（默认关）", BiliSettings.getBool(cfg, "live.enabled", false));
+        final CheckBox riskStopVerify = check(basicBox, "遇到验证码或风控立即停止（推荐开启）", BiliSettings.getBool(cfg, "risk.stopOnVerify", true));
+
+        // 折叠的高级频率、配额与资料库参数
+        final LinearLayout advWrap = Ui.column(activity);
+        advWrap.setVisibility(View.GONE);
+        final TextView[] advToggle = new TextView[1];
+        advToggle[0] = button(col, "展开进阶频率、配额与风控细调 ▾", false, () -> {
+            boolean show = advWrap.getVisibility() != View.VISIBLE;
+            advWrap.setVisibility(show ? View.VISIBLE : View.GONE);
+            advToggle[0].setText(show ? "收起进阶频率、配额与风控细调 ▴" : "展开进阶频率、配额与风控细调 ▾");
+        });
+        col.addView(advWrap, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 进阶：巡看细调（用中文选项按钮取代英文手填）
+        LinearLayout browseBox = addSectionCard(advWrap, "巡看来源与节奏");
+        final String[] curSourceVal = new String[] { BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.sources")) };
+        if (curSourceVal[0].isEmpty()) curSourceVal[0] = "recommend,follow";
+        final EditText browseSources = textInput(browseBox, "来源列表（可点下方快捷切换）", curSourceVal[0]);
+        LinearLayout srcRow = Ui.row(activity);
+        TextView srcBoth = Ui.button(activity, t, "推荐+关注", false);
+        srcBoth.setOnClickListener(v -> browseSources.setText("recommend,follow"));
+        TextView srcRec = Ui.button(activity, t, "仅推荐", false);
+        srcRec.setOnClickListener(v -> browseSources.setText("recommend"));
+        TextView srcFol = Ui.button(activity, t, "仅关注", false);
+        srcFol.setOnClickListener(v -> browseSources.setText("follow"));
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        srcRow.addView(srcBoth, sLp);
+        LinearLayout.LayoutParams sLp2 = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        sLp2.leftMargin = dp(Theme.S1);
+        srcRow.addView(srcRec, sLp2);
+        LinearLayout.LayoutParams sLp3 = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        sLp3.leftMargin = dp(Theme.S1);
+        srcRow.addView(srcFol, sLp3);
+        browseBox.addView(srcRow, padTight());
+
+        final EditText browseKeywords = textInput(browseBox, "兴趣关键词（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.keywords")));
+        final EditText browseMaxPerRun = numInput(browseBox, "单次最多看几个视频（1-10）", BiliSettings.getInt(cfg, "browse.maxPerRun", 3));
+        final EditText browseMaxPerDay = numInput(browseBox, "每日最多看几个视频（1-200）", BiliSettings.getInt(cfg, "browse.maxPerDay", 20));
         final EditText browseMaxMin = numInput(browseBox, "单视频最长分钟（1-30）", BiliSettings.getInt(cfg, "browse.maxMinutesPerVideo", 3));
-        final EditText browseGapMin = numInput(browseBox, "间隔分钟（10-360）", BiliSettings.getInt(cfg, "browse.gapMinutes", 45));
-        final EditText browseJitter = numInput(browseBox, "抖动比例 %（0-90）", BiliSettings.getInt(cfg, "browse.jitterPercent", 40));
+        final EditText browseGapMin = numInput(browseBox, "两次巡看间隔分钟（10-360）", BiliSettings.getInt(cfg, "browse.gapMinutes", 45));
+        final EditText browseJitter = numInput(browseBox, "时间随机抖动 %（0-90）", BiliSettings.getInt(cfg, "browse.jitterPercent", 40));
         final EditText browseWindows = textInput(browseBox, "活跃时段（手机时间，逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "browse.windows")));
-        final EditText browseSkip = numInput(browseBox, "跳过概率 %（0-100）", BiliSettings.getInt(cfg, "browse.skipPercent", 70));
+        final EditText browseSkip = numInput(browseBox, "随机跳过概率 %（0-100）", BiliSettings.getInt(cfg, "browse.skipPercent", 70));
 
-        // 评论读取
-        LinearLayout readBox = addSectionCard(col, "评论读取");
-        final CheckBox readEnabled = check(readBox, "启用评论读取", BiliSettings.getBool(cfg, "read.enabled", true));
+        // 进阶：评论读取
+        LinearLayout readBox = addSectionCard(advWrap, "评论读取细调");
         final EditText readMaxPerVideo = numInput(readBox, "单视频读取条数（0-50）", BiliSettings.getInt(cfg, "read.maxPerVideo", 20));
-        final EditText readOrder = textInput(readBox, "排序（hot / time）", BiliSettings.getString(cfg, "read.order", "hot"));
-        final CheckBox readStore = check(readBox, "存入资料库", BiliSettings.getBool(cfg, "read.storeToLibrary", true));
+        final EditText readOrder = textInput(readBox, "排序方式（hot=按热度 / time=按时间）", BiliSettings.getString(cfg, "read.order", "hot"));
+        LinearLayout ordRow = Ui.row(activity);
+        TextView ordHot = Ui.button(activity, t, "按热度", false);
+        ordHot.setOnClickListener(v -> readOrder.setText("hot"));
+        TextView ordTime = Ui.button(activity, t, "按时间", false);
+        ordTime.setOnClickListener(v -> readOrder.setText("time"));
+        ordRow.addView(ordHot, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams oLp2 = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        oLp2.leftMargin = dp(Theme.S1);
+        ordRow.addView(ordTime, oLp2);
+        readBox.addView(ordRow, padTight());
+        final CheckBox readStore = check(readBox, "将评论摘要存入资料库", BiliSettings.getBool(cfg, "read.storeToLibrary", true));
 
-        // 评论与互动
-        LinearLayout writeBox = addSectionCard(col, "评论与互动");
-        final CheckBox writeEnabled = check(writeBox, "启用评论与互动", BiliSettings.getBool(cfg, "write.enabled", true));
+        // 进阶：评论与互动配额
+        LinearLayout writeBox = addSectionCard(advWrap, "评论与互动每日配额");
         final EditText writeCommentPerDay = numInput(writeBox, "每日评论上限（0-50）", BiliSettings.getInt(cfg, "write.commentPerDay", 10));
         final EditText writeCommentPerVideo = numInput(writeBox, "单视频评论上限（0-10）", BiliSettings.getInt(cfg, "write.commentPerVideo", 1));
         final EditText writeLikePerDay = numInput(writeBox, "每日点赞上限（0-300）", BiliSettings.getInt(cfg, "write.likePerDay", 50));
         final EditText writeCoinPerDay = numInput(writeBox, "每日投币上限（0-100）", BiliSettings.getInt(cfg, "write.coinPerDay", 10));
         final EditText writeFollowPerDay = numInput(writeBox, "每日关注上限（0-20）", BiliSettings.getInt(cfg, "write.followPerDay", 5));
-        final CheckBox writeReplyOnly = check(writeBox, "回复评论", BiliSettings.getBool(cfg, "write.replyOnly", true));
+        final CheckBox writeReplyOnly = check(writeBox, "仅回复他人评论（不主动发一级评论）", BiliSettings.getBool(cfg, "write.replyOnly", true));
         final EditText writeMinChars = numInput(writeBox, "最少字数", BiliSettings.getInt(cfg, "write.minChars", 15));
         final EditText writeMaxChars = numInput(writeBox, "最多字数", BiliSettings.getInt(cfg, "write.maxChars", 80));
-        final CheckBox writeReview = check(writeBox, "发送前审核", BiliSettings.getBool(cfg, "write.reviewBeforeSend", false));
 
-        // 私信
-        LinearLayout dmBox = addSectionCard(col, "私信");
-        final CheckBox dmEnabled = check(dmBox, "启用私信", BiliSettings.getBool(cfg, "dm.enabled", true));
+        // 进阶：私信与直播
+        LinearLayout dmBox = addSectionCard(advWrap, "私信与直播细调");
         final EditText dmMaxPerDay = numInput(dmBox, "每日私信上限（0-100）", BiliSettings.getInt(cfg, "dm.maxPerDay", 20));
-        final EditText dmPollSeconds = numInput(dmBox, "轮询间隔秒（5-120）", BiliSettings.getInt(cfg, "dm.pollSeconds", 15));
+        final EditText dmPollSeconds = numInput(dmBox, "私信轮询间隔秒（5-120）", BiliSettings.getInt(cfg, "dm.pollSeconds", 15));
+        final EditText liveRooms = textInput(dmBox, "直播房间号（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "live.rooms")));
+        final EditText liveDanmaku = numInput(dmBox, "每小时弹幕上限（0-120）", BiliSettings.getInt(cfg, "live.danmakuPerHour", 20));
 
-        // 直播
-        LinearLayout liveBox = addSectionCard(col, "直播");
-        final CheckBox liveEnabled = check(liveBox, "启用直播", BiliSettings.getBool(cfg, "live.enabled", false));
-        final EditText liveRooms = textInput(liveBox, "房间号（逗号分隔）", BiliSettings.joinCsv(BiliSettings.getStringList(cfg, "live.rooms")));
-        final EditText liveDanmaku = numInput(liveBox, "每小时弹幕上限（0-120）", BiliSettings.getInt(cfg, "live.danmakuPerHour", 20));
-
-        // 资料库
-        LinearLayout libBox = addSectionCard(col, "资料库");
+        // 进阶：资料库与风控
+        LinearLayout libBox = addSectionCard(advWrap, "资料库与风控阈值");
         final EditText libRetention = numInput(libBox, "保留天数（0-365）", BiliSettings.getInt(cfg, "lib.retentionDays", 30));
         final CheckBox libCondense = check(libBox, "启用浓缩整理", BiliSettings.getBool(cfg, "lib.condenseEnabled", true));
         final EditText libCondenseDays = numInput(libBox, "几天后浓缩（1-90）", BiliSettings.getInt(cfg, "lib.condenseAfterDays", 7));
         final EditText libCondenseModel = textInput(libBox, "浓缩模型（留空用默认）", BiliSettings.getString(cfg, "lib.condenseModel", ""));
-
-        // 风控
-        LinearLayout riskBox = addSectionCard(col, "风控");
-        final EditText riskMaxPerHour = numInput(riskBox, "每小时操作上限（5-120）", BiliSettings.getInt(cfg, "risk.maxPerHour", 30));
-        final EditText riskBackoff = numInput(riskBox, "退避分钟（1-240）", BiliSettings.getInt(cfg, "risk.backoffMinutes", 15));
-        final CheckBox riskStopVerify = check(riskBox, "遇验证即停止", BiliSettings.getBool(cfg, "risk.stopOnVerify", true));
+        final EditText riskMaxPerHour = numInput(libBox, "每小时操作上限（5-120）", BiliSettings.getInt(cfg, "risk.maxPerHour", 30));
+        final EditText riskBackoff = numInput(libBox, "触发风控后退避分钟（1-240）", BiliSettings.getInt(cfg, "risk.backoffMinutes", 15));
 
         button(col, "保存行为设置", true, () -> {
             Integer vMaxPerRun = parseRange(browseMaxPerRun, 1, 10);

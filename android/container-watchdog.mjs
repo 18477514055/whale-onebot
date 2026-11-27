@@ -31,22 +31,31 @@ export function isInteractiveOrOfflinePhase(phase) {
   return NON_RESTARTABLE_PHASES.has(String(phase || '').trim());
 }
 
+/** 识别 NTQQ MSF 会话票据失效错误（-10004 A2/D2 失效、-10003 未登录/无 A2）：温和 wake 无法自愈，需靠免扫码快登重建会话。 */
+export function isMsfTicketInvalidError(code) {
+  const s = String(code ?? '').trim();
+  return s === '-10003' || s === '-10004';
+}
+
 /**
- * 原生通道零误杀看门狗状态机（2026-11-27 问答报告 Q3）：
+ * 原生通道零误杀看门狗状态机（2026-11-27 升级：兼顾「无快登绝不误杀」与「有快登遇到 MSF -10003/-10004 票据失效自动免扫码自愈」）：
  * - 连续 fail 2 次 → 返回 'wake'（进程内温和唤醒，不重登）；
- * - 连续 fail 4 次：
+ * - 温和唤醒后仍失败（MSF -10003/-10004 持续失败 3 次，或常规探活连续失败 4 次）：
  *   - 处于人工待机/扫码/被踢/过期态 → 返回 'none'；
- *   - 默认策略（绝不盲目重启）：若 allowRestart !== true 或 canQuickLogin !== true 或命中被踢/过期原因，
- *     严禁杀进程，返回 'notify_offline'（由宿主进入离线告警与人工介入态，绝不把会话踢进刷码态）；
- *   - 仅当 allowRestart === true && canQuickLogin === true 且通过冷静期/冷却/每小时限频时，才放行 'restart'。
+ *   - 命中被踢/过期原因或 canQuickLogin !== true → 绝不杀进程，返回 'notify_offline' 立即通知人工介入；
+ *   - 若 canQuickLogin === true 且 (allowRestart === true 或 allowQuickLoginRestart === true)：
+ *     通过冷静期/15分钟冷却/每小时上限（默认 2 次）时返回 'quick_restart'（平滑退出走免扫码快登重建新鲜 A2/D2 票据）；
+ *     超出限频预算仍恢复失败则立刻升级返回 'notify_offline'，杜绝任何静默假死。
  */
 export function createNativeWatchdogState({
   wakeAfterFails = 2,
   restartAfterFails = 4,
-  restartCooldownMs = 10 * 60_000,
+  msfInvalidRestartAfterFails = 3,
+  restartCooldownMs = 15 * 60_000,
   minUptimeBeforeRestartMs = 3 * 60_000,
-  maxRestartsPerHour = 3,
-  allowRestart = false
+  maxRestartsPerHour = 2,
+  allowRestart = false,
+  allowQuickLoginRestart = false
 } = {}) {
   let consecutiveFails = 0;
   let wakeAttempted = false;
@@ -69,7 +78,8 @@ export function createNativeWatchdogState({
       now = Date.now(),
       recentRestarts = [],
       canQuickLogin = false,
-      offlineReason = ''
+      offlineReason = '',
+      msfTicketInvalid = false
     } = {}) {
       consecutiveFails += 1;
       if (isInteractiveOrOfflinePhase(phase)) {
@@ -79,7 +89,8 @@ export function createNativeWatchdogState({
         wakeAttempted = true;
         return 'wake';
       }
-      if (consecutiveFails >= restartAfterFails && wakeAttempted) {
+      const threshold = msfTicketInvalid ? Math.min(restartAfterFails, msfInvalidRestartAfterFails) : restartAfterFails;
+      if (consecutiveFails >= threshold && wakeAttempted) {
         if (BLOCK_RESTART_REASONS.has(String(offlineReason || '').trim())) {
           if (!offlineNotified) {
             offlineNotified = true;
@@ -87,23 +98,32 @@ export function createNativeWatchdogState({
           }
           return 'none';
         }
-        // 核心防反噬防线：未显式允许重启或不能免扫码快登时，绝不杀进程，改发离线告警并保持温和周期唤醒
-        if (!allowRestart || canQuickLogin !== true) {
+        const quickSelfHealAllowed = (allowRestart || allowQuickLoginRestart) && canQuickLogin === true;
+        // 核心防反噬防线：不能免扫码快登或未开启自愈时，绝不杀进程，立刻发离线告警
+        if (!quickSelfHealAllowed) {
           if (!offlineNotified) {
             offlineNotified = true;
             return 'notify_offline';
           }
-          // 之后每隔 3 次失败温和再试一次进程内唤醒，绝不自杀
-          if ((consecutiveFails - restartAfterFails) % 3 === 0) return 'wake';
+          if ((consecutiveFails - threshold) % 3 === 0) return 'wake';
           return 'none';
         }
-        if (uptimeMs < minUptimeBeforeRestartMs) return 'none';
-        const recentWindow = (Array.isArray(recentRestarts) ? recentRestarts : [])
-          .filter((t) => Number.isFinite(t) && t > 0 && now - t < 3600_000);
-        const lastRestartAt = recentWindow.length ? Math.max(...recentWindow) : 0;
-        if (lastRestartAt && now - lastRestartAt < restartCooldownMs) return 'none';
-        if (recentWindow.length >= maxRestartsPerHour) return 'none';
-        return 'restart';
+        // 有可用快登票据且满足限频：触发平滑免扫码快登重建会话（解决 MSF -10004/-10003 静默失效）
+        if (uptimeMs >= minUptimeBeforeRestartMs) {
+          const recentWindow = (Array.isArray(recentRestarts) ? recentRestarts : [])
+            .filter((t) => Number.isFinite(t) && t > 0 && now - t < 3600_000);
+          const lastRestartAt = recentWindow.length ? Math.max(...recentWindow) : 0;
+          const cooledDown = !lastRestartAt || (now - lastRestartAt >= restartCooldownMs);
+          if (cooledDown && recentWindow.length < maxRestartsPerHour) {
+            return allowRestart ? 'restart' : 'quick_restart';
+          }
+        }
+        // 处于冷静期或本小时自愈预算用尽：立即发离线告警，绝不静默
+        if (!offlineNotified) {
+          offlineNotified = true;
+          return 'notify_offline';
+        }
+        return 'none';
       }
       return 'none';
     }

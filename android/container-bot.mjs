@@ -15,6 +15,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   createNativeWatchdogState,
   createAgentConsoleWatchdogState,
+  isMsfTicketInvalidError,
   classifyLoginError,
   sanitizeVerifyUrl,
   sanitizeQrUrl,
@@ -28,11 +29,14 @@ import {
   cleanUin
 } from './container-watchdog.mjs';
 
-const STATE = '/opt/whale/qq-state';
+// 支持多 QQ 机器人按槽位隔离状态目录（--slot=<botId>）；默认空槽位兼容老路径 /opt/whale/qq-state
+const SLOT_ARG = (process.argv.find((a) => a.startsWith('--slot=')) || '').slice('--slot='.length).replace(/[^A-Za-z0-9_-]/g, '');
+const STATE = SLOT_ARG ? path.join('/opt/whale/qq-state-slots', SLOT_ARG) : '/opt/whale/qq-state';
 const GLOBAL = path.join(STATE, 'global');
 const CMD_FILE = path.join(STATE, 'cmd.json');
+const BLACKBOX_FILE = path.join(STATE, 'blackbox.log');
 const PROJECT = '/qq-onebot';
-const RUNTIME = path.join(PROJECT, 'runtime');
+const RUNTIME = SLOT_ARG ? path.join(STATE, 'runtime') : path.join(PROJECT, 'runtime');
 const LOADER = '/opt/whale/native/loader.node';
 const WRAPPER = '/opt/QQ/resources/app/wrapper.node';
 
@@ -65,9 +69,34 @@ const dirs = [STATE, GLOBAL, RUNTIME, path.join(RUNTIME, 'global'), path.join(RU
   path.join(RUNTIME, 'outcomes'), path.join(PROJECT, 'runtime')];
 for (const d of dirs) { try { fs.mkdirSync(d, { recursive: true, mode: 0o700 }); } catch {} }
 
+// 防掉线黑匣子环形日志：保留最近 120 条关键事件，触发 -10004/-10003/140022015/1006501 时落盘前后上下文
+const blackboxRing = [];
+let lastBlackboxDumpAt = 0;
+function recordBlackbox(tag, detail = '') {
+  const entry = `${new Date().toISOString()} [${tag}] ${String(detail || '')}`;
+  blackboxRing.push(entry);
+  if (blackboxRing.length > 120) blackboxRing.shift();
+}
+function dumpBlackbox(trigger) {
+  const now = Date.now();
+  if (now - lastBlackboxDumpAt < 30_000) return;
+  lastBlackboxDumpAt = now;
+  try {
+    const header = `\n===== BLACKBOX DUMP ${new Date(now).toISOString()} trigger=${trigger} ver=${CLIENT_VER} host=${os.hostname()} =====\n`;
+    fs.appendFileSync(BLACKBOX_FILE, header + blackboxRing.join('\n') + '\n', { mode: 0o600 });
+  } catch {}
+}
+
 function log(...a) {
-  const line = `[${new Date().toISOString()}] ${a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')}\n`;
+  const msg = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
   try { fs.appendFileSync(path.join(STATE, 'bot.log'), line); } catch {}
+  if (/MSF|KICK|140022|10065|WATCHDOG|LOGIN|OFFLINE|AGENT|BILI|bridge/.test(msg)) {
+    recordBlackbox('LOG', msg);
+  }
+  if (/-10004|140022015|1006501|NATIVE_KICKED_OFFLINE/.test(msg)) {
+    dumpBlackbox(msg.slice(0, 80));
+  }
 }
 
 const state = {
@@ -681,6 +710,19 @@ setTimeout(() => {
   void tryQuickLogin();
 }, 50000).unref();
 
+// ★ QQ 与 Agent 本体 / B 站彻底解耦：容器进程启动 1.5s 后立即独立拉起 Agent 本体（41907）与 B 站行为层，
+//   完全不等待 QQ 登录成功！即使 QQ 处于 token-expired / waiting-manual-login，B 站、知识库、记忆与配置 API 均照常运行。
+setTimeout(() => {
+  if (finished) return;
+  try { startBiliWorker(); } catch (e) { log('early bili worker start failed: ' + (e?.message ?? e)); }
+  if (WITH_AGENT && !agentProc && !agentInFlight) {
+    void startAgent(null).catch(e => log('early decoupled agent start failed: ' + (e?.message ?? e)));
+  }
+}, 1500).unref();
+setInterval(() => {
+  if (!finished) { try { startBiliWorker(); } catch {} }
+}, 15000).unref();
+
 // ------------------------------------------------------------------ 受控命令消费循环（500ms）
 async function executeCommand(cmd) {
   const action = String(cmd?.action || '').trim();
@@ -712,7 +754,7 @@ async function executeCommand(cmd) {
   }
   if (action === 'safe_logout' || action === 'switch_account' || action === 'force_relogin') {
     const prevUin = state.uin || BOT_UIN;
-    try { agentProc?.kill('SIGTERM'); } catch {}
+    // 解耦：仅释放 QQ 协议与 OneBot 通道，绝不杀 Agent 本体与 B 站 worker
     try { originalChat?.close?.(); } catch {}
     try { await onebot?.close?.(); } catch {}
     onebot = null;
@@ -841,17 +883,18 @@ function initializeSession() {
 
 let botStarting = false;
 function completeReady() {
-  if (finished || !initAccepted || state.phase === 'session-ready') return;
-  if (botStarting) return;
+  if (finished || !initAccepted || botStarting || state.phase === 'session-ready') return;
   let msgService;
   try { msgService = session.getMsgService(); } catch (e) { die('getMsgService-threw', e); return; }
   if (msgService === null || msgService === undefined) { readyTimer = setTimeout(completeReady, 200); return; }
   const sessionId = typeof session.getSessionId === 'function' ? session.getSessionId() : null;
   if (typeof sessionId !== 'string' || !sessionId) { die('invalid-session-id'); return; }
+  // 严格单次闩锁，彻底消除 onOpentelemetryInit 与 onSessionInitComplete 并发导致的双重 bridge attached
+  botStarting = true;
+  if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
   state.sessionId = sessionId;
   save('session-ready');
   log('session ready id=' + sessionId.slice(0, 8) + '…');
-  botStarting = true;
   setImmediate(() => { void startBot().catch(e => die('bot-start-failed', e)); });
 }
 
@@ -958,10 +1001,10 @@ async function startBot() {
     } });
   }, 3000);
 
-  // ① 原生通道零误杀看门狗（每 90s 探活；默认 allowRestart=false，绝不盲目杀进程踢进扫码态！）
+  // ① 原生通道零误杀+票据自愈看门狗（每 90s 探活；无可用快登绝不重启，有可用快登且遇 MSF -10004/-10003 或持续失联时限频免扫码快登重建会话）
   const processBootAt = Date.now();
   const restartStampFile = path.join(STATE, 'watchdog-restarts.json');
-  const nativeWatchdog = createNativeWatchdogState({ allowRestart: false });
+  const nativeWatchdog = createNativeWatchdogState({ allowRestart: false, allowQuickLoginRestart: true });
   let nativeCheckInFlight = false;
   if (nativeWatchdogTimer) clearInterval(nativeWatchdogTimer);
   nativeWatchdogTimer = setInterval(async () => {
@@ -976,25 +1019,29 @@ async function startBot() {
       if (probe && probe.status === 'ok') {
         nativeWatchdog.recordSuccess(Date.now());
         state.lastHealthyAt = Date.now();
+        state.lastMsfError = '';
         if (state.phase === 'degraded') {
           save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
-            offlineReason: '', offlineMessage: '', needsManualLogin: false
+            offlineReason: '', offlineMessage: '', needsManualLogin: false, msfStatus: 'online'
           });
         }
       } else {
         const now = Date.now();
         const ql = await probeQuickLoginAvailable();
         const recent = readRestartHistory(restartStampFile, now);
+        const msfTicketInvalid = isMsfTicketInvalidError(state.lastMsfError);
         const decision = nativeWatchdog.recordFailure({
           phase: state.phase,
           uptimeMs: now - processBootAt,
           now,
           recentRestarts: recent,
           canQuickLogin: ql.available,
-          offlineReason: state.offlineReason
+          offlineReason: state.offlineReason,
+          msfTicketInvalid
         });
         log('NATIVE_WATCHDOG_FAIL count=' + nativeWatchdog.snapshot().consecutiveFails
           + ' decision=' + decision + ' canQuick=' + ql.available
+          + ' msfInvalid=' + msfTicketInvalid
           + ' detail=' + String(probe?.error || probe?.retcode || 'unknown'));
         if (decision === 'wake') {
           try {
@@ -1004,20 +1051,31 @@ async function startBot() {
           } catch (e) {
             log('NATIVE_WATCHDOG_WAKE_ERR ' + (e?.message ?? e));
           }
-        } else if (decision === 'notify_offline') {
-          // 绝不盲杀进程！转为 degraded/告警态，让手机通知栏与远端主力机第一时间收到提醒
-          save('degraded', {
-            needsManualLogin: !ql.available,
-            offlineReason: ql.available ? 'native_probe_failed' : 'session_expired_no_quick_login',
-            offlineMessage: ql.available
-              ? 'QQ 原生通道连续探活未响应，正在持续温和重连（已保留当前会话不强杀）'
-              : 'QQ 原生连接疑似失效且本机无可用快登票据，已暂停自动重启；如需恢复请手动重新上线'
-          });
-        } else if (decision === 'restart') {
+        } else if (decision === 'quick_restart' || decision === 'restart') {
           try { recordRestartTimestamp(restartStampFile, now); } catch {}
-          await checkpointLoginDb('watchdog-restart');
-          log('NATIVE_WATCHDOG_RESTART triggering rate-limited process exit');
+          save('recovering', {
+            needsManualLogin: false,
+            offlineReason: msfTicketInvalid ? ('msf_ticket_invalid_' + state.lastMsfError) : 'native_probe_failed',
+            offlineMessage: msfTicketInvalid
+              ? '检测到 QQ 会话票据失效（' + state.lastMsfError + '），正在自动免扫码快登重建连接…'
+              : 'QQ 原生通道持续无响应，正在自动免扫码快登重建连接…'
+          });
+          await checkpointLoginDb('watchdog-quick-restart');
+          log('NATIVE_WATCHDOG_QUICK_RESTART triggering guarded quick-login recovery msfErr=' + String(state.lastMsfError || ''));
           process.exit(1);
+        } else if (decision === 'notify_offline') {
+          // 不能快登或限频预算用尽：立即发高优告警（needsManualLogin=true 保证手机通知栏与远端主力机立刻响铃提醒，绝不静默！）
+          save('degraded', {
+            needsManualLogin: true,
+            offlineReason: msfTicketInvalid
+              ? ('msf_ticket_invalid_' + state.lastMsfError)
+              : (ql.available ? 'native_probe_failed' : 'session_expired_no_quick_login'),
+            offlineMessage: msfTicketInvalid
+              ? 'QQ 会话票据已失效（' + state.lastMsfError + '）且自动快登恢复受限，请点此重新上线'
+              : (ql.available
+                ? 'QQ 原生通道持续异常且本小时自动恢复已达上限，请检查网络或点此重连'
+                : 'QQ 原生连接已断开且本机无可用快登票据，已暂停自动重启，请手动重新上线')
+          });
         }
       }
     } catch (e) {
@@ -1183,7 +1241,7 @@ async function startAgent(child) {
   agentAttempts++;
   const appDir = '/input/agent-app';
   const entry = path.join(appDir, 'src/server.js');
-  if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); return; }
+  if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); agentInFlight = false; return; }
 
   const cfgFile = '/agent/data/config.json';
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
@@ -1193,11 +1251,14 @@ async function startAgent(child) {
   cfg.autoUpdate = { ...(cfg.autoUpdate ?? {}), repository: UPDATE_REPO,
     snowluma: { ...(cfg.autoUpdate?.snowluma ?? {}), enabled: false } };
   if (prevRepo && prevRepo !== UPDATE_REPO) log('autoUpdate 仓库已改回本项目（原值 ' + prevRepo + '，原则 P6：不跟随上游）');
-  cfg.onebot = { ...(cfg.onebot ?? {}), wsUrl: 'ws://127.0.0.1:' + child.wsPort,
-    httpUrl: 'http://127.0.0.1:' + child.port, accessToken: '', httpAccessToken: '',
-    catchupReplyWindowMs: 1800000 };
+  const existingCatchup = Number(cfg.onebot?.catchupReplyWindowMs);
+  if (child && child.port && child.wsPort) {
+    cfg.onebot = { ...(cfg.onebot ?? {}), wsUrl: 'ws://127.0.0.1:' + child.wsPort,
+      httpUrl: 'http://127.0.0.1:' + child.port, accessToken: '', httpAccessToken: '',
+      catchupReplyWindowMs: Number.isFinite(existingCatchup) && existingCatchup >= 0 ? existingCatchup : 1800000 };
+  }
   fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n');
-  log('agent config patched onebot=' + child.port + '/' + child.wsPort + ' runtime=' + JSON.stringify(before));
+  log('agent config patched onebot=' + (child ? (child.port + '/' + child.wsPort) : 'detached') + ' runtime=' + JSON.stringify(before));
   try {
     const victims = [];
     for (const d of fs.readdirSync('/proc')) {
@@ -1219,24 +1280,35 @@ async function startAgent(child) {
   const cfgTextTimeout = Number(cfg.onebot?.textTimeoutMs);
   const textTimeoutMs = Number.isSafeInteger(cfgTextTimeout) && cfgTextTimeout >= 1000 && cfgTextTimeout <= 600000
     ? cfgTextTimeout : 120000;
+  const agentEnv = {
+    PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
+    QQ_AGENT_DATA_DIR: '/agent/data',
+    WHALE_ONEBOT_TEXT_TIMEOUT_MS: String(textTimeoutMs),
+  };
+  if (child && child.port && child.wsPort && onebotToken) {
+    agentEnv.WHALE_ONEBOT_TOKEN = onebotToken;
+    agentEnv.WHALE_ONEBOT_WS_URL = 'ws://127.0.0.1:' + child.wsPort;
+    agentEnv.WHALE_ONEBOT_HTTP_URL = 'http://127.0.0.1:' + child.port;
+  }
   const proc = spawn(process.execPath, [entry], {
     cwd: appDir,
     stdio: ['ignore', out, err],
-    env: { PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
-      QQ_AGENT_DATA_DIR: '/agent/data', WHALE_ONEBOT_TOKEN: onebotToken,
-      WHALE_ONEBOT_WS_URL: 'ws://127.0.0.1:' + child.wsPort,
-      WHALE_ONEBOT_HTTP_URL: 'http://127.0.0.1:' + child.port,
-      WHALE_ONEBOT_TEXT_TIMEOUT_MS: String(textTimeoutMs) },
+    env: agentEnv,
   });
-  log('agent textTimeoutMs=' + textTimeoutMs);
+  log('agent textTimeoutMs=' + textTimeoutMs + ' mode=' + (child ? 'qq-attached' : 'qq-detached'));
   agentProc = proc;
   proc.on('exit', (code, sig) => {
     log('AGENT_EXIT code=' + code + ' signal=' + sig);
     agentInFlight = false;
-    if (!finished && authenticated) setTimeout(() => { void startAgent(child).catch(e => log('agent retry failed: ' + e.message)); }, 5000).unref();
+    // 无论 QQ 是否在线，Agent 本体都保持独立常驻（解耦）
+    if (!finished) {
+      const liveChild = (authenticated && onebot) ? { port: onebot.address.port, wsPort: onebot.wsAddress.port } : null;
+      setTimeout(() => { void startAgent(liveChild).catch(e => log('agent retry failed: ' + e.message)); }, 5000).unref();
+    }
   });
   proc.on('error', e => log('AGENT_ERROR ' + e.message));
-  save('agent-started', { agent: { pid: proc.pid } });
+  if (child) save('agent-started', { agent: { pid: proc.pid } });
+  else state.agent = { pid: proc.pid };
   const agentStartedAt = Date.now();
   lastAgentStartedAt = agentStartedAt;
   consoleWatchdog.resetForNewProcess();

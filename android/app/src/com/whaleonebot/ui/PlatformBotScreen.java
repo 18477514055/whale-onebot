@@ -89,10 +89,10 @@ final class PlatformBotScreen extends Screen {
         //   用户会以为进错了页。路由本来就是对的（下面 pushBiliAccounts），错的是文案。
         final boolean biliEntry = BotRegistry.P_BILIBILI.equals(platformId);
         final boolean douyinEntry = BotRegistry.P_DOUYIN.equals(platformId);
-        col.addView(entryCard(IconView.PLAY, "启动",
-                biliEntry ? "B 站账号登录与连接"
+        col.addView(entryCard(IconView.PLAY, "启动与上线",
+                biliEntry ? "B 站账号登录、状态核验与连接控制"
                         : douyinEntry ? "抖音测试版：实验性网页登录、审批台与作品队列"
-                        : BotRegistry.legacyQQ(bot) ? "查看旧版 QQ 容器状态与日志" : "查看本机器人的运行端和各账号连接",
+                        : "连接状态、登录通道、双级重启与实时日志",
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -104,10 +104,10 @@ final class PlatformBotScreen extends Screen {
 
         LinearLayout.LayoutParams l2 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l2.topMargin = dp(Theme.S2);
-        col.addView(entryCard(IconView.TUNE, "配置",
+        col.addView(entryCard(IconView.TUNE, "机器人配置",
                 biliEntry ? "账号、私信对端、记忆范围与行为参数"
                         : douyinEntry ? "写操作分级授权策略、定时浏览与每日预算（测试版）"
-                        : BotRegistry.legacyQQ(bot) ? name + " 在 QQ 上的运行端设置" : "管理账号、协议地址和记忆范围",
+                        : BotRegistry.legacyQQ(bot) ? "模型库、模型分配、白名单、人设、记忆库与行为参数" : "账号绑定、协议地址与记忆范围",
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -118,11 +118,11 @@ final class PlatformBotScreen extends Screen {
                     }
                 }), l2);
 
-        // 用户 2026-11-18 追加：与「启动 / 配置」同层的第三项 —— 看板（只读观测，不写任何配置）。
+        // 与「启动与上线 / 机器人配置」并列的只读观测看板
         LinearLayout.LayoutParams l3 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         l3.topMargin = dp(Theme.S2);
-        if (BotRegistry.P_BILIBILI.equals(platformId) || BotRegistry.P_QQ.equals(platformId)) col.addView(entryCard(IconView.DOT, "看板",
-                BotRegistry.P_BILIBILI.equals(platformId) ? "浏览、评论、配额与动作流水" : "实时状态、会话、调用、记忆", new View.OnClickListener() {
+        if (BotRegistry.P_BILIBILI.equals(platformId) || BotRegistry.P_QQ.equals(platformId)) col.addView(entryCard(IconView.DOT, "运行看板",
+                BotRegistry.P_BILIBILI.equals(platformId) ? "浏览、评论、配额与动作流水" : "运行总览、会话监控、调用明细与异常对账", new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         if (BotRegistry.P_BILIBILI.equals(platformId)) shell.pushBiliAccounts(bot.id,"dashboard");
@@ -131,7 +131,29 @@ final class PlatformBotScreen extends Screen {
                     }
                 }), l3);
 
+        // 扩展中心与插件/技能/MCP/内容运营独立成卡，与看板、配置解耦零重叠
+        if (BotRegistry.P_QQ.equals(platformId) && BotRegistry.legacyQQ(bot)) {
+            LinearLayout.LayoutParams l4 = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+            l4.topMargin = dp(Theme.S2);
+            col.addView(entryCard(IconView.BOX, "扩展中心",
+                    "插件市场与审批、技能市场、MCP 管理与内容运营",
+                    v -> openExtensionsSheet()), l4);
+        }
+    }
 
+    private void openExtensionsSheet() {
+        String[] items = {
+                "自有插件市场与审批",
+                "自有技能市场",
+                "MCP 管理器（远程 HTTP/SSE 与本机）",
+                "群梗库 · 表情包 · 动态草稿"
+        };
+        PromptSheet.choose(activity, t, "扩展中心", items, idx -> {
+            if (idx == 0) shell.pushPlugins();
+            else if (idx == 1) shell.pushNativeManage("skills");
+            else if (idx == 2) shell.pushNativeManage("mcp");
+            else if (idx == 3) shell.pushNativeManage("content-ops");
+        }, null, null);
     }
 
     // ------------------------------------------------------------------ 两个入口

@@ -39,9 +39,15 @@ final class HomeScreen extends Screen {
 
     @Override
     void build() {
+        android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
+        scroll.setFillViewport(true);
+        scroll.setClipChildren(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        root.addView(scroll, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
         col = Ui.column(activity);
         col.setPadding(dp(Theme.S4), dp(Theme.S2), dp(Theme.S4), dp(Theme.S4));
-        root.addView(col, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        scroll.addView(col, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         // ---------- 界面顶端居中设备切换条形框（仅首页显示，对齐 Q5/Q6/Q7） ----------
         LinearLayout barWrap = Ui.row(activity);
@@ -260,8 +266,8 @@ final class HomeScreen extends Screen {
         int pad = dp(Theme.S3);
         card.setPadding(pad, pad, pad, pad);
 
-        card.addView(Ui.strong(activity, "第一次用？三步就能跑起来", Theme.T_CARD, t.textPrimary));
-        TextView progress = Ui.text(activity, "已完成 " + st.done() + " / 3",
+        card.addView(Ui.strong(activity, "第一次用？一键向导 5 步开口说话", Theme.T_CARD, t.textPrimary));
+        TextView progress = Ui.text(activity, "当前准备进度 " + st.done() + " / 3 · 全程点「下一步」即可完成",
                 Theme.T_CAP, st.done() == 0 ? t.textSecondary : t.accent);
         LinearLayout.LayoutParams plp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         plp.topMargin = dp(Theme.S1);
@@ -271,18 +277,14 @@ final class HomeScreen extends Screen {
         LinearLayout.LayoutParams stepsLp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         stepsLp.topMargin = dp(Theme.S2);
         card.addView(steps, stepsLp);
-        steps.addView(stepLine("1", "环境配置：下载内置核心（公共运行环境会一起装好）", st.env));
-        steps.addView(stepLine("2", "装好 Linux QQ 安装包（同一页有下载地址与扫描安装）", st.qq));
-        steps.addView(stepLine("3", "新建 QQ 机器人 → 启动它 → 连接", st.bot));
+        steps.addView(stepLine("1", "自动准备运行环境与内置核心（免折腾底层）", st.env));
+        steps.addView(stepLine("2", "自动拉取并安装 QQ 客户端", st.qq));
+        steps.addView(stepLine("3", "填模型 Key → 登录账号 → 选首批群聊开口", st.bot));
 
         LinearLayout actions = Ui.row(activity);
-        boolean envFirst = !st.env || !st.qq;
-        TextView go = Ui.button(activity, t, envFirst ? "去环境配置" : "新建机器人", true);
-        go.setOnClickListener(v -> {
-            if (envFirst) shell.pushEnv();
-            else shell.pushNewBot();
-        });
-        TextView ok = Ui.button(activity, t, "知道了", false);
+        TextView go = Ui.button(activity, t, "开始一键部署向导", true);
+        go.setOnClickListener(v -> shell.pushDeployWizard());
+        TextView ok = Ui.button(activity, t, "稍后再说", false);
         ok.setOnClickListener(v -> {
             Onboarding.markSeen(activity);
             root.removeAllViews();

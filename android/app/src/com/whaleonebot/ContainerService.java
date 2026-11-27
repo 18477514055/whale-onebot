@@ -334,6 +334,74 @@ public class ContainerService extends Service {
         if (p != null) { try { p.destroy(); } catch (Throwable ignored) {} }
     }
 
+    /** 仅重启当前 QQ 通道（关 QQ → 等 1.5s → 起 QQ），不影响同容器内的 B 站、其他受管核心与主容器。 */
+    public static void restartQqOnly(final Context c) {
+        if (c == null) return;
+        final Context app = c.getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                stopBot();
+                try { Thread.sleep(1500L); } catch (InterruptedException ignored) {}
+                if (!running) {
+                    start(app);
+                } else {
+                    startBot(app);
+                }
+            }
+        }, "whale-restart-qq").start();
+    }
+
+    /** 整容器全链路重启：关当前 QQ → 关容器 → 起容器 → 自动拉起当前 QQ（会短暂中断同容器内全部平台）。 */
+    public static void restartFullContainer(final Context c) {
+        if (c == null) return;
+        final Context app = c.getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                stopBot();
+                stop(app);
+                try { Thread.sleep(2200L); } catch (InterruptedException ignored) {}
+                start(app);
+            }
+        }, "whale-restart-all").start();
+    }
+
+    /** 诊断当前网络出口（Wi-Fi/蜂窝、是否开启 VPN/Tailscale、是否存在 IPv6），供 QQ 状态页展示排查风控诱因。 */
+    public static String networkDiagnosticSummary(Context c) {
+        if (c == null) return "未知网络";
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) c.getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return "未知网络";
+            boolean wifi = false, cell = false, vpn = false, hasV6 = false;
+            if (Build.VERSION.SDK_INT >= 23) {
+                android.net.Network active = cm.getActiveNetwork();
+                android.net.NetworkCapabilities nc = active == null ? null : cm.getNetworkCapabilities(active);
+                if (nc != null) {
+                    wifi = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI);
+                    cell = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR);
+                    vpn = nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN);
+                }
+                for (android.net.Network n : cm.getAllNetworks()) {
+                    android.net.NetworkCapabilities cap = cm.getNetworkCapabilities(n);
+                    if (cap != null && cap.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) vpn = true;
+                    android.net.LinkProperties lp = cm.getLinkProperties(n);
+                    if (lp != null) {
+                        for (android.net.LinkAddress la : lp.getLinkAddresses()) {
+                            if (la.getAddress() instanceof java.net.Inet6Address && !la.getAddress().isLinkLocalAddress() && !la.getAddress().isLoopbackAddress()) {
+                                hasV6 = true;
+                            }
+                        }
+                    }
+                }
+            }
+            String net = wifi ? "Wi-Fi" : (cell ? "移动网络" : "其他网络");
+            return net + (vpn ? " · 检测到 VPN/Tailscale 活跃" : " · 直连无 VPN") + (hasV6 ? " · 双栈 IPv6" : " · 纯 IPv4");
+        } catch (Throwable ignored) {
+            return "网络状态不可读";
+        }
+    }
+
     @Override public IBinder onBind(Intent intent) { return null; }
 
     @Override public void onCreate() {
@@ -544,7 +612,7 @@ public class ContainerService extends Service {
                     } else if ("kicked-offline".equals(st.phase)
                             || "token-expired".equals(st.phase)
                             || "verify-required".equals(st.phase)
-                            || ("degraded".equals(st.phase) && st.needsManualLogin)) {
+                            || ("degraded".equals(st.phase) && (st.needsManualLogin || (st.offlineReason != null && !st.offlineReason.isEmpty())))) {
                         String sig = st.phase + "|" + st.offlineReason + "|" + st.verifyAt;
                         if (!sig.equals(lastAlertSignature)) {
                             lastAlertSignature = sig;
