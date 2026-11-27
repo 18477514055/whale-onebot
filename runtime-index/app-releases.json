@@ -1,5 +1,29 @@
 [
   {
+    "tag_name": "v1.2.14",
+    "name": "Whale OneBot v1.2.14",
+    "prerelease": false,
+    "published_at": "2026-11-27T09:24:57Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.14",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 14476,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.14/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 177,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.14/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.14.apk",
+        "size": 109897348,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.14/whale-onebot-1.2.14.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "v1.2.13",
     "name": "v1.2.13 — 修一键部署的 Missing field: file（environment[] 补 file）",
     "prerelease": false,

@@ -39,14 +39,21 @@ public class ContainerService extends Service {
     /** 起真正的机器人（driver + 原生桥 + OneBot + agent）。与「登录」分开，登录只为拿二维码。 */
     public static final String ACTION_BOT = "com.whaleonebot.BOT";
     private static final String CHANNEL = "whale-container";
+    private static final String ALERT_CHANNEL = "whale-qq-alert";
+    private static final int ALERT_NOTIFY_ID = 2027;
 
     private static volatile boolean running = false;
     private static volatile Process proc = null;
     private static volatile long containerPid = -1;
-    /** 容器里正在跑的登录进程（必须由 Java 侧持有：proot --kill-on-exit 会连带杀掉它拉起的 node）。 */
+    /** 容器里正在跑的登录进程（已合流至 container-bot.mjs，保留字段防旧调用崩）。 */
     private static volatile Process loginProc = null;
     /** 容器里正在跑的机器人进程（同上，必须持有）。 */
     private static volatile Process botProc = null;
+    /** 网络切换监听与防抖（Wi-Fi ↔ 流量恢复后自动温和唤醒，绝不杀进程）。 */
+    private android.net.ConnectivityManager.NetworkCallback netCallback = null;
+    private volatile long lastNetWakeAt = 0L;
+    private volatile String lastAlertSignature = "";
+    private Thread alertWatcher;
     /** 容器就绪后自动拉起机器人，只拉一次。 */
     private static volatile boolean autoBotStarted = false;
     /** 用户明确要求停止（此时意外退出不再自动重启）。 */
@@ -75,7 +82,94 @@ public class ContainerService extends Service {
         c.startService(new Intent(c, ContainerService.class).setAction(ACTION_STOP));
     }
 
-    /** 在容器里拉起登录进程（幂等：已在跑就不重复启动），并请求一张新二维码。 */
+    /** 按需向单进程 container-bot.mjs 下发一次受控指令（原子写入 cmd.json，权限 0600，消费即删，绝不印密码）。 */
+    public static boolean sendBotCommand(Context c, org.json.JSONObject cmd) {
+        if (c == null || cmd == null) return false;
+        try {
+            File files = new File("/data/data/" + c.getPackageName() + "/files");
+            if (!files.isDirectory()) files = c.getFilesDir();
+            File qq = new File(files, "rootfs/opt/whale/qq-state");
+            if (!qq.isDirectory()) qq.mkdirs();
+            File tmp = new File(qq, "cmd.json.next");
+            File dst = new File(qq, "cmd.json");
+            byte[] bytes = cmd.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try (FileOutputStream os = new FileOutputStream(tmp)) {
+                os.write(bytes);
+                os.getFD().sync();
+            }
+            tmp.setReadable(false, false);
+            tmp.setReadable(true, true);
+            tmp.setWritable(false, false);
+            tmp.setWritable(true, true);
+            if (!tmp.renameTo(dst)) {
+                dst.delete();
+                if (!tmp.renameTo(dst)) { tmp.delete(); return false; }
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 读取本机最新 bot.json 原文（供统一状态真源 QqAuthState 解析）。 */
+    public static String readBotStateJson(File files) {
+        if (files == null) return "";
+        File f = new File(files, "rootfs/opt/whale/qq-state/bot.json");
+        if (!f.isFile() || f.length() <= 0 || f.length() > 262144) return "";
+        try {
+            return new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /** 读取本机最新一次性 qr.url（68 字节，用于一键拉起手机 QQ 或远程同步；绝不打日志）。 */
+    public static String readQrUrl(File files) {
+        if (files == null) return "";
+        File f = new File(files, "rootfs/opt/whale/qq-state/qr.url");
+        if (!f.isFile() || f.length() <= 0 || f.length() > 1024) return "";
+        try {
+            String s = new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.UTF_8).trim();
+            return com.whaleonebot.ui.QqAuthState.isSafeHttpsTencentUrl(s) ? s : "";
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /** 弹出高优先级系统通知（本地或远端设备掉线共用，点通知直达 QQ 上线页）。 */
+    public static void postOfflineNotification(Context ctx, String title, String message, String peerId) {
+        if (ctx == null) return;
+        try {
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel ch = new NotificationChannel(
+                        ALERT_CHANNEL, "QQ 离线与安全提醒", NotificationManager.IMPORTANCE_HIGH);
+                ch.setDescription("QQ 机器人掉线、被踢或需要滑块/扫码重新上线时立即提醒");
+                nm.createNotificationChannel(ch);
+            }
+            Intent open = new Intent(ctx, MainActivity.class);
+            open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            open.putExtra("open_qq_login", true);
+            if (peerId != null && !peerId.isEmpty()) open.putExtra("open_remote_peer", peerId);
+            int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) flags |= android.app.PendingIntent.FLAG_IMMUTABLE;
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(ctx, 2027, open, flags);
+            Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
+                    ? new Notification.Builder(ctx, ALERT_CHANNEL)
+                    : new Notification.Builder(ctx).setPriority(Notification.PRIORITY_HIGH);
+            Notification n = b.setContentTitle(title == null ? "QQ 机器人需要重新上线" : title)
+                    .setContentText(message == null ? "点击查看原因并一键重新上线" : message)
+                    .setStyle(new Notification.BigTextStyle().bigText(message == null ? "" : message))
+                    .setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setAutoCancel(true)
+                    .setContentIntent(pi)
+                    .build();
+            nm.notify(ALERT_NOTIFY_ID + (peerId == null ? 0 : Math.abs(peerId.hashCode() % 100)), n);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 在容器里按需请求 1 张二维码（单进程合流：不再另起 container-login.mjs 抢 login.db）。 */
     public static void startLogin(Context c) {
         Intent i = new Intent(c, ContainerService.class).setAction(ACTION_LOGIN);
         if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
@@ -258,6 +352,8 @@ public class ContainerService extends Service {
             android.util.Log.e("WhaleOneBot", "startForeground failed", t);
         }
         if (logFile != null) log("service onCreate");
+        registerNetworkRecoveryCallback();
+        startOfflineAlertWatcher();
         // [layer: shell-android] 原生远程被控宿主挂在 ContainerService（独立于 proot 容器生命周期，容器停机也能连）。
         try {
             com.whaleonebot.ui.RemoteHostDispatcher dispatcher = new com.whaleonebot.ui.RemoteHostDispatcher(this);
@@ -314,34 +410,25 @@ public class ContainerService extends Service {
         if (ACTION_START.equals(action)||ACTION_LOGIN.equals(action)||ACTION_BOT.equals(action)||ACTION_REFRESH_QR.equals(action)) {
             ensureDeviceIdentity();
         }
-        if (ACTION_LOGIN.equals(action)) {
+        if (ACTION_LOGIN.equals(action) || ACTION_REFRESH_QR.equals(action)) {
+            // ★ 2026-11-27 架构彻底合一（Q5/Q8）：废弃并发 container-login.mjs 抢占 login.db！
+            //   确保单进程 container-bot.mjs 运行，并通过 0600 原子命令 cmd.json 发送一次按需出码指令。
             final File files = svcFilesDir();
             File qq = new File(files, "rootfs/opt/whale/qq-state");
             qq.mkdirs();
-            // 同步清掉上一轮的登录地址：App 随后只认本次新写出来的那一张码。
+            new File(qq, "qr.png").delete();
             new File(qq, "qr.url").delete();
-            Process p = loginProc;
-            if (p != null && p.isAlive()) {
-                touch(new File(qq, "refresh.request"));
-                logLine("LOGIN: already running -> refresh.request");
-                return START_STICKY;
-            }
             try {
-                final Process np = spawnInContainer(files,
-                        "cd /opt/whale && WHALE_FAKE_HOSTNAME=" + fakeHostname(files) + " LD_PRELOAD=/opt/whale/native/libwhale-device.so:/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
-                        + "exec node container-login.mjs");
-                loginProc = np;
-                logLine("LOGIN: started");
-                new Thread(() -> {
-                    try {
-                        BufferedReader r = new BufferedReader(
-                                new InputStreamReader(np.getInputStream(), "UTF-8"));
-                        String line;
-                        while ((line = r.readLine()) != null) logLine("[login] " + line);
-                        logLine("LOGIN: exit rc=" + np.waitFor());
-                    } catch (Throwable t) { logLine("LOGIN pump: " + t); }
-                }, "whale-login-pump").start();
-            } catch (Throwable t) { logLine("LOGIN FAIL: " + t); }
+                sendBotCommand(this, new org.json.JSONObject().put("action", "request_qr").put("at", System.currentTimeMillis()));
+            } catch (Throwable ignored) {}
+            if (!running && (worker == null || !worker.isAlive())) {
+                worker = new Thread(this::boot, "whale-boot");
+                worker.start();
+            }
+            if (!botRunning()) {
+                startBot(this);
+            }
+            logLine("LOGIN(unified): dispatched one-shot request_qr to container-bot.mjs");
             return START_STICKY;
         }
         if (ACTION_BOT.equals(action)) {
@@ -357,8 +444,6 @@ public class ContainerService extends Service {
                     try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
                     int left = purgeStale();
                     if (left > 0) { logLine("BOT: 仍有 " + left + " 个残留未清掉"); try { Thread.sleep(1500); } catch (InterruptedException ignored) {} }
-                    // 输出直接重定向进容器里的 bot.log：不走管道，就不会因为父进程没读而 SIGPIPE。
-                    // 在内置受管环境中只启动本机 QQ OneBot 协议端（不拉起旧版 agent），供受管宿主连接。
                     final boolean isManagedEnv = new File(files, "rootfs/.whale-public-environment").isFile();
                     final Process np = spawnInContainerTo(files,
                             "cd /opt/whale && WHALE_FAKE_HOSTNAME=" + fakeHostname(files) + " LD_PRELOAD=/opt/whale/native/libwhale-device.so:/usr/lib/aarch64-linux-gnu/libgnutls.so.30 "
@@ -369,11 +454,11 @@ public class ContainerService extends Service {
                     int rc = np.waitFor();
                     botProc = null;
                     logLine("BOT: exit rc=" + rc);
-                    // 无人值守：意外退出就自动重启（有上限，听命令停下就不重启）。
-                    // 无人值守：意外退出就自动重启（有上限，听命令停下就不重启）。
-                    // 上限用**时间窗口**而不是永久计数：连续崩溃才停，隔了半小时再崩就重新开始数，
-                    // 否则跑几天之后一次偶发崩溃就会永久停摆（实测打到过 20 次上限）。
-                    if (!botStopRequested && running && botRestarts < 20) {
+                    // ★ 2026-11-27：若退出前状态已是风控被踢/票据过期/待人工登录，严禁 8s 循环自动重启加重风控！
+                    com.whaleonebot.ui.QqAuthState lastAuth = com.whaleonebot.ui.QqAuthState.parseBotJson(readBotStateJson(files));
+                    if (lastAuth.isOfflineAlert()) {
+                        logLine("BOT: 处于需人工介入状态 (" + lastAuth.phase + "/" + lastAuth.offlineReason + ")，停止自动重启");
+                    } else if (!botStopRequested && running && botRestarts < 20) {
                         long now = System.currentTimeMillis();
                         if (botRestarts > 0 && now - lastBotRestartAt > 30L * 60L * 1000L) {
                             logLine("BOT: 距上次重启超过 30 分钟，重启计数归零（原 " + botRestarts + " 次）");
@@ -389,24 +474,6 @@ public class ContainerService extends Service {
             }, "whale-bot").start();
             return START_STICKY;
         }
-        if (ACTION_REFRESH_QR.equals(action)) {
-            try {
-                File files = svcFilesDir();
-                File qq = new File(files, "rootfs/opt/whale/qq-state");
-                qq.mkdirs();
-                // 旧码直接丢掉：界面只展示本次请求之后新生成的码。
-                new File(qq, "qr.png").delete();
-                Process p = loginProc;
-                if (p == null || !p.isAlive()) {
-                    logLine("REFRESH_QR: 登录进程不在，改为启动");
-                    return onStartCommand(new Intent(this, ContainerService.class)
-                            .setAction(ACTION_LOGIN), flags, startId);
-                }
-                touch(new File(qq, "refresh.request"));
-                logLine("REFRESH_QR requested");
-            } catch (Throwable t) { logLine("REFRESH_QR FAIL: " + t); }
-            return START_STICKY;
-        }
         if (worker == null || !worker.isAlive()) {
             worker = new Thread(new Runnable() { @Override public void run() { boot(); } }, "whale-boot");
             worker.start();
@@ -416,10 +483,87 @@ public class ContainerService extends Service {
 
     @Override public void onDestroy() {
         log("service onDestroy");
+        unregisterNetworkRecoveryCallback();
+        if (alertWatcher != null) { alertWatcher.interrupt(); alertWatcher = null; }
         releaseKeepAliveLocks();
         if(http!=null)http.stop();
         stopContainer();
         super.onDestroy();
+    }
+
+    /** 监听 Android 网络切换/恢复（Wi-Fi ↔ 流量 / 夜间重拨），防抖 5s 后温和唤醒容器会话（绝不杀进程）。 */
+    private void registerNetworkRecoveryCallback() {
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            android.net.ConnectivityManager.NetworkCallback cb = new android.net.ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastNetWakeAt < 5000L) return;
+                    lastNetWakeAt = now;
+                    if (!running || !botRunning()) return;
+                    try {
+                        sendBotCommand(ContainerService.this,
+                                new org.json.JSONObject().put("action", "wake_session").put("reason", "network_available"));
+                        logLine("NET_RECOVERY: dispatched gentle wake_session");
+                    } catch (Throwable ignored) {}
+                }
+            };
+            cm.registerDefaultNetworkCallback(cb);
+            netCallback = cb;
+        } catch (Throwable t) {
+            android.util.Log.w("WhaleLog", "registerNetworkRecoveryCallback failed", t);
+        }
+    }
+
+    private void unregisterNetworkRecoveryCallback() {
+        android.net.ConnectivityManager.NetworkCallback cb = netCallback;
+        netCallback = null;
+        if (cb == null) return;
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) cm.unregisterNetworkCallback(cb);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 后台每 5 秒检查一次本机 bot.json 状态跃迁：一旦进入被踢/票据过期/滑块/离线态即弹高优先级本地通知。 */
+    private void startOfflineAlertWatcher() {
+        if (alertWatcher != null && alertWatcher.isAlive()) return;
+        Thread th = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Thread.sleep(5000L);
+                    if (!running) continue;
+                    com.whaleonebot.ui.QqAuthState st =
+                            com.whaleonebot.ui.QqAuthState.parseBotJson(readBotStateJson(svcFilesDir()));
+                    if (st.isOnline()) {
+                        lastAlertSignature = "";
+                    } else if ("kicked-offline".equals(st.phase)
+                            || "token-expired".equals(st.phase)
+                            || "verify-required".equals(st.phase)
+                            || ("degraded".equals(st.phase) && st.needsManualLogin)) {
+                        String sig = st.phase + "|" + st.offlineReason + "|" + st.verifyAt;
+                        if (!sig.equals(lastAlertSignature)) {
+                            lastAlertSignature = sig;
+                            postOfflineNotification(
+                                    ContainerService.this,
+                                    "QQ 机器人：" + st.shortBadge(true),
+                                    st.detailMessage(true),
+                                    null);
+                        }
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Throwable ignored) {}
+            }
+        }, "whale-offline-alert");
+        th.setDaemon(true);
+        alertWatcher = th;
+        th.start();
     }
 
     private synchronized void acquireKeepAliveLocks() {
@@ -580,7 +724,8 @@ public class ContainerService extends Service {
             cmd.add(prootBin.getAbsolutePath());
             cmd.add("--root-id"); cmd.add("--cwd=/root"); cmd.add("-L");
             cmd.add("--link2symlink"); cmd.add("--sysvipc"); cmd.add("--kill-on-exit");
-            cmd.add("--kernel-release=6.2.1-perf");
+            // ★ 统一全链路设备指纹内核版本为 6.1.0-28-arm64（与 containerBuilder 保持一致，消除 6.2.1-perf 漂移）
+            cmd.add("--kernel-release=6.1.0-28-arm64");
             cmd.add("-b"); cmd.add("/dev"); cmd.add("-b"); cmd.add("/proc"); cmd.add("-b"); cmd.add("/sys");
             cmd.add("-r"); cmd.add(rootfs.getAbsolutePath());
             cmd.add("/bin/bash"); cmd.add("-lc");

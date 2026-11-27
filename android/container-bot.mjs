@@ -1,50 +1,55 @@
-// 容器内机器人入口：原生登录 → 建桥 → 起 OneBot（HTTP/WS）→（可选）起原 agent 业务。
+// [layer: shell-android] 容器内单进程统一入口：登录状态机（快登 / 按需扫码 / 账密+滑块）→ 建桥 → OneBot → Agent。
 //
-// 与 container-login.mjs 的分工：那个只管「拿到登录态 / 出二维码」，这个负责「登录后真正跑机器人」。
-// 放在 /opt/whale/container-bot.mjs，由 APK 的 assets 覆盖写入（改这里只要重装 APK）。
-//
-// 用法：node container-bot.mjs [--with-agent]
+// ★ 2026-11-27 架构彻底合一（问答报告 Q3/Q5/Q6/Q8/Q9/Q10）：
+//   1. 废弃并发 container-login.mjs 抢占 qq-state/global/nt_db/login.db；本进程统一接管登录与运行；
+//   2. 严格按需出码：掉线或快登失败后立刻进入 waiting-manual-login / token-expired / kicked-offline 并告警，
+//      绝不后台自动循环刷 50 张码；仅在收到人工 cmd.json (request_qr) 时请求 1 张码；
+//   3. 零误杀看门狗：先核验快登可用性，绝不盲目杀进程把在线会话踢进扫码态；
+//   4. 接入原生 passwordLogin + verifyUrl/verifyCaptchaTicket + MSF/断连/被踢全监听 + login.db WAL checkpoint。
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   createNativeWatchdogState,
   createAgentConsoleWatchdogState,
+  classifyLoginError,
+  sanitizeVerifyUrl,
+  sanitizeQrUrl,
+  readStableMachineId,
   readRestartHistory,
   recordRestartTimestamp,
   resolveContainerAccount,
   applyResolvedAccountToEnv,
   pickQuickLoginEntry,
-  isAcceptableLoginIdentity
+  isAcceptableLoginIdentity,
+  cleanUin
 } from './container-watchdog.mjs';
 
 const STATE = '/opt/whale/qq-state';
 const GLOBAL = path.join(STATE, 'global');
+const CMD_FILE = path.join(STATE, 'cmd.json');
 const PROJECT = '/qq-onebot';
 const RUNTIME = path.join(PROJECT, 'runtime');
 const LOADER = '/opt/whale/native/loader.node';
 const WRAPPER = '/opt/QQ/resources/app/wrapper.node';
 
-// ★ 2026-11-23（用户口径：不再限定客户端版本）：版本号从**装好的客户端**里读，
-//   不再写死 3.2.35-54395。写死会让装 3.2.32 的人用 3.2.35 的身份登录（第一个使用者反馈的问题）。
-//   读不到才退回原值 —— 原值就是以前写死的那一句，所以老环境行为不变。
 function detectClientVersion() {
   try {
     const raw = JSON.parse(fs.readFileSync('/opt/QQ/resources/app/package.json', 'utf8'));
     const v = String(raw?.version || '').trim();
     if (/^\d+\.\d+\.\d+-\d+$/.test(v)) return v;
-  } catch { /* 客户端还没装 / 结构不同：走下面的兜底 */ }
+  } catch { /* fallback */ }
   return '3.2.35-54395';
 }
 const CLIENT_VER = detectClientVersion();
 const CLIENT_APP_VER = CLIENT_VER.split('-')[0];
 const CLIENT_BUILD = CLIENT_VER.split('-')[1] || '';
 const CLIENT_QUA = 'V1_LNX_NQ_' + CLIENT_APP_VER + '_' + CLIENT_BUILD + '_GW_B';
-// 账号标识不在本文件里写死：①环境变量 → ②非占位 src/config/account.mjs → ③identity.json / agent config.json。
-// ★ 严禁提前 import('/qq-onebot/src/config/account.mjs')（否则脱敏占位符 '10000'/'10001' 会写死进 ESM 缓存）。
+const MACHINE_ID = readStableMachineId('/opt/whale/device');
+
 const resolvedAccount = resolveContainerAccount({
   env: process.env,
   stateDir: STATE,
@@ -62,21 +67,49 @@ for (const d of dirs) { try { fs.mkdirSync(d, { recursive: true, mode: 0o700 });
 
 function log(...a) {
   const line = `[${new Date().toISOString()}] ${a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')}\n`;
-  // 只写文件。stdout 已被 shell 重定向到同一个 bot.log，再写一次会每行重复两遍。
   try { fs.appendFileSync(path.join(STATE, 'bot.log'), line); } catch {}
 }
 
-const state = { phase: 'starting', uin: null, uid: null, sessionId: null, onebot: null,
-  startedAt: new Date().toISOString(), error: null, agent: null };
+const state = {
+  phase: 'starting',
+  uin: null,
+  uid: null,
+  sessionId: null,
+  onebot: null,
+  startedAt: new Date().toISOString(),
+  error: null,
+  agent: null,
+  // 2026-11-27 统一上下线诊断字段（供 App 状态页与远端同步渲染）
+  canQuickLogin: false,
+  needsManualLogin: false,
+  offlineReason: '',
+  offlineMessage: '',
+  verifyUrl: '',
+  verifyAt: 0,
+  qrAt: 0,
+  msfStatus: 'init',
+  lastMsfError: '',
+  lastHealthyAt: 0,
+  lastWakeAt: 0,
+  clientVer: CLIENT_VER,
+  hostname: os.hostname(),
+  kernelRelease: os.release(),
+};
 let finished = false;
+let switchAccountPending = false;
 
 /**
- * 把「每个资料库有多少段 / 记忆库里有多少条印象」写进 `<data>/knowledge-lib/stats.json`，只给手机面板看。
- *
- * 为什么由这里写：面板拿不到 sqlite（没有 sqlite 驱动），而 `node:sqlite` 只有容器里这个 Node 有。
- * 统计只在启动时做一次 —— 面板新增资料库 / 重建索引 / 新写入印象之后重启一次机器人，数字才会更新。
- * 任何一步失败都只记一行日志，绝不影响机器人主流程。
+ * NTQQ 的 global/nt_db/login.db 采用 SQLCipher 加密格式，标准 node:sqlite 无法直接打开；
+ * 改为在登录成功或优雅退出前留出短暂宽限窗口，交由 NTQQ 原生引擎自身完成 WAL 落盘。
  */
+async function checkpointLoginDb(reason = 'periodic') {
+  if (reason === 'shutdown' || reason === 'safe_logout' || reason === 'switch_account' || reason === 'watchdog-restart') {
+    await new Promise(r => setTimeout(r, 1200));
+    log('LOGIN_DB_FLUSH_GRACE done reason=' + reason);
+  }
+  return true;
+}
+
 async function writeKbStats() {
   const libDir = '/agent/data/knowledge-lib';
   const libFile = path.join(libDir, 'libraries.json');
@@ -104,7 +137,6 @@ async function writeKbStats() {
   } catch (e) { log('kb stats failed: ' + (e?.message ?? e)); }
 }
 
-/** 记忆库（`memory-vec.sqlite`）里存了多少条印象 —— 只给面板显示用，读不到就返回 null。 */
 function readMemoryCount(DatabaseSync) {
   const file = '/agent/data/memory-vec.sqlite';
   try {
@@ -118,32 +150,13 @@ function readMemoryCount(DatabaseSync) {
 }
 setTimeout(() => { void writeKbStats(); }, 6000).unref();
 
-/**
- * ★ 2026-11-19 · P3/P4：这里原本有个「held 自愈看门狗」（每 30s 扫 /api/chats，对 held>0 的会话
- *   POST resolve-held）。它是**补偿层**：掩盖的是「协议端会回 1504（未知）→ 运行端写
- *   outbox.state=unknown → 该会话被 held 永久禁跑」这个根因；而它自己也因为「5s 够读 /api/chats」
- *   这个错误假设变成新 bug（bot.log 累计 41 次读不到）。
- *   根因已按 P4 修掉（发送类动作拿不到回执时直接回「成功 + message_id:null」，held 不再产生）⇒ 删除。
- *   人工对账入口仍在面板「看板 → 待对账」（给人用的，不是自动补药）。
- */
-
-/**
- * 挑一对 OneBot 端口：固定段（13800/13801 起）+ 占用回退 + 排除 agent 控制台端口。
- *
- * 为什么不用 port:0（随机）：随机端口会**和固定端口撞车**。2026-11-17 16:38 实测事故：
- * OneBot 随机到 41907，而 agent 控制台写死 server.port=41907 且 strictPort:true，
- * agent 启动即 EADDRINUSE 退出 → QQ 在线但**所有群都不回话**、私聊时好时坏。
- * 固定端口同时还消掉「agent 连旧端口」那一类代差问题（日志里端口可读可对比）。
- */
 function pickOneBotPorts() {
   const reserved = new Set();
-  // agent 控制台端口：撞上就必然把 agent 打死，必须排除
   try {
     const cfg = JSON.parse(fs.readFileSync('/agent/data/config.json', 'utf8'));
     const p = Number(cfg?.server?.port);
     if (Number.isInteger(p) && p > 0) reserved.add(p);
   } catch {}
-  // /proc/net/tcp{,6} 里 state=0A 的是 LISTEN
   const inUse = new Set();
   for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
     let text = '';
@@ -157,35 +170,17 @@ function pickOneBotPorts() {
   }
   const skipped = [];
   for (let i = 0; i < 40; i++) {
-    const http = 13800 + i * 2, ws = http + 1;
-    for (const p of [http, ws]) {
+    const httpPort = 13800 + i * 2, wsPort = httpPort + 1;
+    for (const p of [httpPort, wsPort]) {
       if (reserved.has(p)) skipped.push(p + ':agent-console');
       else if (inUse.has(p)) skipped.push(p + ':in-use');
     }
-    if (reserved.has(http) || reserved.has(ws) || inUse.has(http) || inUse.has(ws)) continue;
-    return { port: http, wsPort: ws, skipped };
+    if (reserved.has(httpPort) || reserved.has(wsPort) || inUse.has(httpPort) || inUse.has(wsPort)) continue;
+    return { port: httpPort, wsPort, skipped };
   }
-  // 兜底：交给内核随机（至少不会卡死在启动）
   return { port: 0, wsPort: 0, skipped: skipped.concat('fallback-random') };
 }
 
-/**
- * 容器内单实例：把**别的** container-bot / agent 全部杀掉再干活。
- *
- * 为什么必须这么做（实机事故）：App 每次重启都会拉起一个新的 container-bot，而旧的 proot 子进程
- * 不会随 App 死掉 → 容器里同时存在多个 bot，各自登录同一个 QQ 号、各自监听随机端口。
- * 后登录的会把前一个的会话顶掉，于是「QQ 里显示在线，但根本收不到消息」（agent 连的还是旧端口）。
- * 症状：bot.json 的 receiveCallbacks 不再增长、agent 日志一直刷「30 秒后重连」。
- */
-/**
- * 自己这条进程链上的所有祖先 pid（含 bash 包装、proot、Java 侧的 sh）。
- *
- * ★ 为什么必须排除祖先（实机事故 2026-11-17 16:07）：容器里的命令是
- * `proot … /bin/bash -lc 'node /opt/whale/container-bot.mjs'`，**bash 与 proot 的 cmdline 里
- * 同样含有 "container-bot.mjs" 字样**，而且它们比自己启动得更早。
- * 不排除的话，清扫会把**自己所在的包装 bash / proot 杀掉** → 整个进程组没了 →
- * Java 侧看到的是 `BOT: exit rc=137`（SIGKILL），表现为「机器人每 60 秒准时死一次」。
- */
 function ancestorPids() {
   const set = new Set();
   for (let p = process.ppid, i = 0; p > 1 && i < 12; i++) {
@@ -209,19 +204,18 @@ function ensureSingleInstance() {
     if (pid === self || ancestors.has(pid)) continue;
     let cmd = '';
     try { cmd = fs.readFileSync('/proc/' + d + '/cmdline', 'utf8'); } catch { continue; }
-    if (cmd.includes('--whale-binding-worker') || (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
+    if (cmd.includes('--whale-binding-worker')
+      || (!cmd.includes('container-bot.mjs') && !cmd.includes('container-login.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
     try { process.kill(pid, 'SIGKILL'); victims.push(pid); } catch {}
   }
   if (victims.length) {
     log('单实例清理：killed ' + victims.join(','));
-    // 同步等 2 秒给内核回收（用 Atomics.wait 而不是忙等，别把事件循环堵死）
     try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000); } catch {}
   }
   return victims;
 }
 ensureSingleInstance();
-// 运行期再扫一遍：万一又冒出第二个实例（比如用户连点、或旧 App 进程没死干净），
-// 只保留**启动最晚**的那一个（starttime 更大），其余 bot/agent 全部清掉。
+
 {
   const starttime = pid => {
     try {
@@ -230,8 +224,6 @@ ensureSingleInstance();
     } catch { return Number.MAX_SAFE_INTEGER; }
   };
   const selfStart = starttime(process.pid);
-  // ★ 祖先集合必须在**清扫时**重算一次并缓存：bash 包装 / proot 的 cmdline 也含脚本名，
-  //   且启动更早；不排除就会把自己杀掉（详见 ancestorPids 的注释）。
   const ancestors = ancestorPids();
   const sweep = () => {
     let entries = [];
@@ -242,8 +234,8 @@ ensureSingleInstance();
       if (pid === process.pid || ancestors.has(pid)) continue;
       let cmd = '';
       try { cmd = fs.readFileSync('/proc/' + d + '/cmdline', 'utf8'); } catch { continue; }
-      if (cmd.includes('--whale-binding-worker') || (!cmd.includes('container-bot.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
-      // 只清**比自己早启动**的（自己拉起的 agent 更晚，不会被误杀）
+      if (cmd.includes('--whale-binding-worker')
+        || (!cmd.includes('container-bot.mjs') && !cmd.includes('container-login.mjs') && !cmd.includes('agent-app/src/server.js'))) continue;
       if (starttime(pid) < selfStart) {
         try { process.kill(pid, 'SIGKILL'); log('运行期清扫：killed ' + pid); } catch {}
       }
@@ -252,10 +244,6 @@ ensureSingleInstance();
   setInterval(sweep, 60000).unref();
   log('单实例：运行期清扫已启动（每 60s，只清更早启动的实例）');
 }
-
-// 单实例由 Java 侧保证（起机器人前先 pkill 掉孤儿 node），这里不再用 pid 锁文件：
-// pid 会被系统复用，一个陈旧锁里记的旧 pid 只要恰好被别的进程占用，就会永远挡住启动（实测 rc=0 空退）。
-
 
 function save(phase, extra = {}) {
   state.phase = phase;
@@ -267,16 +255,21 @@ function save(phase, extra = {}) {
   } catch {}
 }
 
+function clearQrArtifacts() {
+  try { fs.unlinkSync(path.join(STATE, 'qr.url')); } catch {}
+  try { fs.unlinkSync(path.join(STATE, 'qr.png')); } catch {}
+  state.qrAt = 0;
+}
+
 function die(phase, error) {
   if (finished) return;
   finished = true;
   log('FATAL phase=' + phase + ' ' + (error?.stack || error?.message || error || ''));
   save(phase, { error: String(error?.code ?? error?.message ?? error ?? phase) });
-  setTimeout(() => process.exit(1), 200);
+  void checkpointLoginDb('die').finally(() => setTimeout(() => process.exit(1), 200));
 }
 
 process.on('uncaughtException', e => {
-  // EPIPE / 管道关闭只是"没人读 stdout"，不是机器人故障。
   if (e && (e.code === 'EPIPE' || e.code === 'ERR_STREAM_DESTROYED')) { log('WARN ignore ' + e.code); return; }
   die('uncaught', e);
 });
@@ -293,6 +286,7 @@ async function shutdown() {
   try { agentProc?.kill('SIGTERM'); } catch {}
   try { originalChat?.close(); } catch {}
   try { await onebot?.close?.(); } catch {}
+  await checkpointLoginDb('shutdown');
   save('stopped');
   setTimeout(() => process.exit(0), 200);
 }
@@ -321,7 +315,7 @@ engine.initWithDeskTopConfig({
   global_path_config: { desktopGlobalPath: GLOBAL },
   thumb_config: { maxSide: 324, minSide: 48, longLimit: 6, density: 2 },
 }, callbacks);
-log('engine init ok');
+log('engine init ok ver=' + CLIENT_VER + ' host=' + os.hostname() + ' rel=' + os.release());
 
 const startup = w.NodeIQQNTStartupSessionWrapper.create();
 const session = w.NodeIQQNTWrapperSession.getNTWrapperSession('nt_1');
@@ -329,47 +323,272 @@ log('startup/session ok');
 
 const login = w.NodeIKernelLoginService.get();
 login.initConfig({
-  machineId: '', appid: '537403759', platVer: 'Linux ' + os.release(),
+  machineId: MACHINE_ID, appid: '537403759', platVer: 'Linux ' + os.release(),
   commonPath: GLOBAL, clientVer: CLIENT_VER, hostName: os.hostname(),
 });
-log('login service init ok');
+log('login service init ok mid=' + (MACHINE_ID ? MACHINE_ID.slice(0, 8) + '…' : 'empty'));
 
-// ------------------------------------------------------------------ 登录
-let authenticated = false, qrRequested = false, qrTimes = 0, qr = false;
+// ------------------------------------------------------------------ 单进程登录状态机
+let authenticated = false;
+let loginConnected = false;
+let qrInFlight = false;
+let quickTriedOnBoot = false;
+let pendingPwdLogin = null; // { uin, passwordMd5 } 仅驻留内存供本次滑块后提交，绝不写盘/打日志
 
-const requestQr = () => {
-  if (authenticated || qr) return;
-  qr = true; qrRequested = true;
-  save('requesting-qr');
-  log('requesting-qr');
-  try { login.getQRCodePicture(); } catch (e) { log('getQRCodePicture threw ' + e.message); }
-};
+/** 实时核验本地是否仍有可用的免扫码快登条目（用于看门狗防误杀决策）。 */
+async function probeQuickLoginAvailable() {
+  if (typeof login.getLoginList !== 'function') return { available: false, hit: null, count: 0 };
+  try {
+    const list = await login.getLoginList();
+    const arr = Array.isArray(list) ? list : (list?.LocalLoginInfoList || list?.localLoginInfoList || list?.list || []);
+    const hit = pickQuickLoginEntry(arr, BOT_UIN, OWNER_UIN);
+    const available = Boolean(hit);
+    state.canQuickLogin = available;
+    return { available, hit, count: arr.length };
+  } catch (e) {
+    log('getLoginList threw ' + e.message);
+    return { available: false, hit: null, count: 0 };
+  }
+}
+
+/** 按需请求 1 张二维码（严格遵守 Q5：绝不后台自动循环刷码）。 */
+function requestQrOnce(source = 'manual') {
+  if (authenticated) {
+    log('requestQrOnce ignored: already authenticated');
+    return;
+  }
+  clearQrArtifacts();
+  qrInFlight = true;
+  state.verifyUrl = '';
+  state.verifyAt = 0;
+  save('requesting-qr', { needsManualLogin: true, offlineReason: state.offlineReason || 'manual_qr_requested' });
+  log('requesting-qr source=' + source);
+  try {
+    if (!loginConnected) {
+      try { login.connect(); } catch {}
+    }
+    login.getQRCodePicture();
+  } catch (e) {
+    qrInFlight = false;
+    log('getQRCodePicture threw ' + e.message);
+    save('waiting-manual-login', {
+      needsManualLogin: true,
+      offlineReason: 'qr_request_failed',
+      offlineMessage: '请求二维码失败：' + (e?.message || '未知错误')
+    });
+  }
+}
+
+/** 进入需要人工介入的离线待机态（绝不自动刷码，通知宿主推送告警）。 */
+function enterManualOffline(classified) {
+  qrInFlight = false;
+  clearQrArtifacts();
+  const phase = classified?.phase || 'waiting-manual-login';
+  save(phase, {
+    uin: null,
+    uid: null,
+    canQuickLogin: false,
+    needsManualLogin: true,
+    offlineReason: classified?.code || 'needs_manual_login',
+    offlineMessage: classified?.message || 'QQ 当前未在线，请选择上线方式重新登录',
+    verifyUrl: classified?.verifyUrl || '',
+    verifyAt: classified?.verifyUrl ? Date.now() : 0
+  });
+  log('MANUAL_LOGIN_REQUIRED phase=' + phase + ' reason=' + (classified?.code || '') + ' msg=' + (classified?.message || ''));
+}
 
 async function tryQuickLogin() {
-  if (authenticated) return false;
-  if (typeof login.getLoginList !== 'function' || typeof login.quickLoginWithUin !== 'function') return false;
-  let list;
-  try { list = await login.getLoginList(); } catch (e) { log('getLoginList threw ' + e.message); return false; }
-  const arr = Array.isArray(list) ? list : (list?.LocalLoginInfoList || list?.localLoginInfoList || list?.list || []);
-  log('login list size=' + arr.length + ' expected=' + (BOT_UIN || '(auto)'));
-  const hit = pickQuickLoginEntry(arr, BOT_UIN, OWNER_UIN);
-  if (!hit) { log('no saved quick-login entry -> qr'); return false; }
-  const attemptUin = String(hit.uin).trim();
+  if (authenticated) return true;
+  if (typeof login.getLoginList !== 'function' || typeof login.quickLoginWithUin !== 'function') {
+    enterManualOffline({ code: 'quick_login_unavailable', phase: 'waiting-manual-login', message: '本地快登不可用，请手动登录 QQ' });
+    return false;
+  }
+  let probe = await probeQuickLoginAvailable();
+  if (!probe.available && fs.existsSync(path.join(STATE, 'identity.json'))) {
+    await new Promise(r => setTimeout(r, 1500));
+    probe = await probeQuickLoginAvailable();
+  }
+  log('login list size=' + probe.count + ' expected=' + (BOT_UIN || '(auto)') + ' canQuick=' + probe.available);
+  if (!probe.hit) {
+    enterManualOffline({
+      code: 'no_quick_login_entry',
+      phase: 'waiting-manual-login',
+      message: '本机没有可用的免扫码快登记录，请选择一键拉起 QQ、扫码或账密登录'
+    });
+    return false;
+  }
+  const attemptUin = String(probe.hit.uin).trim();
   if (!BOT_UIN) {
     BOT_UIN = attemptUin;
     applyResolvedAccountToEnv({ botUin: BOT_UIN, ownerUin: OWNER_UIN }, process.env);
   }
+  save('quick-login', { needsManualLogin: false, offlineReason: '', offlineMessage: '' });
   log('quick-login-attempting uin=' + attemptUin);
   try {
     const r = await login.quickLoginWithUin(attemptUin);
-    if (r?.result === '0' && !r?.loginErrorInfo?.errMsg) { log('quick-login accepted'); return true; }
-    log('quick-login rejected result=' + JSON.stringify(r?.result ?? null));
+    const resCode = String(r?.result ?? '');
+    const errMsg = String(r?.loginErrorInfo?.errMsg ?? r?.errMsg ?? '');
+    const vUrl = sanitizeVerifyUrl(r?.loginErrorInfo?.verifyUrl || r?.verifyUrl || '');
+    if (resCode === '0' && !errMsg && !vUrl) {
+      log('quick-login accepted');
+      return true;
+    }
+    log('quick-login rejected result=' + JSON.stringify(r?.result ?? null) + ' hasVerify=' + Boolean(vUrl));
+    enterManualOffline(classifyLoginError(resCode, errMsg, vUrl));
     return false;
-  } catch (e) { log('quickLoginWithUin threw ' + e.message); return false; }
+  } catch (e) {
+    log('quickLoginWithUin threw ' + e.message);
+    enterManualOffline(classifyLoginError('', e?.message || 'quickLoginWithUin 异常'));
+    return false;
+  }
+}
+
+/** 原生账密登录（wrapper.node passwordLogin；密码绝不写盘/打日志，仅单次内存提交）。 */
+async function performPasswordLogin(rawUin, rawPassword, captchaExtra = null) {
+  if (authenticated) {
+    log('passwordLogin skipped: already authenticated');
+    return;
+  }
+  const uin = cleanUin(rawUin);
+  if (!uin) {
+    enterManualOffline({ code: 'invalid_uin', phase: 'waiting-manual-login', message: '请输入有效的机器人 QQ 号' });
+    return;
+  }
+  if (OWNER_UIN && uin === OWNER_UIN) {
+    log('BLOCKED passwordLogin attempt on OWNER_UIN');
+    enterManualOffline({ code: 'unexpected_owner_identity', phase: 'waiting-manual-login', message: '安全防线拦截：禁止使用主号登录机器人' });
+    return;
+  }
+  if (typeof login.passwordLogin !== 'function') {
+    enterManualOffline({ code: 'password_login_unsupported', phase: 'waiting-manual-login', message: '当前 QQ 客户端原生库未暴露 passwordLogin 接口，请改用一键拉起 QQ 或扫码' });
+    return;
+  }
+  const md5 = rawPassword
+    ? createHash('md5').update(String(rawPassword), 'utf8').digest('hex')
+    : (pendingPwdLogin && pendingPwdLogin.uin === uin ? pendingPwdLogin.passwordMd5 : '');
+  if (!md5) {
+    enterManualOffline({ code: 'empty_password', phase: 'waiting-manual-login', message: '密码不能为空' });
+    return;
+  }
+  pendingPwdLogin = { uin, passwordMd5: md5 };
+  clearQrArtifacts();
+  save('pwd-logging-in', {
+    needsManualLogin: true,
+    offlineReason: '',
+    offlineMessage: '正在向 QQ 提交账密登录…',
+    verifyUrl: '',
+    verifyAt: 0
+  });
+  log('passwordLogin attempting uin=' + uin + (captchaExtra ? ' (with captcha ticket)' : ''));
+  try {
+    if (!loginConnected) {
+      try { login.connect(); } catch {}
+    }
+    // ★ 2026-11-27 真机 wrapper.node 符号表核对后的精确 LoginInfo 字段：
+    //   uin / passwordMd5 / step / proofWaterSig / proofWaterRand / proofWaterSid /
+    //   newDeviceLoginSig / unusualDeviceCheckSig / registerSucceedSig
+    const req = {
+      uin,
+      passwordMd5: md5,
+      step: captchaExtra ? 1 : 0,
+      proofWaterSig: captchaExtra?.ticket ? String(captchaExtra.ticket) : '',
+      proofWaterRand: captchaExtra?.randStr ? String(captchaExtra.randStr) : '',
+      proofWaterSid: captchaExtra?.sid ? String(captchaExtra.sid) : '',
+      newDeviceLoginSig: '',
+      unusualDeviceCheckSig: '',
+      registerSucceedSig: ''
+    };
+    const r = await login.passwordLogin(req);
+    const resCode = String(r?.result ?? '');
+    const errInfo = r?.loginErrorInfo || {};
+    const errMsg = String(errInfo?.errMsg ?? r?.errMsg ?? '');
+    const vUrl = sanitizeVerifyUrl(
+      errInfo?.proofWaterUrl || errInfo?.verifyUrl || errInfo?.jumpUrl
+      || r?.proofWaterUrl || r?.verifyUrl || ''
+    );
+    if (resCode === '0' && !errMsg && !vUrl) {
+      log('passwordLogin accepted uin=' + uin);
+      return;
+    }
+    log('passwordLogin result=' + JSON.stringify(r?.result ?? null)
+      + ' errMsg=' + JSON.stringify(errMsg.slice(0, 120))
+      + ' hasVerify=' + Boolean(vUrl)
+      + ' errKeys=' + JSON.stringify(Object.keys(errInfo)));
+    enterManualOffline(classifyLoginError(resCode, errMsg, vUrl));
+  } catch (e) {
+    log('passwordLogin threw ' + e.message);
+    enterManualOffline(classifyLoginError('', e?.message || '账密登录调用异常'));
+  }
+}
+
+async function handleSubmitCaptcha(cmd) {
+  const ticket = String(cmd?.ticket ?? '').trim();
+  const randStr = String(cmd?.randStr ?? '').trim();
+  const sid = String(cmd?.sid ?? '').trim();
+  log('submit_captcha received hasTicket=' + Boolean(ticket) + ' hasRand=' + Boolean(randStr));
+  if (typeof login.verifyCaptchaTicket === 'function' && ticket) {
+    try {
+      await login.verifyCaptchaTicket({ ticket, randstr: randStr, randStr, sid });
+      log('verifyCaptchaTicket invoked');
+    } catch (e) {
+      log('verifyCaptchaTicket threw ' + e.message);
+    }
+  }
+  if (pendingPwdLogin && ticket) {
+    await performPasswordLogin(pendingPwdLogin.uin, '', { ticket, randStr, sid });
+  } else {
+    save('waiting-manual-login', {
+      verifyUrl: '',
+      verifyAt: 0,
+      needsManualLogin: true,
+      offlineMessage: '验证已提交，如尚未上线请再次点击登录'
+    });
+  }
+}
+
+function onAuthenticatedCommon(value, source) {
+  if (authenticated) return;
+  const expected = switchAccountPending ? '' : BOT_UIN;
+  const ver = isAcceptableLoginIdentity(value, { expectedBotUin: expected, ownerUin: OWNER_UIN });
+  if (!ver.ok) {
+    log('LOGIN_REJECTED reason=' + ver.reason);
+    enterManualOffline({
+      code: ver.reason,
+      phase: 'waiting-manual-login',
+      message: ver.reason === 'unexpected-owner-identity'
+        ? '安全防线拦截：禁止登录主号，请换机器人小号重新登录'
+        : '登录身份与绑定机器人不一致，已拦截'
+    });
+    return;
+  }
+  switchAccountPending = false;
+  pendingPwdLogin = null;
+  BOT_UIN = ver.uin;
+  applyResolvedAccountToEnv({ botUin: ver.uin, ownerUin: OWNER_UIN, botUid: ver.uid }, process.env);
+  authenticated = true;
+  qrInFlight = false;
+  state.uin = ver.uin;
+  state.uid = ver.uid;
+  state.canQuickLogin = true;
+  state.needsManualLogin = false;
+  state.offlineReason = '';
+  state.offlineMessage = '';
+  state.verifyUrl = '';
+  state.verifyAt = 0;
+  clearQrArtifacts();
+  try {
+    fs.writeFileSync(path.join(STATE, 'identity.json'),
+      JSON.stringify({ uin: state.uin, uid: state.uid, at: new Date().toISOString() }), { mode: 0o600 });
+  } catch {}
+  save('authenticated');
+  log('LOGIN_OK source=' + source + ' uin=' + state.uin + ' uid=' + String(state.uid).slice(0, 12) + '…');
+  setTimeout(() => { void checkpointLoginDb('post-login'); }, 3000).unref();
+  setImmediate(initializeSession);
 }
 
 const listener = {
   onQRCodeGetPicture(value) {
+    if (authenticated) return;
     try {
       const b64 = String(value?.pngBase64QrcodeData ?? '').replace(/^data:image\/png;base64,/, '');
       if (!b64) { log('qr picture without data'); return; }
@@ -377,66 +596,180 @@ const listener = {
       const next = path.join(STATE, 'qr.next');
       fs.writeFileSync(next, bytes, { mode: 0o600 });
       fs.renameSync(next, path.join(STATE, 'qr.png'));
-      if (typeof value?.qrcodeUrl === 'string') {
+      const cleanUrl = sanitizeQrUrl(value?.qrcodeUrl || '');
+      if (cleanUrl) {
         const u = path.join(STATE, 'qr.url.next');
-        fs.writeFileSync(u, value.qrcodeUrl.trim(), { mode: 0o600 });
+        fs.writeFileSync(u, cleanUrl, { mode: 0o600 });
         fs.renameSync(u, path.join(STATE, 'qr.url'));
       }
-      save('qr-ready');
-      log('qr-ready bytes=' + bytes.length);
+      save('qr-ready', {
+        qrAt: Date.now(),
+        needsManualLogin: true,
+        offlineMessage: '二维码已就绪（约 2 分钟有效），请使用一键拉起 QQ 或相机扫码'
+      });
+      log('qr-ready bytes=' + bytes.length + ' hasUrl=' + Boolean(cleanUrl));
     } catch (e) { log('qr write fail ' + e.message); }
   },
   onQRCodeLoginPollingStarted() { log('qr-polling'); },
   onQRCodeSessionUserScaned() {
-    save('scanned');
+    save('scanned', { offlineMessage: '已扫码，请在手机 QQ 上点击确认登录' });
     log('scanned');
     try { fs.unlinkSync(path.join(STATE, 'qr.url')); } catch {}
   },
   onQRCodeSessionFailed(t, c) {
-    log('qr-session-failed type=' + t + ' code=' + c);
+    log('qr-session-failed type=' + t + ' code=' + c + ' (按需出码策略：不自动循环刷码)');
     if (authenticated) return;
-    qrTimes++;
-    if (qrTimes <= 50) { setTimeout(() => { qr = false; requestQr(); }, 1000); }
-    else die('qr-failed');
+    qrInFlight = false;
+    clearQrArtifacts();
+    save('waiting-manual-login', {
+      needsManualLogin: true,
+      offlineReason: 'qr_expired',
+      offlineMessage: '二维码已过期，需要时请手动点击「获取二维码 / 一键拉起 QQ」'
+    });
   },
-  onQRCodeLoginSucceed(value) {
-    if (authenticated) return;
-    const ver = isAcceptableLoginIdentity(value, { expectedBotUin: BOT_UIN, ownerUin: OWNER_UIN });
-    if (!ver.ok) {
-      die(ver.reason); return;
+  onQRCodeLoginSucceed(value) { onAuthenticatedCommon(value, 'qr-or-quick'); },
+  onLoginSuccess(value) { onAuthenticatedCommon(value, 'password-or-native'); },
+  onUserLoggedIn(value) {
+    log('onUserLoggedIn uin=' + (value?.uin ?? '?'));
+    if (value?.uin && value?.uid) onAuthenticatedCommon(value, 'user-logged-in');
+  },
+  onQRCodeSessionQuickLoginFailed(err) {
+    log('quick-login-failed ' + JSON.stringify(err ?? null));
+    if (!authenticated) {
+      enterManualOffline(classifyLoginError(err?.result ?? '', err?.errMsg ?? '快速登录失败'));
     }
-    BOT_UIN = ver.uin;
-    applyResolvedAccountToEnv({ botUin: ver.uin, ownerUin: OWNER_UIN, botUid: ver.uid }, process.env);
-    authenticated = true;
-    state.uin = ver.uin; state.uid = ver.uid;
-    try { fs.unlinkSync(path.join(STATE, 'qr.url')); } catch {}
-    try { fs.unlinkSync(path.join(STATE, 'qr.png')); } catch {}
-    try { fs.writeFileSync(path.join(STATE, 'identity.json'),
-      JSON.stringify({ uin: state.uin, uid: state.uid, at: new Date().toISOString() })); } catch {}
-    save('authenticated');
-    log('LOGIN_OK uin=' + state.uin + ' uid=' + String(state.uid).slice(0, 12) + '…');
-    setImmediate(initializeSession);
   },
-  onQRCodeSessionQuickLoginFailed() { log('quick-login-failed -> qr'); if (!authenticated && !qr) requestQr(); },
+  onPasswordLoginFailed(err) {
+    log('password-login-failed ' + JSON.stringify(err ?? null));
+    if (!authenticated) {
+      const vUrl = sanitizeVerifyUrl(err?.verifyUrl || err?.loginErrorInfo?.verifyUrl || '');
+      enterManualOffline(classifyLoginError(err?.result ?? err?.errCode ?? '', err?.errMsg ?? err?.loginErrorInfo?.errMsg ?? '', vUrl));
+    }
+  },
   onLoginConnected() {
+    loginConnected = true;
     log('login-connected');
-    if (authenticated) return;
-    void tryQuickLogin().then(ok => { if (!ok && !authenticated) requestQr(); });
+    if (authenticated || quickTriedOnBoot) return;
+    quickTriedOnBoot = true;
+    void tryQuickLogin();
   },
-  onLoginDisconnected() { log('login-disconnected'); },
-  onLoginFailed(e) { log('login-failed ' + JSON.stringify(e ?? null)); },
-  onLogoutSucceed() { log('logged-out'); },
+  onLoginDisconnected() {
+    loginConnected = false;
+    log('login-disconnected');
+    state.msfStatus = 'login-disconnected';
+  },
+  onLoginFailed(e) {
+    log('login-failed ' + JSON.stringify(e ?? null));
+    if (!authenticated) {
+      const vUrl = sanitizeVerifyUrl(e?.verifyUrl || e?.loginErrorInfo?.verifyUrl || '');
+      enterManualOffline(classifyLoginError(e?.result ?? e?.errCode ?? '', e?.errMsg ?? e?.loginErrorInfo?.errMsg ?? '', vUrl));
+    }
+  },
+  onLogoutSucceed() {
+    log('logged-out');
+  },
 };
 login.addKernelLoginListener(listener);
 log('listener registered');
 try { login.connect(); log('connect called'); } catch (e) { die('connect-failed', e); }
 
-// 看门狗：50 秒还没连上就强行推一次（否则会一直等）
+// 50s 兜底：若始终未收到 onLoginConnected，尝试一次快登；失败即停在待人工登录态（绝不自动刷码）
 setTimeout(() => {
-  if (authenticated || qr) return;
-  log('WARN: 50s 未 login-connected，强制尝试快速登录/出码');
-  void tryQuickLogin().then(ok => { if (!ok && !authenticated) requestQr(); });
-}, 50000);
+  if (authenticated || quickTriedOnBoot) return;
+  quickTriedOnBoot = true;
+  log('WARN: 50s 未收到 login-connected，执行一次快登检查');
+  void tryQuickLogin();
+}, 50000).unref();
+
+// ------------------------------------------------------------------ 受控命令消费循环（500ms）
+async function executeCommand(cmd) {
+  const action = String(cmd?.action || '').trim();
+  if (!action) return;
+  log('CMD_RECV action=' + action);
+  if (action === 'request_qr') {
+    requestQrOnce('cmd');
+    return;
+  }
+  if (action === 'password_login') {
+    await performPasswordLogin(cmd.uin, cmd.password);
+    return;
+  }
+  if (action === 'submit_captcha') {
+    await handleSubmitCaptcha(cmd);
+    return;
+  }
+  if (action === 'wake_session') {
+    if (authenticated && originalChat) {
+      try {
+        const info = await originalChat.wakeSession?.();
+        state.lastWakeAt = Date.now();
+        log('CMD_WAKE_SESSION ' + JSON.stringify(info ?? {}));
+      } catch (e) {
+        log('CMD_WAKE_SESSION_ERR ' + (e?.message ?? e));
+      }
+    }
+    return;
+  }
+  if (action === 'safe_logout' || action === 'switch_account' || action === 'force_relogin') {
+    const prevUin = state.uin || BOT_UIN;
+    try { agentProc?.kill('SIGTERM'); } catch {}
+    try { originalChat?.close?.(); } catch {}
+    try { await onebot?.close?.(); } catch {}
+    onebot = null;
+    originalChat = null;
+    authenticated = false;
+    initStarted = false;
+    initAccepted = false;
+    botStarting = false;
+    clearQrArtifacts();
+    if (action === 'switch_account' || action === 'safe_logout') {
+      try { fs.unlinkSync(path.join(STATE, 'identity.json')); } catch {}
+    }
+    if (action === 'switch_account') {
+      switchAccountPending = true;
+      BOT_UIN = '';
+      try { if (prevUin && typeof login.resetLoginInfo === 'function') await login.resetLoginInfo(String(prevUin)); } catch {}
+    }
+    await checkpointLoginDb(action);
+    enterManualOffline({
+      code: action === 'switch_account' ? 'switch_account' : 'manual_logout',
+      phase: 'waiting-manual-login',
+      message: action === 'switch_account'
+        ? '已安全退出旧账号（聊天与记忆数据已完整保留），请选择新账号重新登录'
+        : (action === 'force_relogin'
+          ? '已释放旧连接，请选择一键拉起 QQ、扫码或账密重新上线'
+          : '已安全下线（聊天与记忆数据已完整保留），需要时随时可重新上线')
+    });
+    if (action === 'force_relogin' && cmd.mode === 'qr') {
+      requestQrOnce('force_relogin');
+    }
+  }
+}
+
+let cmdBusy = false;
+setInterval(() => {
+  if (finished || cmdBusy) return;
+  if (!fs.existsSync(CMD_FILE)) return;
+  cmdBusy = true;
+  let cmd = null;
+  try {
+    const raw = fs.readFileSync(CMD_FILE, 'utf8');
+    // 立即删除命令文件（避免任何密码残留在磁盘上）
+    try { fs.unlinkSync(CMD_FILE); } catch {}
+    cmd = JSON.parse(raw);
+  } catch (e) {
+    try { fs.unlinkSync(CMD_FILE); } catch {}
+    log('CMD_PARSE_ERR ' + (e?.message ?? e));
+  }
+  Promise.resolve(cmd ? executeCommand(cmd) : null)
+    .catch(e => log('CMD_EXEC_ERR ' + (e?.message ?? e)))
+    .finally(() => { cmdBusy = false; });
+}, 500).unref();
+
+// 定期 WAL checkpoint（每 30 分钟），确保长期在线时 login.db 票据持久落盘
+setInterval(() => {
+  if (!finished && authenticated) void checkpointLoginDb('30m-timer');
+}, 30 * 60_000).unref();
 
 // ------------------------------------------------------------------ 会话初始化
 let initStarted = false, initAccepted = false, readyTimer = null;
@@ -451,7 +784,7 @@ function initializeSession() {
   const nativeConfig = {
     selfUin: BOT_UIN, selfUid: state.uid,
     desktopPathConfig: { account_path: GLOBAL },
-    clientVer: CLIENT_VER, a2: '', d2: '', d2Key: '', machineId: '', platform: 5,
+    clientVer: CLIENT_VER, a2: '', d2: '', d2Key: '', machineId: MACHINE_ID, platform: 5,
     platVer: 'Linux ' + os.release(), appid: '537403759',
     defaultFileDownloadPath: path.join(RUNTIME, 'downloads'),
     deviceInfo: { guid, buildVer: CLIENT_VER, localId: 2052, devName: os.hostname(),
@@ -463,13 +796,29 @@ function initializeSession() {
       serverUrl: '', fixedAfterHitKeys: [''] },
   };
   const depends = {
-    onRegisterProxyOnlineResp: () => {}, onMSFStatusChange: () => {}, onMSFSsoError: () => {},
+    onRegisterProxyOnlineResp: (info) => {
+      log('MSF onRegisterProxyOnlineResp ' + JSON.stringify(info ?? null));
+      state.msfStatus = 'proxy-online';
+    },
+    onMSFStatusChange: (status) => {
+      log('MSF onMSFStatusChange ' + JSON.stringify(status ?? null));
+      state.msfStatus = typeof status === 'object' ? JSON.stringify(status) : String(status ?? '');
+    },
+    onMSFSsoError: (err) => {
+      const msg = typeof err === 'object' ? JSON.stringify(err) : String(err ?? '');
+      log('MSF onMSFSsoError ' + msg);
+      state.lastMsfError = msg.slice(0, 200);
+      if (/1006501|kicked/i.test(msg)) {
+        authenticated = false;
+        enterManualOffline(classifyLoginError('1006501', msg));
+      }
+    },
     getGroupCode: () => { log('depends.getGroupCode called'); return ''; },
   };
   const dispatcher = { dispatchRequest: () => {}, dispatchCall: () => {}, dispatchCallWithJson: () => {} };
   const sessionListener = {
     onNTSessionCreate: () => {}, onGProSessionCreate: () => {}, onGetSelfTinyId: () => {},
-    onUserOnlineResult: () => {},
+    onUserOnlineResult: (res) => { log('onUserOnlineResult ' + JSON.stringify(res ?? null)); },
     onOpentelemetryInit(info) {
       log('onOpentelemetryInit is_init=' + (info?.is_init === true));
       if (info?.is_init === true) { initAccepted = true; setImmediate(completeReady); }
@@ -493,9 +842,6 @@ function initializeSession() {
 let botStarting = false;
 function completeReady() {
   if (finished || !initAccepted || state.phase === 'session-ready') return;
-  // ★ 关键：onOpentelemetryInit 与 onSessionInitComplete 会**各自**触发一次 completeReady，
-  //   若不加闸门就会**起两个 OneBot 服务**（两套随机端口）：agent 拿到第一套、bot.json 写的是第二套，
-  //   于是 agent 永远连一个死端口 → 刷「X 秒后重连」→ 「QQ 在线但一句话不回」。
   if (botStarting) return;
   let msgService;
   try { msgService = session.getMsgService(); } catch (e) { die('getMsgService-threw', e); return; }
@@ -509,11 +855,14 @@ function completeReady() {
   setImmediate(() => { void startBot().catch(e => die('bot-start-failed', e)); });
 }
 
-// ------------------------------------------------------------------ 机器人
+// ------------------------------------------------------------------ 机器人与零误杀看门狗
+let heartbeatTimer = null;
+let nativeWatchdogTimer = null;
+let consoleWatchdogTimer = null;
+
 async function startBot() {
   const { createOriginalChatBridge } = await import(path.join(PROJECT, 'src/host/original-chat-bridge.mjs'));
 
-  // 图片发送：ImageStore 暂存 + wrapper 的 copyFile 落到 SDK 给的富媒体路径。
   let imagePlacement;
   try {
     const { ImageStore } = await import(path.join(PROJECT, 'src/media/image-store.mjs'));
@@ -541,29 +890,24 @@ async function startBot() {
     onUnknown: v => { log('bridge unknown ' + JSON.stringify(v)); save('action-unknown'); },
     imagePlacement,
   });
+  // 监听被踢下线原生事件：立刻切换为 kicked-offline 并禁止自动重启/刷码
+  if (typeof originalChat.on === 'function') {
+    originalChat.on('notice', (ev) => {
+      if (ev?.meta_event_type === 'lifecycle' && ev?.reason === 'kicked_offline') {
+        log('NATIVE_KICKED_OFFLINE event received');
+        authenticated = false;
+        enterManualOffline(classifyLoginError('1006501', '账号已被腾讯安全中心或其他终端踢下线'));
+      }
+    });
+  }
   await originalChat.attach();
   log('bridge attached');
 
   onebotToken = randomBytes(24).toString('hex');
-  // ★ 端口：固定基址 + 占用回退，且**永不与 agent 控制台端口相同**。
-  //   事故（2026-11-17 16:38）：OneBot 原本用 port:0 随机端口，这一轮随机到 41907，
-  //   而 agent 自己的控制台是 config.json 里写死的 server.port=41907（strictPort:true，
-  //   绑不上就直接退出）⇒ agent 启动即 EADDRINUSE，整机表现为「所有群都说不了话」。
-  //   随机端口撞固定端口是概率问题，迟早复发，所以这里改成固定段 + 显式排除。
   const { port: obPort, wsPort: obWsPort, skipped } = pickOneBotPorts();
   if (skipped.length) log('ONEBOT_PORTS skip=' + JSON.stringify(skipped));
-  // ★ 在**同一个进程里**起 OneBot，不用 fork/IPC。
-  //   原因：QQ 原生层（libbugly）把 SIGPIPE 注册成了致命信号，
-  //   而 fork 出来的子进程一旦死掉，父进程往 IPC socket 写就会触发 SIGPIPE → 整个机器人当场被打死（实测 signo 13）。
   const { createOneBotService } = await import(path.join(PROJECT, 'src/service.mjs'));
-  // 上一次崩溃/被强杀会留下 owner.lock，新实例启动会直接 EEXIST 失败。
-  // 我们已经持有单实例锁，所以这里可以安全地清掉陈旧锁。
   try { fs.rmSync(path.join(PROJECT, 'runtime/outcomes/owner.lock'), { force: true }); } catch {}
-  // ★ 「更新完一会儿机器人就静默」的真因根治（2026-11-18）：
-  //   重启/重装会打断在途发送，留下 runtime/outcomes/pending.json；
-  //   新进程一旦把它当成"本次未知"，写闸就永久关闭 ⇒ 之后所有发送 1503，群里怎么 @ 都不回。
-  //   这里在**建服务之前**把上一个进程留下的记录隔离成 pending.orphaned-*.json（留证），
-  //   于是新进程的闸是开的。注意：**不重发**、不改任何发送语义，只是不再用历史记录锁死未来。
   try {
     const outcomes = path.join(PROJECT, 'runtime/outcomes');
     const pendingFile = path.join(outcomes, 'pending.json');
@@ -579,31 +923,29 @@ async function startBot() {
   onebot = await createOneBotService({
     bridge: originalChat,
     projectRoot: PROJECT, token: onebotToken,
-    // 端口由 pickOneBotPorts() 选定：固定段 + 占用回退 + 排除 agent 控制台端口（见该函数注释）。
     port: obPort, wsPort: obWsPort,
     authorizationPolicy: 'native-session', conversationPolicy: 'original',
     minimumWriteIntervalMs: 0, agentPlusCompatibility: true,
   });
   const child = { port: onebot.address.port, wsPort: onebot.wsAddress.port };
-  save('onebot-ready', { onebot: { port: child.port, wsPort: child.wsPort, token: onebotToken } });
+  save('onebot-ready', {
+    onebot: { port: child.port, wsPort: child.wsPort, token: onebotToken },
+    lastHealthyAt: Date.now(),
+    msfStatus: 'online'
+  });
   log('ONEBOT_READY http=' + child.port + ' ws=' + child.wsPort);
 
   if (WITH_AGENT) {
     try { await startAgent(child); } catch (e) { log('agent start failed: ' + (e?.stack || e)); save('agent-failed', { agent: String(e?.message ?? e) }); }
   }
-  // B 站行为 worker 与主 agent 是两条独立的进程：
-  // 主 agent 的动作通道指向 QQ 协议端，拿它发 B 站动作只会打到 QQ 上（见 D287 与 scheduler.mjs 头注释）。
-  // 这里只负责「把它拉起来并看住」，端点/配置由 App 写到 /agent/data 里，worker 自己读。
   startBiliWorker();
 
-  // 心跳：阶段由**进程实际状态**算，不由"尝试次数"推断
-  // （之前 agent 明明活着，bot.json 却写 agent-exhausted —— 这种字段比没有更坏）。
-  setInterval(() => {
-    // 用户在开机之后才点「连接机器人」很常见：端点文件是后来才出现的，所以心跳里补一次拉起。
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
     if (!finished) { try { startBiliWorker(); } catch (e) { log('bili worker check failed: ' + e.message); } }
     const d = state.diag ?? {};
     let phase = state.phase;
-    if (authenticated) {
+    if (authenticated && phase !== 'degraded') {
       if (agentProc && agentProc.exitCode === null && agentProc.signalCode === null) phase = 'agent-running';
       else if (onebot) phase = 'onebot-ready';
     }
@@ -616,16 +958,14 @@ async function startBot() {
     } });
   }, 3000);
 
-  // ★ 2026-11-27 半死自愈方案 1A + 2A：
-  // ① 原生通道真实联网探活（每 90s 打一次 get_stranger_info 核验而非纯内存 get_status）：
-  //    Level 1 触发进程内唤醒（免重登），Level 2 限频退出重启（qr-ready 等人工扫码期绝不重启）。
+  // ① 原生通道零误杀看门狗（每 90s 探活；默认 allowRestart=false，绝不盲目杀进程踢进扫码态！）
   const processBootAt = Date.now();
   const restartStampFile = path.join(STATE, 'watchdog-restarts.json');
-  const nativeWatchdog = createNativeWatchdogState();
+  const nativeWatchdog = createNativeWatchdogState({ allowRestart: false });
   let nativeCheckInFlight = false;
-  const nativeWatchdogTimer = setInterval(async () => {
+  if (nativeWatchdogTimer) clearInterval(nativeWatchdogTimer);
+  nativeWatchdogTimer = setInterval(async () => {
     if (finished || !authenticated || !onebot || nativeCheckInFlight) return;
-    if (state.phase === 'qr-ready' || state.phase === 'qr-polling' || state.phase === 'scanned') return;
     nativeCheckInFlight = true;
     try {
       const targetUid = /^\d{5,15}$/.test(String(BOT_UIN || state.uin || '')) ? Number(BOT_UIN || state.uin) : 0;
@@ -635,25 +975,47 @@ async function startBot() {
       const probe = await probeOneBotAction(child.port, onebotToken, payload, 12000);
       if (probe && probe.status === 'ok') {
         nativeWatchdog.recordSuccess(Date.now());
+        state.lastHealthyAt = Date.now();
+        if (state.phase === 'degraded') {
+          save(agentProc && agentProc.exitCode === null ? 'agent-running' : 'onebot-ready', {
+            offlineReason: '', offlineMessage: '', needsManualLogin: false
+          });
+        }
       } else {
         const now = Date.now();
+        const ql = await probeQuickLoginAvailable();
         const recent = readRestartHistory(restartStampFile, now);
         const decision = nativeWatchdog.recordFailure({
           phase: state.phase,
           uptimeMs: now - processBootAt,
           now,
-          recentRestarts: recent
+          recentRestarts: recent,
+          canQuickLogin: ql.available,
+          offlineReason: state.offlineReason
         });
-        log('NATIVE_WATCHDOG_FAIL count=' + nativeWatchdog.snapshot().consecutiveFails + ' decision=' + decision + ' detail=' + String(probe?.error || probe?.retcode || 'unknown'));
+        log('NATIVE_WATCHDOG_FAIL count=' + nativeWatchdog.snapshot().consecutiveFails
+          + ' decision=' + decision + ' canQuick=' + ql.available
+          + ' detail=' + String(probe?.error || probe?.retcode || 'unknown'));
         if (decision === 'wake') {
           try {
             const wakeInfo = await originalChat?.wakeSession?.();
+            state.lastWakeAt = Date.now();
             log('NATIVE_WATCHDOG_WAKE ' + JSON.stringify(wakeInfo ?? { invoked: true }));
           } catch (e) {
             log('NATIVE_WATCHDOG_WAKE_ERR ' + (e?.message ?? e));
           }
+        } else if (decision === 'notify_offline') {
+          // 绝不盲杀进程！转为 degraded/告警态，让手机通知栏与远端主力机第一时间收到提醒
+          save('degraded', {
+            needsManualLogin: !ql.available,
+            offlineReason: ql.available ? 'native_probe_failed' : 'session_expired_no_quick_login',
+            offlineMessage: ql.available
+              ? 'QQ 原生通道连续探活未响应，正在持续温和重连（已保留当前会话不强杀）'
+              : 'QQ 原生连接疑似失效且本机无可用快登票据，已暂停自动重启；如需恢复请手动重新上线'
+          });
         } else if (decision === 'restart') {
           try { recordRestartTimestamp(restartStampFile, now); } catch {}
+          await checkpointLoginDb('watchdog-restart');
           log('NATIVE_WATCHDOG_RESTART triggering rate-limited process exit');
           process.exit(1);
         }
@@ -668,7 +1030,8 @@ async function startBot() {
 
   // ② agent 控制台独立看门狗（每 60s 测 /api/chats）：只精准杀并重拉 agentProc，绝不断 QQ 原生会话。
   let consoleCheckInFlight = false;
-  const consoleWatchdogTimer = setInterval(async () => {
+  if (consoleWatchdogTimer) clearInterval(consoleWatchdogTimer);
+  consoleWatchdogTimer = setInterval(async () => {
     if (!WITH_AGENT || finished || consoleCheckInFlight) return;
     if (!agentProc || agentProc.exitCode !== null || agentProc.signalCode !== null) return;
     consoleCheckInFlight = true;
@@ -738,39 +1101,17 @@ function probeOneBotAction(port, token, bodyObj, timeoutMs) {
   });
 }
 
-// agent 启动**不再需要 preload**（2026-11-20 深度改造折叠，P6）：
-// 原先 agent preload 钩子的三件事——①OneBot 地址/token 环境变量强制注入、②动作超时从写死 15 秒
-// 放大到面板可配（默认 120 秒）、③orchestrator run 超时硬顶 240s→600s——
-// 已全部**直接折叠进 /input/agent-app 的源码**（onebot.js / orchestrator.js），
-// 运行端是深度改造后的自有代码（23 个 overlay 补丁 + 39 个自有模块全部直改入源），
-// 不再依赖 node 导入钩子层。地址/token/超时仍走同一组 WHALE_ONEBOT_* 环境变量，
-// 只是读取方从 preload 换成了源内折叠逻辑（见 input/agent-app/src/onebot/onebot.js 顶部注释）。
-// ★ 若超时锚点/构造器形状再变，报错点在源内（ONEBOT_TIMEOUT_INVALID），不再有 SOURCE_CHANGED 钩子报错。
-
 let agentAttempts = 0;
 let lastAgentStartedAt = 0;
 const consoleWatchdog = createAgentConsoleWatchdogState();
-/** 同一时刻只允许一次 startAgent 在飞：之前两次并发起 agent 会互相把对方的进程当残留杀掉（互杀循环）。 */
 let agentInFlight = false;
 
-/**
- * 量「agent 起来 → 控制台可用」到底多久：每 2 秒打一次 `/api/chats`，第一次 200 就打
- * `CONSOLE_READY after=+Xs`；10 分钟还没起来打一行 timeout 就停。
- *
- * 为什么留着：用户体感「启动慢」时，只靠「等一会儿」永远说不清是几秒。有这一行就能分清
- * 是 agent 初始化慢、还是控制台自身慢。探测失败不影响任何主流程，纯日志。
- */
-/**
- * agent 自己的控制台端口：读 /agent/data/config.json 的 server.port，读不到退回 41907。
- *
- * ★ 别拿 OneBot 的端口（13800）来试：那条口对 /api/chats 只会回 401/404，永远等不到 200。
- */
 function agentConsolePort() {
   try {
     const cfg = JSON.parse(fs.readFileSync('/agent/data/config.json', 'utf8'));
     const p = Number(cfg?.server?.port);
     if (Number.isFinite(p) && p > 0) return p;
-  } catch { /* 读不到就用默认 */ }
+  } catch { /* default */ }
   return 41907;
 }
 
@@ -802,48 +1143,41 @@ function consoleReadyProbe(port, startedAt) {
         log('CONSOLE_READY after=+' + Math.round((Date.now() - startedAt) / 1000) + 's');
         return;
       }
-    } catch {
-      // 还没起来，继续等
-    }
+    } catch {}
     setTimeout(() => { void tick(); }, 2000).unref?.();
   };
   setTimeout(() => { void tick(); }, 2000).unref?.();
 }
-// ── B 站行为 worker ───────────────────────────────────────────────────────────
-// 只在「这个实例里有 B 站账号、且 App 已经写了端点文件」时才起——
-// 没 B 站账号的纯 QQ 实例不会有 bili-protocol.json，这里什么都不做。
+
 let biliWorkerProc = null;
 let biliWorkerTries = 0;
 function startBiliWorker() {
   if (biliWorkerProc || biliWorkerTries >= 5) return;
   const entry = '/input/agent-app/src/features/bili-behavior/worker.mjs';
   const dataDir = '/agent/data';
-  if (!fs.existsSync(entry)) return;                      // 老核心没有这个模块：不当错误
+  if (!fs.existsSync(entry)) return;
   let endpoint = false;
   try { endpoint = fs.existsSync(path.join(dataDir, 'bili-protocol.json')); } catch { endpoint = false; }
-  if (!endpoint) return;                                  // 还没连上过 B 站协议端：安静等 App 写
+  if (!endpoint) return;
   biliWorkerTries++;
   const out = fs.openSync(path.join(RUNTIME, 'bili-worker.log'), 'a', 0o600);
   biliWorkerProc = spawn(process.execPath, [entry, dataDir], {
     cwd: '/input/agent-app',
     stdio: ['ignore', out, out],
     env: { PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
-      // ★ 必须给：行为层的评论生成器复用运行端的 `src/llm/llm.js`，
-      //   而它的配置文件路径来自 `DATA_DIR = process.env.QQ_AGENT_DATA_DIR || ROOT/data`。
-      //   不给这一条就会去读 `input/agent-app/data`（空目录）⇒ 模型调用必然失败。
       QQ_AGENT_DATA_DIR: dataDir },
   });
   log('BILI_WORKER_STARTED pid=' + biliWorkerProc.pid);
   biliWorkerProc.on('exit', (code, sig) => {
     log('BILI_WORKER_EXIT code=' + code + ' signal=' + sig);
     biliWorkerProc = null;
-    // 自己退了就再给一次机会（端点变了 / 协议端重连都可能让它退出）
     if (!finished) setTimeout(() => { try { startBiliWorker(); } catch (e) { log('bili worker retry failed: ' + e.message); } }, 15000).unref?.();
   });
   biliWorkerProc.on('error', (e) => log('BILI_WORKER_ERROR ' + e.message));
 }
 
-async function startAgent(child) {  if (agentInFlight) { log('agent start already in flight, skip'); return; }
+async function startAgent(child) {
+  if (agentInFlight) { log('agent start already in flight, skip'); return; }
   if (agentAttempts >= 6) { log('agent attempts exhausted'); return; }
   agentInFlight = true;
   agentAttempts++;
@@ -851,13 +1185,9 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
   const entry = path.join(appDir, 'src/server.js');
   if (!fs.existsSync(entry)) { log('agent entry missing: ' + entry); save('agent-missing'); return; }
 
-  // 1) 只把「部署相关」的 OneBot 端点写进业务配置；apiKey / 业务设置 / 概率 / 开关一律不动。
   const cfgFile = '/agent/data/config.json';
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
   const before = { mode: cfg.runtime?.mode, paused: cfg.runtime?.paused };
-  // ★ 原则 P6（2026-11-19 用户定）：内置机器人是**我们自己的产品**，被深度改造过就不再跟随上游版本。
-  //   更新入口保留（用户要求面板上留着），但**强制指向我们自己的仓库**，永远不去作者的上游仓库；
-  //   镜像更新（snowluma）是上游专用通道，一律关掉。上游更新改走人工评审。
   const UPDATE_REPO = 'https://github.com/18477514055/whale-onebot.git';
   const prevRepo = cfg.autoUpdate?.repository;
   cfg.autoUpdate = { ...(cfg.autoUpdate ?? {}), repository: UPDATE_REPO,
@@ -865,15 +1195,9 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
   if (prevRepo && prevRepo !== UPDATE_REPO) log('autoUpdate 仓库已改回本项目（原值 ' + prevRepo + '，原则 P6：不跟随上游）');
   cfg.onebot = { ...(cfg.onebot ?? {}), wsUrl: 'ws://127.0.0.1:' + child.wsPort,
     httpUrl: 'http://127.0.0.1:' + child.port, accessToken: '', httpAccessToken: '',
-    // ★ 重启/更新后补回 30 分钟内的消息（作者默认值）。原来是 0＝不补，
-    //   结果「启动那 20–80 秒里被 @ 的消息」永远得不到回应 —— 用户 2026-11-19 反复踩到。
     catchupReplyWindowMs: 1800000 };
   fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n');
   log('agent config patched onebot=' + child.port + '/' + child.wsPort + ' runtime=' + JSON.stringify(before));
-  // agent 自己的单实例锁：上一次崩溃会留下 .server.lock，而且它把「不同主机名」也当冲突，
-  // 容器每次 hostname 都可能不同 → 不删就永远 E_INSTANCE_LOCKED。
-  // ★ 更要命的是「上一代 agent 还活着」：它拿着旧端口跑，新一代起不来 / 起来了也被它顶掉。
-  //   所以这里按 /proc/*/cmdline **精确找 pid** 再 kill（pkill -f 跨 proot 会话不可靠）。
   try {
     const victims = [];
     for (const d of fs.readdirSync('/proc')) {
@@ -889,13 +1213,9 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
     fs.rmSync('/agent/data/.server.lock', { force: true });
   } catch (e) { log('agent cleanup failed: ' + e.message); }
 
-  // 2) 起 agent：地址/token/超时全部走环境变量，由**源内折叠逻辑**读取（2026-11-20 深度改造折叠后
-  //    preload 退役、不再挂导入钩子；模型直接用业务配置里原有的凭据，不经过任何 relay）。
   fs.mkdirSync('/agent/home/tmp', { recursive: true });
   const out = fs.openSync(path.join(RUNTIME, 'agent-stdout.log'), 'a', 0o600);
   const err = fs.openSync(path.join(RUNTIME, 'agent-stderr.log'), 'a', 0o600);
-  // 运行端的动作超时（面板项 onebot.textTimeoutMs，默认 120000）：
-  // 传了就必须是合法毫秒数；非法值由源内折叠逻辑拒绝启动（ONEBOT_TIMEOUT_INVALID，宁可报错不静默）。
   const cfgTextTimeout = Number(cfg.onebot?.textTimeoutMs);
   const textTimeoutMs = Number.isSafeInteger(cfgTextTimeout) && cfgTextTimeout >= 1000 && cfgTextTimeout <= 600000
     ? cfgTextTimeout : 120000;
@@ -904,10 +1224,8 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
     stdio: ['ignore', out, err],
     env: { PATH: '/bin', HOME: '/agent/home', TMPDIR: '/agent/home/tmp', TZ: 'Asia/Shanghai',
       QQ_AGENT_DATA_DIR: '/agent/data', WHALE_ONEBOT_TOKEN: onebotToken,
-      // ★ 地址走环境变量、由源内折叠逻辑强制注入：不依赖 config.json（它可能被业务程序重写）。
       WHALE_ONEBOT_WS_URL: 'ws://127.0.0.1:' + child.wsPort,
       WHALE_ONEBOT_HTTP_URL: 'http://127.0.0.1:' + child.port,
-      // ★ 上游写死 15 秒会把我们的慢响应判成未知 → held；现由源内折叠逻辑读本变量（默认 120 秒）。
       WHALE_ONEBOT_TEXT_TIMEOUT_MS: String(textTimeoutMs) },
   });
   log('agent textTimeoutMs=' + textTimeoutMs);
@@ -915,8 +1233,7 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
   proc.on('exit', (code, sig) => {
     log('AGENT_EXIT code=' + code + ' signal=' + sig);
     agentInFlight = false;
-    // 自己退了就再来一次（下一次会先清掉占着 .server.lock 的残留 agent）。
-    if (!finished) setTimeout(() => { void startAgent(child).catch(e => log('agent retry failed: ' + e.message)); }, 5000).unref();
+    if (!finished && authenticated) setTimeout(() => { void startAgent(child).catch(e => log('agent retry failed: ' + e.message)); }, 5000).unref();
   });
   proc.on('error', e => log('AGENT_ERROR ' + e.message));
   save('agent-started', { agent: { pid: proc.pid } });
@@ -925,8 +1242,4 @@ async function startAgent(child) {  if (agentInFlight) { log('agent start alread
   consoleWatchdog.resetForNewProcess();
   log('AGENT_STARTED pid=' + proc.pid);
   consoleReadyProbe(agentConsolePort(), agentStartedAt);
-
-  // 保洁：不做「按 env 判断端口」的清理 —— 实测 proot 里的进程 /proc/<pid>/environ 读出来是空的，
-  // 那样会把**自己的** agent 当成残留杀掉（log 里就是 AGENT_STARTED 两秒后被 killed stale agent）。
-  // 残留清理只放在「起之前」做一次（见上面的 /proc 扫描 + kill），起之后不再动。
 }

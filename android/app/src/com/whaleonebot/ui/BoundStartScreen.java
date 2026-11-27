@@ -1,295 +1,647 @@
 package com.whaleonebot.ui;
 
-import android.widget.*;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.view.Gravity;
 import android.view.View;
-import com.whaleonebot.ContainerService;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import com.whaleonebot.QqCredentialVault;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
-import static android.view.ViewGroup.LayoutParams.*;
+
+import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 /**
- * 机器人启动页 —— <b>新号与老号共用同一页</b>。
- *
- * <p>★ 2026-11-24 用户口径：「让新登录的账号和已登录的账号是同一个启动页 —— 只要填了 QQ 账号就能发起扫码」。
- * 以前这一页只管「绑定 / 连接」（{@link BoundStartScreen}），二维码只在 legacy 的 {@link QqScreen} 里，
- * 于是新核心机器人**根本没有扫码入口**。现在两页合一：
- * <pre>
- *   标题（机器人名）
- *   运行端与各账号的绑定状态
- *   【本机 QQ 登录】容器启停 → 扫码登录 / 换一张码 → 二维码
- *   【这个机器人】连接 QQ（内置核心）/ 启动·停止本机器人（legacy 容器）
- *   管理账号绑定
- * </pre>
- * 扫码走的是**本机 QQ 客户端**（容器里的 {@code /opt/whale/qq-state}），与机器人是不是新号无关：
- * 登录成功后 identity.json 里有 uin，绑定状态自然会从「待登录」变成「已验证连接」。
- *
- * <p>Worker lifecycle is never evidence that an account is connected.
+ * [layer: shell-android] QQ 启动与多通道上线页（2026-11-27 全面重做，对齐问答报告 Q6/Q7/Q10/Q11/Q12）：
+ * <ol>
+ *   <li>顶部「连接健康与掉线原因卡」：容器 / QQ 原生连接 / 运行端三态 + 人话掉线原因 + 设备指纹简报 +
+ *       「温和唤醒重连」与「安全下线 / 切换账号 / 强制重新登录」三分立操作；</li>
+ *   <li>中部「多通道上线卡」（离线自动展开、在线自动折叠）：
+ *       - 触发滑块/新设备 verifyUrl 时高亮弹出「打开内置安全验证页」（支持远程主力机滑完回传票据）；
+ *       - 通道 A：一键拉起手机 QQ 授权（免截图）+ 远程/本地实时高清按需扫码（绝不后台循环刷码）；
+ *       - 通道 B：账密登录（wrapper.node 原生 passwordLogin + 被控机 Keystore 加密可选记住密码 + 一键重登）；</li>
+ *   <li>底部「实时运行诊断日志卡」：直接展示真实 bot.log + container.log。</li>
+ * </ol>
  */
 final class BoundStartScreen extends Screen {
 
     private final BotRegistry.Bot bot;
     private final boolean dashboard;
 
+    // 顶部健康卡引用
+    private TextView healthPill;
+    private TextView healthDetail;
+    private TextView healthMeta;
     private TextView status;
-    private String previous;
-
-    private QrPanel qr;
     private TextView startBtn;
     private TextView stopBtn;
-    private TextView saveBtn;
-    private TextView loginBtn;
-    private String lastLoginLine;
+    private TextView wakeBtn;
+    private String previous;
 
-    // 运行日志（原 QqScreen 的那一块，统一启动页时被我漏掉了 —— 用户直接点名）
+    // 多通道上线卡
+    private LinearLayout loginCard;
+    private TextView loginFoldBtn;
+    private LinearLayout loginBody;
+    private LinearLayout verifyBanner;
+    private TextView verifyBtn;
+    private TextView tabQrBtn;
+    private TextView tabPwdBtn;
+    private LinearLayout qrChannelPane;
+    private LinearLayout pwdChannelPane;
+    private TextView reqQrBtn;
+    private TextView openQqAuthBtn;
+    private TextView copyQrUrlBtn;
+    private TextView saveBtn;
+    private QrPanel qr;
+
+    // 账密通道引用
+    private LinearLayout savedCredBox;
+    private TextView savedCredLabel;
+    private TextView savedLoginBtn;
+    private EditText etUin;
+    private EditText etPwd;
+    private CheckBox cbRemember;
+
+    // 实时日志
     private TextView logText;
     private ScrollView logScroll;
     private String lastLog;
 
-    BoundStartScreen(AppShell shell,BotRegistry.Bot bot,boolean dashboard) {super(shell);this.bot=bot;this.dashboard=dashboard;}
+    private int activeTab = 0; // 0 = 一键拉起 QQ / 按需扫码, 1 = 账密登录
+    private boolean manualExpandWhenOnline = false;
+    private String lastVerifyUrlPrompted = "";
+    private String lastHealthSig = "";
 
-    void build() {
-        ScrollView scroll=new ScrollView(activity);
-        scroll.setFillViewport(true);
-        root.addView(scroll);
-        LinearLayout col=Ui.column(activity);
-        col.setPadding(dp(Theme.S4),dp(Theme.S3),dp(Theme.S4),dp(Theme.S4));
-        scroll.addView(col);
-        col.addView(header(bot==null?"找不到机器人":bot.name+(dashboard?" · QQ 看板":"")));
-        if(bot==null)return;
-
-        status=Ui.text(activity,"读取绑定状态…",Theme.T_BODY,t.textPrimary);
-        status.setPadding(0,dp(Theme.S3),0,dp(Theme.S3));
-        col.addView(status);
-        if(dashboard){refresh();return;}
-
-        buildLoginBlock(col);
-        buildBotBlock(col);
-        add(col,"管理账号绑定",false,v -> shell.pushBot(bot.id));
-        buildLogArea(col);
-        TextView note=Ui.text(activity,"已验证连接并不授权回复。允许联系的人或群由该账号的运行端白名单单独控制。",Theme.T_BODY,t.textSecondary);
-        note.setPadding(0,dp(Theme.S3),0,0);
-        col.addView(note);
-        refresh();
+    BoundStartScreen(AppShell shell, BotRegistry.Bot bot, boolean dashboard) {
+        super(shell);
+        this.bot = bot;
+        this.dashboard = dashboard;
     }
 
-    // ---------------------------------------------------------------- 本机 QQ 登录
+    @Override
+    void build() {
+        root.removeAllViews();
+        ScrollView scroll = new ScrollView(activity);
+        scroll.setFillViewport(true);
+        root.addView(scroll);
 
-    /**
-     * 本机 QQ 登录区：容器启停 → 扫码 / 换码 → 二维码。
-     *
-     * <p>这一段与 {@link QqScreen} 用的是同一套宿主能力（{@code host().containerRunning()} /
-     * {@code requestQr()} / {@link QrPanel}），所以新老账号看到的是同一件事：**这台手机上的 QQ 登录**。
-     */
-    private void buildLoginBlock(LinearLayout col) {
-        col.addView(sectionLabel("本机 QQ 登录"), sectionLp());
+        LinearLayout col = Ui.column(activity);
+        col.setPadding(dp(Theme.S4), dp(Theme.S3 + 4), dp(Theme.S4), dp(Theme.S4));
+        scroll.addView(col);
+        col.addView(header(bot == null ? "找不到机器人" : bot.name + (dashboard ? " · QQ 看板" : " · QQ")));
+        if (bot == null) return;
 
-        LinearLayout row1=Ui.row(activity);
-        startBtn=Ui.button(activity,t,"启动容器",false);
-        startBtn.setOnClickListener(new View.OnClickListener(){public void onClick(View v){host().startContainer();host().toast("正在启动容器");}});
-        stopBtn=Ui.button(activity,t,"停止容器",false);
-        stopBtn.setOnClickListener(new View.OnClickListener(){public void onClick(View v){host().stopContainer();host().toast("正在停止容器");}});
-        LinearLayout.LayoutParams b1=Ui.llp(0,dp(Theme.TOUCH));b1.weight=1f;
-        LinearLayout.LayoutParams b2=Ui.llp(0,dp(Theme.TOUCH));b2.weight=1f;b2.leftMargin=dp(Theme.S2);
-        row1.addView(startBtn,b1);
-        row1.addView(stopBtn,b2);
-        col.addView(row1,Ui.llp(MATCH_PARENT,WRAP_CONTENT));
+        // ---------------- 1. 顶部连接健康与掉线原因卡 ----------------
+        LinearLayout healthCard = Ui.addCard(col, activity, t, Theme.S3);
+        LinearLayout hRow = Ui.row(activity);
+        hRow.addView(Ui.strong(activity, "QQ 连接健康", Theme.T_CARD, t.textPrimary),
+                new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        healthPill = Ui.pill(activity, t, "检测中…", Ui.TONE_NEUTRAL);
+        hRow.addView(healthPill, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        healthCard.addView(hRow, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
 
-        LinearLayout row2=Ui.row(activity);
-        loginBtn=Ui.button(activity,t,"扫码登录 QQ",true);
-        loginBtn.setOnClickListener(new View.OnClickListener(){public void onClick(View v){
-            // ★ 先确认容器里真有 QQ：环境包本身**不含** QQ 客户端，没装就点扫码只会干等 40 秒然后什么都没有
-            //   （用户就是这么被卡住的）。这里直接把话说明白并把人送到装的入口。
-            if(RemoteBridge.qqClientVersion(activity)==null){
-                host().toast("容器里还没有 QQ：先去「环境配置」装 QQ 安装包，回来再扫码");
+        healthDetail = Ui.text(activity, "正在读取容器与 QQ 原生状态…", Theme.T_BODY, t.textSecondary);
+        healthCard.addView(healthDetail, topMargin(dp(Theme.S2)));
+
+        healthMeta = Ui.text(activity, "", Theme.T_CAP, t.textTertiary);
+        healthCard.addView(healthMeta, topMargin(dp(4)));
+
+        healthCard.addView(Ui.divider(activity, t));
+        status = Ui.text(activity, "读取绑定状态…", Theme.T_CAP, t.textSecondary);
+        healthCard.addView(status, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        if (dashboard) {
+            refresh();
+            return;
+        }
+
+        // 容器启停 + 温和重连 + 会话管理菜单
+        LinearLayout ctrlRow = Ui.row(activity);
+        startBtn = Ui.button(activity, t, "启动容器", false);
+        startBtn.setOnClickListener(v -> {
+            host().startContainer();
+            host().toast("正在启动容器");
+        });
+        stopBtn = Ui.button(activity, t, "停止容器", false);
+        stopBtn.setOnClickListener(v -> {
+            host().stopContainer();
+            host().toast("正在停止容器");
+        });
+        ctrlRow.addView(startBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        sLp.leftMargin = dp(Theme.S2);
+        ctrlRow.addView(stopBtn, sLp);
+        healthCard.addView(ctrlRow, topMargin(dp(Theme.S3)));
+
+        LinearLayout sessRow = Ui.row(activity);
+        wakeBtn = Ui.button(activity, t, "温和重连唤醒", false);
+        wakeBtn.setOnClickListener(v -> host().wakeQqSession());
+        TextView manageSessBtn = Ui.button(activity, t, "下线 / 换号 / 强登", false);
+        manageSessBtn.setOnClickListener(v -> openSessionActionsSheet());
+        sessRow.addView(wakeBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
+        LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        mLp.leftMargin = dp(Theme.S2);
+        sessRow.addView(manageSessBtn, mLp);
+        healthCard.addView(sessRow, topMargin(dp(Theme.S2)));
+
+        // ---------------- 2. 多通道上线卡（免截图：一键拉起 QQ / 按需扫码 / 账密+滑块） ----------------
+        col.addView(sectionLabel("QQ 多通道上线（免截图 · 严格按需出码）"), sectionLp());
+        loginCard = Ui.addCard(col, activity, t, 0);
+
+        loginFoldBtn = Ui.button(activity, t, "当前已在线 · 展开重新登录选项", false);
+        loginFoldBtn.setOnClickListener(v -> {
+            manualExpandWhenOnline = !manualExpandWhenOnline;
+            syncOnlineCollapse(host().qqAuthState());
+        });
+        loginFoldBtn.setVisibility(View.GONE);
+        loginCard.addView(loginFoldBtn, Ui.llp(MATCH_PARENT, dp(Theme.TOUCH)));
+
+        loginBody = Ui.column(activity);
+        loginCard.addView(loginBody, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 滑块 / 新设备验证高亮区（仅 verify-required 时显示）
+        verifyBanner = Ui.column(activity);
+        verifyBanner.setBackground(Drawables.round(
+                Ui.alpha(t.accent, t.dark ? 0.22f : 0.12f), t.accent, dp(1.2f), dp(Theme.R_BTN)));
+        verifyBanner.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S3), dp(Theme.S2));
+        verifyBanner.addView(Ui.strong(activity, "需要完成腾讯安全滑块 / 新设备验证", Theme.T_BODY, t.toneStrong));
+        verifyBanner.addView(Ui.text(activity,
+                "将在当前手机（含远程主力机）弹出官方验证页，完成后自动回传票据继续登录。",
+                Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
+        verifyBtn = Ui.button(activity, t, "立即打开安全验证页", true);
+        verifyBtn.setOnClickListener(v -> openVerifyWebView(host().qqAuthState().verifyUrl));
+        verifyBanner.addView(verifyBtn, topMargin(dp(Theme.S2)));
+        verifyBanner.setVisibility(View.GONE);
+        loginBody.addView(verifyBanner, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // 分段切换按钮：通道 A（一键拉起 QQ / 按需扫码） vs 通道 B（账密登录）
+        LinearLayout tabs = Ui.row(activity);
+        tabQrBtn = tabChip("一键拉起 QQ / 扫码", activeTab == 0);
+        tabQrBtn.setOnClickListener(v -> {
+            activeTab = 0;
+            syncTabs();
+        });
+        tabPwdBtn = tabChip("账密登录（免扫码）", activeTab == 1);
+        tabPwdBtn.setOnClickListener(v -> {
+            activeTab = 1;
+            syncTabs();
+        });
+        tabs.addView(tabQrBtn, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams t2Lp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        t2Lp.leftMargin = dp(Theme.S2);
+        tabs.addView(tabPwdBtn, t2Lp);
+        loginBody.addView(tabs, topMargin(dp(Theme.S2)));
+
+        // ---- 通道 A：一键拉起手机 QQ 授权 + 按需高清扫码 ----
+        qrChannelPane = Ui.column(activity);
+        qrChannelPane.addView(Ui.text(activity,
+                "提示：腾讯常拒绝「相册截图扫码」。推荐点击下方先按需生成 1 张授权码，然后直接点「一键拉起手机 QQ 授权」或用另一台手机相机直扫（不会后台循环刷码）。",
+                Theme.T_CAP, t.textSecondary), topMargin(dp(Theme.S2)));
+
+        reqQrBtn = Ui.button(activity, t, "按需获取 1 张新授权码", true);
+        reqQrBtn.setOnClickListener(v -> {
+            if (RemoteBridge.qqClientVersion(activity) == null) {
+                host().toast("容器里还没有 QQ：先去「环境配置」装 QQ 安装包，回来再登录");
                 shell.pushEnv();
                 return;
             }
             shell.requestQr();
-        }});
-        TextView again=Ui.button(activity,t,"换一张码",false);
-        again.setOnClickListener(new View.OnClickListener(){public void onClick(View v){shell.requestQr();}});
-        LinearLayout.LayoutParams c1=Ui.llp(0,dp(Theme.TOUCH));c1.weight=1f;
-        LinearLayout.LayoutParams c2=Ui.llp(0,dp(Theme.TOUCH));c2.weight=1f;c2.leftMargin=dp(Theme.S2);
-        row2.addView(loginBtn,c1);
-        row2.addView(again,c2);
-        LinearLayout.LayoutParams r2=Ui.llp(MATCH_PARENT,WRAP_CONTENT);r2.topMargin=dp(Theme.S2);
-        col.addView(row2,r2);
+        });
+        qrChannelPane.addView(reqQrBtn, topMargin(dp(Theme.S2)));
 
-        saveBtn=Ui.button(activity,t,"保存二维码到相册",false);
-        saveBtn.setOnClickListener(new View.OnClickListener(){public void onClick(View v){host().saveQrToAlbum();}});
-        Ui.enabled(saveBtn,false);
-        LinearLayout.LayoutParams sv=Ui.llp(MATCH_PARENT,dp(Theme.TOUCH));sv.topMargin=dp(Theme.S2);
-        col.addView(saveBtn,sv);
+        openQqAuthBtn = Ui.button(activity, t, "一键拉起手机 QQ 确认登录（免截图）", true);
+        openQqAuthBtn.setOnClickListener(v -> host().openMobileQqAuth(host().qrUrl()));
+        Ui.enabled(openQqAuthBtn, false);
+        qrChannelPane.addView(openQqAuthBtn, topMargin(dp(Theme.S2)));
 
-        qr=new QrPanel(shell);
-        LinearLayout.LayoutParams qlp=Ui.llp(MATCH_PARENT,WRAP_CONTENT);qlp.topMargin=dp(Theme.S4);
-        col.addView(qr,qlp);
+        LinearLayout qrAux = Ui.row(activity);
+        copyQrUrlBtn = Ui.button(activity, t, "复制授权链接", false);
+        copyQrUrlBtn.setOnClickListener(v -> copyQrUrl());
+        Ui.enabled(copyQrUrlBtn, false);
+        saveBtn = Ui.button(activity, t, "保存二维码到相册", false);
+        saveBtn.setOnClickListener(v -> host().saveQrToAlbum());
+        Ui.enabled(saveBtn, false);
+        qrAux.addView(copyQrUrlBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f));
+        LinearLayout.LayoutParams svLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        svLp.leftMargin = dp(Theme.S2);
+        qrAux.addView(saveBtn, svLp);
+        qrChannelPane.addView(qrAux, topMargin(dp(Theme.S2)));
+
+        qr = new QrPanel(shell);
+        qrChannelPane.addView(qr, topMargin(dp(Theme.S3)));
+        loginBody.addView(qrChannelPane, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+
+        // ---- 通道 B：账密登录 + 被控机加密记住密码 + 一键重登 ----
+        pwdChannelPane = Ui.column(activity);
+        savedCredBox = Ui.column(activity);
+        savedCredBox.setBackground(Drawables.round(t.ghostFill, t.accent, dp(1), dp(Theme.R_BTN)));
+        savedCredBox.setPadding(dp(Theme.S3), dp(Theme.S2), dp(Theme.S3), dp(Theme.S2));
+        savedCredLabel = Ui.strong(activity, "", Theme.T_BODY, t.textPrimary);
+        savedCredBox.addView(savedCredLabel, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        savedCredBox.addView(Ui.text(activity,
+                "密码仅以 Android Keystore AES-GCM 加密保存在运行机器人的设备本地，绝不自动偷偷重登。",
+                Theme.T_CAP, t.textSecondary), topMargin(dp(4)));
+        LinearLayout savedBtns = Ui.row(activity);
+        savedLoginBtn = Ui.button(activity, t, "一键账密重登", true);
+        savedLoginBtn.setOnClickListener(v -> host().quickSavedPasswordLogin());
+        TextView forgetBtn = Ui.button(activity, t, "清除记住的密码", false);
+        forgetBtn.setOnClickListener(v -> PromptSheet.showConfirm(
+                activity, "清除记住的加密密码？",
+                "仅删除被控机 Keystore 加密保存的 QQ 密码，不影响机器人数据与当前在线态。",
+                "清除", () -> host().forgetSavedPassword(), "取消"));
+        savedBtns.addView(savedLoginBtn, new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1.2f));
+        LinearLayout.LayoutParams fgLp = new LinearLayout.LayoutParams(0, dp(Theme.TOUCH), 1f);
+        fgLp.leftMargin = dp(Theme.S2);
+        savedBtns.addView(forgetBtn, fgLp);
+        savedCredBox.addView(savedBtns, topMargin(dp(Theme.S2)));
+        savedCredBox.setVisibility(View.GONE);
+        pwdChannelPane.addView(savedCredBox, topMargin(dp(Theme.S2)));
+
+        pwdChannelPane.addView(Ui.strong(activity, "机器人 QQ 号（严禁填写主号）", Theme.T_BODY, t.textPrimary), topMargin(dp(Theme.S3)));
+        etUin = new EditText(activity);
+        etUin.setSingleLine(true);
+        etUin.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        etUin.setHint("输入机器人小号 QQ 号");
+        Ui.styleInput(etUin, activity, t);
+        pwdChannelPane.addView(etUin, topMargin(dp(Theme.S1)));
+
+        pwdChannelPane.addView(Ui.strong(activity, "QQ 密码", Theme.T_BODY, t.textPrimary), topMargin(dp(Theme.S2)));
+        etPwd = new EditText(activity);
+        etPwd.setSingleLine(true);
+        etPwd.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        etPwd.setHint("仅加密提交给本机/远端容器，绝不打印日志");
+        Ui.styleInput(etPwd, activity, t);
+        pwdChannelPane.addView(etPwd, topMargin(dp(Theme.S1)));
+
+        cbRemember = new CheckBox(activity);
+        cbRemember.setText("在运行机本地加密记住密码（仅用于手动点击「一键重登」）");
+        cbRemember.setTextColor(t.textSecondary);
+        cbRemember.setTextSize(Theme.T_CAP);
+        pwdChannelPane.addView(cbRemember, topMargin(dp(Theme.S2)));
+
+        TextView submitPwdBtn = Ui.button(activity, t, "提交账密登录", true);
+        submitPwdBtn.setOnClickListener(v -> {
+            String u = etUin.getText() == null ? "" : etUin.getText().toString().trim();
+            String p = etPwd.getText() == null ? "" : etPwd.getText().toString();
+            if (!u.matches("[1-9][0-9]{4,15}") || p.isEmpty()) {
+                host().toast("请输入有效的机器人 QQ 号和密码");
+                return;
+            }
+            host().passwordLogin(u, p, cbRemember.isChecked());
+            etPwd.setText(""); // 提交后立即清空输入框内存回显
+        });
+        pwdChannelPane.addView(submitPwdBtn, topMargin(dp(Theme.S2)));
+        loginBody.addView(pwdChannelPane, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        syncTabs();
+
+        // ---------------- 3. 机器人业务与绑定控制 ----------------
+        buildBotBlock(col);
+        add(col, "管理账号绑定", false, v -> shell.pushBot(bot.id));
+
+        // ---------------- 4. 实时运行诊断日志（改读真实 bot.log） ----------------
+        buildLogArea(col);
+
+        TextView note = Ui.text(activity, "已验证连接并不授权回复。允许联系的人或群由该账号的运行端白名单单独控制。",
+                Theme.T_CAP, t.textTertiary);
+        note.setPadding(0, dp(Theme.S3), 0, 0);
+        col.addView(note);
+        refresh();
     }
 
-    // ---------------------------------------------------------------- 这个机器人
+    private void syncTabs() {
+        applyTabStyle(tabQrBtn, activeTab == 0);
+        applyTabStyle(tabPwdBtn, activeTab == 1);
+        if (qrChannelPane != null) qrChannelPane.setVisibility(activeTab == 0 ? View.VISIBLE : View.GONE);
+        if (pwdChannelPane != null) pwdChannelPane.setVisibility(activeTab == 1 ? View.VISIBLE : View.GONE);
+    }
 
-    /** 机器人自己的动作：内置核心给「连接 QQ」，legacy 容器给启停。 */
+    private void applyTabStyle(TextView tv, boolean on) {
+        if (tv == null) return;
+        tv.setBackground(Drawables.round(on ? t.accent : t.ghostFill,
+                on ? 0 : t.ghostStroke, dp(1), dp(Theme.R_BTN)));
+        tv.setTextColor(on ? t.onAccent : t.textPrimary);
+    }
+
+    private TextView tabChip(String text, boolean on) {
+        TextView tv = Ui.strong(activity, text, Theme.T_CAP, on ? t.onAccent : t.textPrimary);
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(dp(10), dp(10), dp(10), dp(10));
+        tv.setClickable(true);
+        applyTabStyle(tv, on);
+        return tv;
+    }
+
+    private void syncOnlineCollapse(QqAuthState st) {
+        boolean online = st != null && st.isOnline();
+        if (loginFoldBtn != null) {
+            loginFoldBtn.setVisibility(online ? View.VISIBLE : View.GONE);
+            loginFoldBtn.setText(manualExpandWhenOnline
+                    ? "收起重新登录面板"
+                    : ("QQ 已在线（" + st.uin + "）· 展开多通道登录面板"));
+        }
+        if (loginBody != null) {
+            loginBody.setVisibility((!online || manualExpandWhenOnline) ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void openSessionActionsSheet() {
+        String[] options = {
+                "安全下线（保留聊天/记忆/知识库，仅退 QQ 会话）",
+                "切换账号（清除旧号登录态与快登，准备登新机器人号）",
+                "强制重新登录（释放旧连接并立即按需出 1 张新码）"
+        };
+        PromptSheet.choose(activity, t, "QQ 会话控制", options, idx -> {
+            if (idx == 0) {
+                PromptSheet.showConfirm(activity, "确认安全下线？",
+                        "将优雅退出当前 QQ 会话并落盘保护数据库，聊天记录、记忆库与知识库完整保留。",
+                        "安全下线", () -> host().qqSessionAction("safe_logout", false, ""), "取消");
+            } else if (idx == 1) {
+                PromptSheet.showConfirm(activity, "确认切换机器人账号？",
+                        "将清除旧 QQ 号登录态与已记住的加密密码（保留聊天与记忆数据），之后可登录新机器人小号（仍禁止登录主号）。",
+                        "切换账号", () -> {
+                            manualExpandWhenOnline = true;
+                            host().qqSessionAction("switch_account", true, "");
+                        }, "取消");
+            } else if (idx == 2) {
+                PromptSheet.showConfirm(activity, "确认强制重新登录？",
+                        "将释放当前会话并立即按需请求 1 张新授权码，不会影响聊天与记忆数据。",
+                        "强制重登", () -> {
+                            manualExpandWhenOnline = true;
+                            activeTab = 0;
+                            syncTabs();
+                            host().qqSessionAction("force_relogin", false, "qr");
+                        }, "取消");
+            }
+        }, null, null);
+    }
+
+    private void openVerifyWebView(String url) {
+        if (!QqAuthState.isSafeHttpsTencentUrl(url)) {
+            host().toast("暂无可用的安全验证链接");
+            return;
+        }
+        QqVerifyWebView.open(activity, url, new QqVerifyWebView.Callback() {
+            @Override
+            public void onVerified(String ticket, String randStr, String sid) {
+                host().submitCaptcha(ticket, randStr, sid);
+            }
+
+            @Override
+            public void onCancelled() {
+                host().toast("已取消安全验证");
+            }
+        });
+    }
+
+    private void copyQrUrl() {
+        String url = host().qrUrl();
+        if (!QqAuthState.isSafeHttpsTencentUrl(url)) {
+            host().toast("当前没有有效的授权链接");
+            return;
+        }
+        try {
+            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("QQ登录授权链接", url));
+            host().toast("授权链接已复制（可发给手机 QQ 直接点开确认，免截图）");
+        } catch (Throwable ex) {
+            host().toast("复制失败");
+        }
+    }
+
     private void buildBotBlock(LinearLayout col) {
-        CoreInventory.Instance core=BotRegistry.coreForBot(bot.id);
-        boolean managed=core!=null && CoreManagerScreen.managed(core);
-        if(managed){
+        CoreInventory.Instance core = BotRegistry.coreForBot(bot.id);
+        boolean managed = core != null && CoreManagerScreen.managed(core);
+        if (managed) {
             col.addView(sectionLabel("这个机器人"), sectionLp());
-            add(col,"连接 QQ",true,v -> {
-                if(!BotRegistry.platformEnabled(bot.id,BotRegistry.P_QQ)){
-                    // ★ 用户口径是「少一步就少一个卡点」：开关在上一页，这里直接把开关打开再连，不让用户回去找。
-                    BotRegistry.setPlatformEnabled(bot.id,BotRegistry.P_QQ,true);
+            add(col, "连接 QQ", true, v -> {
+                if (!BotRegistry.platformEnabled(bot.id, BotRegistry.P_QQ)) {
+                    BotRegistry.setPlatformEnabled(bot.id, BotRegistry.P_QQ, true);
                     host().toast("已为本机器人打开 QQ");
                 }
                 new Thread(() -> {
-                    // 先确保容器内本机 QQ OneBot 协议端已拉起，再连接受管核心
                     RemoteBridge.startBot(activity);
-                    try{RemoteBridge.startInstalledPlatform(activity,bot.id,BotRegistry.P_QQ);}
-                    catch(Exception e){activity.runOnUiThread(() -> host().toast("QQ 启动未完成：" + (e.getMessage()==null?"未知原因":e.getMessage())));}
-                },"connect-qq").start();
+                    try {
+                        RemoteBridge.startInstalledPlatform(activity, bot.id, BotRegistry.P_QQ);
+                    } catch (Exception e) {
+                        activity.runOnUiThread(() -> host().toast("QQ 启动未完成：" + (e.getMessage() == null ? "未知原因" : e.getMessage())));
+                    }
+                }, "connect-qq").start();
             });
         } else if (BotRegistry.KIND_BUILTIN.equals(bot.runtimeKind)) {
             col.addView(sectionLabel("这个机器人"), sectionLp());
-            if (!host().containerRunning()) add(col,"准备容器",false,v -> {host().startContainer();host().toast("正在准备容器");});
-            add(col,"启动本机器人",true,v -> {RemoteBridge.startBoundBot(activity,bot.id);refresh();});
-            add(col,"停止本机器人",false,v -> {RemoteBridge.stopBoundBot(bot.id);refresh();});
+            if (!host().containerRunning()) {
+                add(col, "准备容器", false, v -> {
+                    host().startContainer();
+                    host().toast("正在准备容器");
+                });
+            }
+            add(col, "启动本机器人", true, v -> {
+                RemoteBridge.startBoundBot(activity, bot.id);
+                refresh();
+            });
+            add(col, "停止本机器人", false, v -> {
+                RemoteBridge.stopBoundBot(bot.id);
+                refresh();
+            });
         }
     }
 
-    // ---------------------------------------------------------------- 状态
-
-    private void add(LinearLayout col,String label,boolean primary,View.OnClickListener action){
-        TextView btn=Ui.button(activity,t,label,primary);
+    private void add(LinearLayout col, String label, boolean primary, View.OnClickListener action) {
+        TextView btn = Ui.button(activity, t, label, primary);
         btn.setMinimumHeight(dp(Theme.TOUCH));
         btn.setOnClickListener(action);
-        LinearLayout.LayoutParams lp=Ui.llp(MATCH_PARENT,WRAP_CONTENT);
-        lp.topMargin=dp(Theme.S2);
-        col.addView(btn,lp);
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = dp(Theme.S2);
+        col.addView(btn, lp);
     }
 
-    void refresh(){
-        if(bot==null || status==null)return;
+    @Override
+    void refresh() {
+        if (bot == null || status == null) return;
 
-        // 三态独立展示（容器 / QQ 登录 / 运行端），各看真实活体状态，不再互相混淆
-        boolean running=host().containerRunning();
-        String uin=host().loginUin();
-        boolean logged=uin!=null && uin.length()>0;
-        String containerLine="容器：" + (running ? "运行中" : "已停止（先点「启动容器」）");
-        String loginLine="QQ 登录：" + (!running ? "容器未启动"
-                : (logged ? "已登录 " + uin : "等待扫码登录（点「扫码登录 QQ」）"));
-        if(!loginLine.equals(lastLoginLine)){
-            lastLoginLine=loginLine;
-            if(loginBtn!=null) loginBtn.setText(logged ? "重新扫码" : "扫码登录 QQ");
+        boolean running = host().containerRunning();
+        QqAuthState auth = host().qqAuthState();
+        String uin = host().loginUin();
+        boolean logged = auth.isOnline() || (uin != null && uin.length() > 0);
+        int level = auth.healthLevel(running);
+
+        // 1. 刷新顶部健康卡
+        String sig = running + "|" + auth.phase + "|" + auth.uin + "|" + auth.offlineReason + "|" + auth.offlineMessage + "|" + auth.verifyUrl;
+        if (!sig.equals(lastHealthSig)) {
+            lastHealthSig = sig;
+            int tone = level == QqAuthState.LEVEL_ONLINE ? Ui.TONE_OK
+                    : (level == QqAuthState.LEVEL_OFFLINE_ACTION || level == QqAuthState.LEVEL_DEGRADED ? Ui.TONE_WARN : Ui.TONE_NEUTRAL);
+            if (healthPill != null) {
+                healthPill.setText(auth.shortBadge(running));
+                healthPill.setBackground(Drawables.round(
+                        tone == Ui.TONE_OK ? Ui.alpha(t.accent, 0.16f)
+                                : (tone == Ui.TONE_WARN ? 0x26D9534F : t.ghostFill),
+                        tone == Ui.TONE_WARN ? 0x99D9534F : t.ghostStroke,
+                        dp(1), dp(Theme.R_PILL)));
+                healthPill.setTextColor(tone == Ui.TONE_WARN ? (t.dark ? 0xFFFF8A80 : 0xFFC62828)
+                        : (tone == Ui.TONE_OK ? t.toneStrong : t.textSecondary));
+            }
+            if (healthDetail != null) healthDetail.setText(auth.detailMessage(running));
+            if (healthMeta != null) {
+                StringBuilder meta = new StringBuilder();
+                if (!auth.clientVer.isEmpty()) meta.append("QQ ").append(auth.clientVer);
+                if (!auth.hostname.isEmpty()) meta.append(meta.length() > 0 ? " · " : "").append("设备 ").append(auth.hostname);
+                if (!auth.kernelRelease.isEmpty()) meta.append(meta.length() > 0 ? " · " : "").append(auth.kernelRelease);
+                if (running) meta.append(meta.length() > 0 ? " · " : "").append("快登票据：").append(auth.canQuickLogin ? "可用" : "需重新登录");
+                healthMeta.setText(meta.toString());
+            }
+            syncOnlineCollapse(auth);
         }
-        Ui.enabled(startBtn,!running);
-        Ui.enabled(stopBtn,running);
-        if(saveBtn!=null) Ui.enabled(saveBtn,host().qrLive());
-        if(qr!=null) qr.refresh();
 
-        JSONObject result=RemoteBridge.bindingStatus(activity,bot.id);
-        String state=result==null?"":result.optString("state");
-        int obPort=result==null?0:result.optInt("onebotPort",0);
-        int agPid=result==null?0:result.optInt("agentPid",0);
+        // 2. 滑块/新设备验证横幅
+        if (verifyBanner != null) {
+            boolean hasVerify = auth.hasVerifyChallenge();
+            verifyBanner.setVisibility(hasVerify ? View.VISIBLE : View.GONE);
+            if (hasVerify && !auth.verifyUrl.equals(lastVerifyUrlPrompted)) {
+                lastVerifyUrlPrompted = auth.verifyUrl;
+                host().toast("QQ 登录需要安全滑块验证，请点击顶部高亮按钮完成");
+            }
+        }
+
+        // 3. 按钮与授权码状态
+        Ui.enabled(startBtn, !running);
+        Ui.enabled(stopBtn, running);
+        if (wakeBtn != null) Ui.enabled(wakeBtn, running && logged);
+
+        boolean qrLive = host().qrLive();
+        String qrUrl = host().qrUrl();
+        boolean hasQrUrl = QqAuthState.isSafeHttpsTencentUrl(qrUrl);
+        if (openQqAuthBtn != null) Ui.enabled(openQqAuthBtn, hasQrUrl);
+        if (copyQrUrlBtn != null) Ui.enabled(copyQrUrlBtn, hasQrUrl);
+        if (saveBtn != null) Ui.enabled(saveBtn, qrLive);
+        if (qr != null) qr.refresh();
+
+        // 4. 记住密码快捷卡片
+        QqCredentialVault.Summary cred = host().savedCredSummary();
+        if (savedCredBox != null) {
+            savedCredBox.setVisibility(cred != null && cred.hasSaved ? View.VISIBLE : View.GONE);
+            if (cred != null && cred.hasSaved && savedCredLabel != null) {
+                savedCredLabel.setText("已加密记住账号：" + cred.uin);
+            }
+        }
+
+        // 5. 绑定与运行端三态明细
+        JSONObject result = RemoteBridge.bindingStatus(activity, bot.id);
+        String state = result == null ? "" : result.optString("state");
+        int obPort = result == null ? 0 : result.optInt("onebotPort", 0);
+        int agPid = result == null ? 0 : result.optInt("agentPid", 0);
         String runtimeDetail = summary(state);
         if ("running".equals(state) && (obPort > 0 || agPid > 0)) {
-            runtimeDetail = "运行中（OneBot 端口 " + (obPort > 0 ? obPort : 13800)
+            runtimeDetail = "运行中（OneBot " + (obPort > 0 ? obPort : 13800)
                     + (agPid > 0 ? " · PID " + agPid : "") + "）";
         }
-        StringBuilder sb=dashboard?new StringBuilder()
-                :new StringBuilder(containerLine).append("\n").append(loginLine).append("\n运行端：").append(runtimeDetail);
-        JSONArray rows=result==null?null:result.optJSONArray("bindings");
-        for(BotRegistry.Binding v:bot.bindings){
-            // ★ 这里是「QQ 的启动页」——bilibili 的绑定状态属于 B 站页面，不该混进来（用户点名问过）。
-            if(!BotRegistry.P_QQ.equals(v.platform))continue;
-            boolean verified=false;
-            if(rows!=null) for(int i=0;i<rows.length();i++){
-                JSONObject row=rows.optJSONObject(i);
-                if(row!=null && BindingPresentation.connected(v,state,row.optString("id"),row.optString("platform"),row.optString("accountId"),row.optString("state"))) verified=true;
+        StringBuilder sb = dashboard ? new StringBuilder()
+                : new StringBuilder("容器：").append(running ? "运行中" : "已停止")
+                .append("  ·  运行端：").append(runtimeDetail);
+        JSONArray rows = result == null ? null : result.optJSONArray("bindings");
+        for (BotRegistry.Binding v : bot.bindings) {
+            if (!BotRegistry.P_QQ.equals(v.platform)) continue;
+            boolean verified = false;
+            if (rows != null) for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row != null && BindingPresentation.connected(v, state, row.optString("id"),
+                        row.optString("platform"), row.optString("accountId"), row.optString("state"))) {
+                    verified = true;
+                }
             }
-            if(sb.length()>0)sb.append("\n\n");
-            sb.append(v.label());
-            if(!dashboard)sb.append("\n").append(v.detail());
-            // [layer: shell-android] 修第 200 轮矛盾文案：本机 QQ 槽位在容器已扫码登录后不再矛盾显示「待登录」。
+            if (sb.length() > 0) sb.append("\n");
             String bindState = verified ? "已验证连接"
-                    : (v.localQQ() && logged ? ("本机已登录 " + uin)
-                    : v.accountId.isEmpty() ? "待登录"
-                    : ("unknown".equals(state) ? "状态未知（运行端在跑，尚未核验账号）" : "未验证连接"));
-            sb.append("\n").append(bindState);
+                    : (v.localQQ() && logged ? ("本机在线 " + (auth.isOnline() ? auth.uin : uin))
+                    : (auth.isOfflineAlert() ? auth.shortBadge(running) : (v.accountId.isEmpty() ? "待登录" : "未验证连接")));
+            sb.append(v.label()).append("：").append(bindState);
         }
-        if(dashboard&&sb.length()==0)sb.append("尚未添加 QQ 账号");
-        String s=sb.toString();
-        if(!s.equals(previous)){status.setText(s);previous=s;}
+        if (dashboard && sb.length() == 0) sb.append("尚未添加 QQ 账号");
+        String s = sb.toString();
+        if (!s.equals(previous)) {
+            status.setText(s);
+            previous = s;
+        }
 
-        // 运行日志：登录 30 行 + 容器 15 行（与原来 QqScreen 完全一致的口径）
-        if(logText!=null){
-            String logs=buildLogs();
-            if(!logs.equals(lastLog)){
-                lastLog=logs;
+        // 6. 实时运行日志（bot.log + container.log）
+        if (logText != null) {
+            String logs = buildLogs();
+            if (!logs.equals(lastLog)) {
+                lastLog = logs;
                 logText.setText(logs);
-                if(logScroll!=null) logScroll.post(new Runnable(){public void run(){
-                    if(logScroll.getChildCount()>0) logScroll.fullScroll(View.FOCUS_DOWN);}});
+                if (logScroll != null) logScroll.post(() -> {
+                    if (logScroll.getChildCount() > 0) logScroll.fullScroll(View.FOCUS_DOWN);
+                });
             }
         }
     }
 
-    private String buildLogs(){
-        StringBuilder sb=new StringBuilder();
-        sb.append("— 登录 —\n").append(tail(host().loginLog(30)));
-        sb.append("\n— 容器 —\n").append(tail(host().containerLog(15)));
-        return sb.toString();
+    private String buildLogs() {
+        return "— QQ 实时日志 (bot.log) —\n" + tail(host().loginLog(40))
+                + "\n— 容器日志 —\n" + tail(host().containerLog(15));
     }
 
-    private static String tail(String s){
-        if(s==null) return "（暂无日志）";
-        String v=s.trim();
-        return v.length()==0?"（暂无日志）":v;
+    private static String tail(String s) {
+        if (s == null) return "（暂无日志）";
+        String v = s.trim();
+        return v.length() == 0 ? "（暂无日志）" : v;
     }
 
-    /** 运行日志区（原来是 QqScreen 的一等公民，统一启动页时必须保留）。 */
-    private void buildLogArea(LinearLayout col){
-        FrameLayout logCard=new FrameLayout(activity);
-        logCard.setBackground(Drawables.round(t.logFill,t.logStroke,dp(1),dp(Theme.R_PANEL)));
-        Ui.elevate(logCard,2f,t);
+    private void buildLogArea(LinearLayout col) {
+        FrameLayout logCard = new FrameLayout(activity);
+        logCard.setBackground(Drawables.round(t.logFill, t.logStroke, dp(1), dp(Theme.R_PANEL)));
+        Ui.elevate(logCard, 2f, t);
         logCard.setClipToOutline(true);
-        LinearLayout lbox=Ui.column(activity);
-        lbox.setPadding(dp(Theme.S2+2),dp(Theme.S2),dp(Theme.S2+2),dp(Theme.S2));
-        LinearLayout lhead=Ui.row(activity);
-        lhead.addView(sectionLabel("运行日志"),new LinearLayout.LayoutParams(0,WRAP_CONTENT,1f));
-        lbox.addView(lhead,Ui.llp(MATCH_PARENT,WRAP_CONTENT));
-        logScroll=new ScrollView(activity);
+        LinearLayout lbox = Ui.column(activity);
+        lbox.setPadding(dp(Theme.S2 + 2), dp(Theme.S2), dp(Theme.S2 + 2), dp(Theme.S2));
+        LinearLayout lhead = Ui.row(activity);
+        lhead.addView(sectionLabel("实时诊断日志"), new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        lbox.addView(lhead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
+        logScroll = new ScrollView(activity);
         logScroll.setVerticalScrollBarEnabled(false);
-        logText=Ui.mono(activity,Theme.T_MONO,t.logText);
-        logText.setText("（等待日志）");
-        logScroll.addView(logText,new FrameLayout.LayoutParams(MATCH_PARENT,WRAP_CONTENT));
-        LinearLayout.LayoutParams lslp=Ui.llp(MATCH_PARENT,dp(150));
-        lslp.topMargin=dp(Theme.S2);
-        lbox.addView(logScroll,lslp);
-        logCard.addView(lbox,new LinearLayout.LayoutParams(MATCH_PARENT,WRAP_CONTENT));
-        LinearLayout.LayoutParams lclp=Ui.llp(MATCH_PARENT,WRAP_CONTENT);
-        lclp.topMargin=dp(Theme.S4);
-        col.addView(logCard,lclp);
+        logText = Ui.mono(activity, Theme.T_MONO, t.logText);
+        logText.setTextSize(11f);
+        logText.setLineSpacing(dp(2), 1f);
+        logScroll.addView(logText, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        lbox.addView(logScroll, Ui.llp(MATCH_PARENT, dp(180)));
+        logCard.addView(lbox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = dp(Theme.S3);
+        col.addView(logCard, lp);
     }
 
-    private TextView sectionLabel(String text){
-        TextView v=Ui.text(activity,text,Theme.T_CAP,t.textSecondary);
-        v.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        v.setLetterSpacing(0.08f);
-        return v;
+    private TextView sectionLabel(String text) {
+        TextView tv = Ui.strong(activity, text, Theme.T_CAP, t.textSecondary);
+        return tv;
     }
 
-    private LinearLayout.LayoutParams sectionLp(){
-        LinearLayout.LayoutParams lp=Ui.llp(MATCH_PARENT,WRAP_CONTENT);
-        lp.topMargin=dp(Theme.S4);
-        lp.bottomMargin=dp(Theme.S2);
+    private LinearLayout.LayoutParams sectionLp() {
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = dp(Theme.S4);
+        lp.bottomMargin = dp(Theme.S1);
         return lp;
     }
 
-    static String summary(String state){
-        switch(state){
-            case "waiting":return "等待账号配置、插件或授权"; case "partial":return "部分绑定已启动（账号连接见下方）";
-            case "running":return "运行中（账号连接见下方）"; case "protocol_only":return "仅协议端就绪（点「启动本机器人」拉起运行端）"; case "starting":return "启动中"; case "stopped":return "已停止";
-            case "external":return "由自定义运行端管理"; case "failed":return "启动失败，请检查配置"; case "stale":return "状态已过期（运行端未在跑）";
-            case "credentials_required":return "缺少本次令牌，请编辑绑定"; case "config_required":return "请先完善账号绑定与运行端配置";
-            case "runtime_missing":return "缺少支持多绑定的内置运行端"; case "container_required":return "本地容器尚未就绪"; default:return "暂无可核验状态";
-        }
+    private LinearLayout.LayoutParams topMargin(int px) {
+        LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
+        lp.topMargin = px;
+        return lp;
+    }
+
+    static String summary(String state) {
+        if ("running".equals(state)) return "运行中";
+        if ("starting".equals(state)) return "启动中";
+        if ("stopping".equals(state)) return "停止中";
+        if ("failed".equals(state)) return "异常退出";
+        if ("unknown".equals(state)) return "状态未知";
+        return "已停止";
     }
 }

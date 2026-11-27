@@ -95,6 +95,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         shell = new AppShell(this, this);
         setContentView(shell.getView());
         handler.post(tick);
+        handleDeepLinkIntent(getIntent());
         // Retired runtime archive index is not consulted; the core page uses the signed channel.
         askBatteryExemptionOnce();
         // 被杀之后自爬：排一次系统闹钟（进程死了闹钟仍在）。
@@ -150,6 +151,21 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
     @Override protected void onResume() {
         super.onResume();
         if (shell != null) shell.onResume();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleDeepLinkIntent(intent);
+    }
+
+    /** 点击系统 QQ 离线高优先级通知后，自动切到对应设备并直达 QQ 启动上线页。 */
+    private void handleDeepLinkIntent(Intent intent) {
+        if (intent == null || shell == null) return;
+        if (!intent.getBooleanExtra("open_qq_login", false)) return;
+        intent.removeExtra("open_qq_login");
+        String peerId = intent.getStringExtra("open_remote_peer");
+        shell.openQqLogin(peerId);
     }
 
     @Override public void onBackPressed() {
@@ -226,9 +242,41 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         ContainerService.stop(this);
     }
 
-    @Override public String loginUin() {
+    @Override public com.whaleonebot.ui.QqAuthState qqAuthState() {
         com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
-        return r != null ? r.activeSnapshot().loginUin : identityUin();
+        if (r != null) {
+            return com.whaleonebot.ui.QqAuthState.parseBotJson(r.activeSnapshot().botStateJson);
+        }
+        return com.whaleonebot.ui.QqAuthState.parseBotJson(ContainerService.readBotStateJson(getFilesDir()));
+    }
+
+    @Override public String qrUrl() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) return r.activeSnapshot().qrLive ? r.activeSnapshot().qrUrl : "";
+        return qrLive() ? ContainerService.readQrUrl(getFilesDir()) : "";
+    }
+
+    @Override public QqCredentialVault.Summary savedCredSummary() {
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            com.whaleonebot.remote.RemoteControlManager.RemoteSnapshot snap = r.activeSnapshot();
+            return new QqCredentialVault.Summary(snap.hasSavedCred, snap.savedCredUin, 0L);
+        }
+        return QqCredentialVault.summary(this);
+    }
+
+    @Override public String loginUin() {
+        com.whaleonebot.ui.QqAuthState st = qqAuthState();
+        if (st.isOnline()) return st.uin;
+        // 兼容旧版未写全 bot.json 时兜底检查快照或 liveProbe，但一旦处于明确的离线/待扫码态绝不伪报已登录
+        if (st.isOfflineAlert()) return null;
+        com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) return r.activeSnapshot().loginUin;
+        ContainerService.LiveRuntimeProbe probe = ContainerService.probeLiveRuntime(getFilesDir());
+        if (probe.onebotAlive || probe.agentAlive) {
+            return (probe.uin != null && !probe.uin.isEmpty()) ? probe.uin : identityUin();
+        }
+        return null;
     }
 
     @Override public boolean qrLive() {
@@ -237,7 +285,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
         File f = qrFile();
         if (!f.isFile()) return false;
         long mtime = f.lastModified();
-        if (mtime < requestAt - 2000) return false;
+        if (requestAt > 0 && mtime < requestAt - 2000) return false;
         return System.currentTimeMillis() - mtime <= QR_TTL_MS;
     }
 
@@ -277,7 +325,7 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
             new Thread(() -> {
                 try {
                     org.json.JSONObject res = r.callActiveRpc("login.requestQr", null, 10000);
-                    final String msg = res.optString("msg", "已请求远端刷新二维码");
+                    final String msg = res.optString("msg", "已向远端请求 1 张新二维码");
                     runOnUiThread(() -> toast(msg));
                     r.triggerSnapshotRefresh();
                 } catch (Throwable t) {
@@ -286,32 +334,232 @@ public class MainActivity extends Activity implements AppShell.Host, com.whaleon
             }, "remote-req-qr").start();
             return;
         }
-        if (identityUin() != null) {
-            toast("已登录 " + identityUin() + "，无需扫码（要重新扫码请先停机器人再点）");
+        com.whaleonebot.ui.QqAuthState st = qqAuthState();
+        if (st.isOnline()) {
+            toast("当前已在线（" + st.uin + "），如需重登请先点「强制重登」或「安全下线」");
             return;
         }
         File f = qrFile();
-        if (f.isFile() && !f.delete()) toast("旧二维码删除失败，可能仍会短暂显示");
+        if (f.isFile()) f.delete();
+        new File(qqStateDir(), "qr.url").delete();
         qrCache = null;
         qrCacheMtime = -1;
         requestAt = System.currentTimeMillis();
         boolean wasRunning = ContainerService.isRunning();
         if (!wasRunning) {
             ContainerService.start(this);
-            toast("登录前先把容器拉起来（约 30–60 秒），起来后会自动要码");
+            toast("正在启动容器并按需请求 1 张新二维码…");
         } else {
-            toast("正在向 QQ 请求二维码…（首次约 40 秒）");
+            toast("正在向 QQ 按需请求 1 张新二维码…");
         }
         ContainerService.startLogin(this);
+    }
+
+    @Override public void passwordLogin(final String uin, final String password, final boolean remember) {
+        final String cleanUin = uin == null ? "" : uin.trim();
+        if (!cleanUin.matches("[1-9][0-9]{4,15}") || password == null || password.isEmpty()) {
+            toast("请输入有效的机器人 QQ 号和密码");
+            return;
+        }
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject params = new org.json.JSONObject()
+                            .put("uin", cleanUin)
+                            .put("password", password)
+                            .put("remember", remember);
+                    org.json.JSONObject res = r.callActiveRpc("login.password", params, 12000);
+                    final String msg = res.optString("msg", "已提交账密登录");
+                    runOnUiThread(() -> toast(msg));
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端账密登录提交失败：" + t.getMessage()));
+                }
+            }, "remote-pwd-login").start();
+            return;
+        }
+        if (remember) QqCredentialVault.save(this, cleanUin, password);
+        if (!ContainerService.isRunning()) ContainerService.start(this);
+        if (!ContainerService.botRunning(this)) ContainerService.startBot(this);
+        try {
+            ContainerService.sendBotCommand(this, new org.json.JSONObject()
+                    .put("action", "password_login")
+                    .put("uin", cleanUin)
+                    .put("password", password)
+                    .put("at", System.currentTimeMillis()));
+            toast("正在提交账密登录（密码绝不打日志）…");
+        } catch (Throwable ex) {
+            toast("提交账密登录失败：" + ex.getMessage());
+        }
+    }
+
+    @Override public void quickSavedPasswordLogin() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject res = r.callActiveRpc("login.savedPassword", null, 12000);
+                    final String msg = res.optString("msg", "正在触发远端一键账密重登");
+                    runOnUiThread(() -> toast(msg));
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端一键重登失败：" + t.getMessage()));
+                }
+            }, "remote-saved-login").start();
+            return;
+        }
+        QqCredentialVault.SavedCredential cred = QqCredentialVault.load(this);
+        if (cred == null) {
+            toast("尚未记住密码，请先输入一次并勾选记住密码");
+            return;
+        }
+        passwordLogin(cred.uin, cred.password, false);
+    }
+
+    @Override public void forgetSavedPassword() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    r.callActiveRpc("login.forgetSavedPassword", null, 8000);
+                    r.triggerSnapshotRefresh();
+                    runOnUiThread(() -> toast("已清除远端记住的加密密码"));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("清除远端密码失败：" + t.getMessage()));
+                }
+            }, "remote-forget-pwd").start();
+            return;
+        }
+        QqCredentialVault.clear(this);
+        toast("已清除本机记住的加密密码");
+    }
+
+    @Override public void submitCaptcha(final String ticket, final String randStr, final String sid) {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject params = new org.json.JSONObject()
+                            .put("ticket", ticket == null ? "" : ticket)
+                            .put("randStr", randStr == null ? "" : randStr)
+                            .put("sid", sid == null ? "" : sid);
+                    org.json.JSONObject res = r.callActiveRpc("login.submitCaptcha", params, 12000);
+                    final String msg = res.optString("msg", "验证票据已回传给远端");
+                    runOnUiThread(() -> toast(msg));
+                    r.triggerSnapshotRefresh();
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("回传验证票据失败：" + t.getMessage()));
+                }
+            }, "remote-captcha").start();
+            return;
+        }
+        try {
+            ContainerService.sendBotCommand(this, new org.json.JSONObject()
+                    .put("action", "submit_captcha")
+                    .put("ticket", ticket == null ? "" : ticket)
+                    .put("randStr", randStr == null ? "" : randStr)
+                    .put("sid", sid == null ? "" : sid)
+                    .put("at", System.currentTimeMillis()));
+            toast("已提交安全验证结果，请稍候…");
+        } catch (Throwable ex) {
+            toast("提交安全验证失败：" + ex.getMessage());
+        }
+    }
+
+    @Override public void qqSessionAction(final String action, final boolean clearSavedCred, final String mode) {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            final String rpc = "switch_account".equals(action) ? "login.switchAccount"
+                    : ("force_relogin".equals(action) ? "login.forceRelogin" : "login.safeLogout");
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject params = new org.json.JSONObject()
+                            .put("clearSavedCred", clearSavedCred)
+                            .put("mode", mode == null ? "" : mode);
+                    r.callActiveRpc(rpc, params, 12000);
+                    r.triggerSnapshotRefresh();
+                    runOnUiThread(() -> toast("已向远端下发操作指令"));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("远端操作失败：" + t.getMessage()));
+                }
+            }, "remote-sess-act").start();
+            return;
+        }
+        if (clearSavedCred) QqCredentialVault.clear(this);
+        if ("force_relogin".equals(action) && "qr".equals(mode)) {
+            requestAt = System.currentTimeMillis();
+        }
+        try {
+            ContainerService.sendBotCommand(this, new org.json.JSONObject()
+                    .put("action", action)
+                    .put("mode", mode == null ? "" : mode)
+                    .put("at", System.currentTimeMillis()));
+            toast("已发送指令，聊天与记忆数据已安全保留");
+        } catch (Throwable ex) {
+            toast("发送指令失败：" + ex.getMessage());
+        }
+    }
+
+    @Override public void wakeQqSession() {
+        final com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
+        if (r != null) {
+            new Thread(() -> {
+                try {
+                    org.json.JSONObject res = r.callActiveRpc("login.wakeSession", null, 8000);
+                    final String msg = res.optString("msg", "已触发远端温和重连");
+                    runOnUiThread(() -> toast(msg));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> toast("温和重连指令失败：" + t.getMessage()));
+                }
+            }, "remote-wake").start();
+            return;
+        }
+        try {
+            ContainerService.sendBotCommand(this, new org.json.JSONObject()
+                    .put("action", "wake_session").put("reason", "manual").put("at", System.currentTimeMillis()));
+            toast("已触发进程内温和重连唤醒（不杀进程）");
+        } catch (Throwable ex) {
+            toast("温和重连失败：" + ex.getMessage());
+        }
+    }
+
+    @Override public void openMobileQqAuth(String url) {
+        if (!com.whaleonebot.ui.QqAuthState.isSafeHttpsTencentUrl(url)) {
+            toast("当前没有有效的 QQ 授权链接，请先点「获取授权 / 二维码」");
+            return;
+        }
+        String deep = com.whaleonebot.ui.QqAuthState.buildMobileQqDeepLink(url);
+        if (!deep.isEmpty()) {
+            try {
+                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(deep));
+                i.setPackage("com.tencent.mobileqq");
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                toast("正在拉起手机 QQ 确认登录…");
+                return;
+            } catch (Throwable ignored) {
+                // 本机未装手机 QQ 或系统拒接 mqqapi：平滑退回直接打开 https://txz.qq.com/p?k=...
+            }
+        }
+        try {
+            Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(web);
+            toast("已打开腾讯官方登录授权页");
+        } catch (Throwable ex) {
+            toast("无法拉起手机 QQ 或浏览器，请复制链接或使用相机扫码");
+        }
     }
 
     @Override public String loginLog(int lines) {
         com.whaleonebot.remote.RemoteControlManager r = remoteOrNull();
         if (r != null) {
             String s = r.activeSnapshot().loginLog;
-            return (s == null || s.isEmpty()) ? "（远端暂无登录日志）" : s;
+            return (s == null || s.isEmpty()) ? "（远端暂无运行日志）" : s;
         }
-        return tail(new File(qqStateDir(), "login.log"), lines);
+        File botLog = new File(qqStateDir(), "bot.log");
+        return botLog.isFile() ? tail(botLog, lines) : tail(new File(qqStateDir(), "login.log"), lines);
     }
 
     @Override public String containerLog(int lines) {

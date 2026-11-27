@@ -25,6 +25,7 @@ final class HomeScreen extends Screen {
 
     private LinearLayout col;
     private final java.util.Map<String,TextView> platformCounts = new java.util.LinkedHashMap<>();
+    private TextView qqAlertPill;
     private View fab;
     private LinearLayout devicePill;
     private View deviceDot;
@@ -171,6 +172,12 @@ final class HomeScreen extends Screen {
             LinearLayout.LayoutParams plp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
             plp.leftMargin = dp(8);
             titleRow.addView(pill, plp);
+        } else if (BotRegistry.P_QQ.equals(platformId)) {
+            qqAlertPill = Ui.pill(activity, t, "", Ui.TONE_WARN);
+            qqAlertPill.setVisibility(View.GONE);
+            LinearLayout.LayoutParams plp = Ui.llp(WRAP_CONTENT, WRAP_CONTENT);
+            plp.leftMargin = dp(8);
+            titleRow.addView(qqAlertPill, plp);
         }
         box.addView(titleRow, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
 
@@ -481,6 +488,20 @@ final class HomeScreen extends Screen {
         for (java.util.Map.Entry<String,TextView> entry : platformCounts.entrySet()) {
             String sub = BotRegistry.forPlatform(entry.getKey()).size() + " 台机器人";
             if (!sub.contentEquals(entry.getValue().getText())) entry.getValue().setText(sub);
+        }
+        if (qqAlertPill != null) {
+            boolean contRun = host().containerRunning();
+            QqAuthState st = host().qqAuthState();
+            boolean showAlert = contRun && (st.isOfflineAlert() || "degraded".equals(st.phase));
+            if (showAlert) {
+                String badge = st.shortBadge(true);
+                if (!badge.contentEquals(qqAlertPill.getText())) qqAlertPill.setText(badge);
+                qqAlertPill.setBackground(Drawables.round(0x28D9534F, 0xA8D9534F, dp(1), dp(Theme.R_PILL)));
+                qqAlertPill.setTextColor(t.dark ? 0xFFFF8A80 : 0xFFC62828);
+                qqAlertPill.setVisibility(View.VISIBLE);
+            } else {
+                qqAlertPill.setVisibility(View.GONE);
+            }
         }
     }
 }

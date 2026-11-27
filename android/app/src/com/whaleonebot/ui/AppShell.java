@@ -69,6 +69,20 @@ public class AppShell {
         String containerLog(int lines);
 
         void toast(String msg);
+
+        // ---- 2026-11-27 统一 QQ 上下线与多通道登录扩展（带默认实现，保持向后兼容） ----
+        default QqAuthState qqAuthState() { return QqAuthState.empty(); }
+        default String qrUrl() { return ""; }
+        default com.whaleonebot.QqCredentialVault.Summary savedCredSummary() {
+            return new com.whaleonebot.QqCredentialVault.Summary(false, "", 0L);
+        }
+        default void passwordLogin(String uin, String password, boolean remember) {}
+        default void quickSavedPasswordLogin() {}
+        default void forgetSavedPassword() {}
+        default void submitCaptcha(String ticket, String randStr, String sid) {}
+        default void qqSessionAction(String action, boolean clearSavedCred, String mode) {}
+        default void wakeQqSession() {}
+        default void openMobileQqAuth(String qrUrl) {}
     }
 
     /** 选图请求码。宿主应在 onActivityResult 里把 requestCode 原样转给 {@link #onActivityResult}。 */
@@ -246,6 +260,19 @@ public class AppShell {
     /** 宿主在 onResume 里调用：只做一次全量状态同步，不启动任何轮询。 */
     public void onResume() {
         refresh();
+    }
+
+    /** 点击系统 QQ 离线高优先级通知后，由 MainActivity 调用：自动切目标设备并直达 QQ 上线页。 */
+    public void openQqLogin(String peerId) {
+        if (peerId != null && !peerId.isEmpty()) {
+            switchTargetDevice(peerId);
+        }
+        BotRegistry.Bot primary = BotRegistry.primary();
+        if (primary != null) {
+            pushBotStart(primary.id);
+        } else {
+            pushPlatformBots(BotRegistry.P_QQ);
+        }
     }
 
     /** 宿主每秒调用一次。内部逐项比对，值没变就不碰 View。 */
