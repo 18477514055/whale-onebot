@@ -1,5 +1,29 @@
 [
   {
+    "tag_name": "v1.2.11",
+    "name": "v1.2.11 — 修掉 1.2.10 的登录回归（占位账号覆盖真机账号）",
+    "prerelease": true,
+    "published_at": "2026-11-27T03:11:25Z",
+    "html_url": "https://github.com/18477514055/whale-onebot/releases/tag/v1.2.11",
+    "assets": [
+      {
+        "name": "release-index.json",
+        "size": 13981,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.11/release-index.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 175,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.11/SHA256SUMS"
+      },
+      {
+        "name": "whale-onebot-1.2.11.apk",
+        "size": 109880964,
+        "browser_download_url": "https://github.com/18477514055/whale-onebot/releases/download/v1.2.11/whale-onebot-1.2.11.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "v1.2.10",
     "name": "Whale OneBot 1.2.10 — 止血版（修 293MB stickers.json 假死 + 自愈看门狗 + 协议端扩展）",
     "prerelease": false,

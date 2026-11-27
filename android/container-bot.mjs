@@ -14,7 +14,11 @@ import {
   createNativeWatchdogState,
   createAgentConsoleWatchdogState,
   readRestartHistory,
-  recordRestartTimestamp
+  recordRestartTimestamp,
+  resolveContainerAccount,
+  applyResolvedAccountToEnv,
+  pickQuickLoginEntry,
+  isAcceptableLoginIdentity
 } from './container-watchdog.mjs';
 
 const STATE = '/opt/whale/qq-state';
@@ -39,15 +43,17 @@ const CLIENT_VER = detectClientVersion();
 const CLIENT_APP_VER = CLIENT_VER.split('-')[0];
 const CLIENT_BUILD = CLIENT_VER.split('-')[1] || '';
 const CLIENT_QUA = 'V1_LNX_NQ_' + CLIENT_APP_VER + '_' + CLIENT_BUILD + '_GW_B';
-// 账号标识不在本文件里写死：①环境变量 → ②容器的 src/config/account.mjs（唯一来源）→ ③上次登录留下的 identity.json。
-// ★ 三级回退是必要的：容器里的 src 可能还没同步到最新（少 config/account.mjs），那时不能因为拿不到号就退化成扫码。
-const BOT_UIN = await (async () => {
-  const fromEnv = (process.env.QQ_BOT_UIN || '').trim();
-  if (fromEnv) return fromEnv;
-  const fromConfig = await import('/qq-onebot/src/config/account.mjs').then(m => String(m.BOT_UIN || '')).catch(() => '');
-  if (fromConfig) return fromConfig;
-  try { return String(JSON.parse(fs.readFileSync('/opt/whale/qq-state/identity.json', 'utf8')).uin || ''); } catch { return ''; }
-})();
+// 账号标识不在本文件里写死：①环境变量 → ②非占位 src/config/account.mjs → ③identity.json / agent config.json。
+// ★ 严禁提前 import('/qq-onebot/src/config/account.mjs')（否则脱敏占位符 '10000'/'10001' 会写死进 ESM 缓存）。
+const resolvedAccount = resolveContainerAccount({
+  env: process.env,
+  stateDir: STATE,
+  agentConfigFile: '/agent/data/config.json',
+  accountFile: '/qq-onebot/src/config/account.mjs',
+});
+let BOT_UIN = resolvedAccount.botUin;
+const OWNER_UIN = resolvedAccount.ownerUin;
+applyResolvedAccountToEnv(resolvedAccount, process.env);
 const WITH_AGENT = process.argv.includes('--with-agent');
 
 const dirs = [STATE, GLOBAL, RUNTIME, path.join(RUNTIME, 'global'), path.join(RUNTIME, 'downloads'),
@@ -345,12 +351,17 @@ async function tryQuickLogin() {
   let list;
   try { list = await login.getLoginList(); } catch (e) { log('getLoginList threw ' + e.message); return false; }
   const arr = Array.isArray(list) ? list : (list?.LocalLoginInfoList || list?.localLoginInfoList || list?.list || []);
-  log('login list size=' + arr.length);
-  const hit = arr.find(x => x && x.isQuickLogin === true && String(x.uin ?? '') === BOT_UIN);
+  log('login list size=' + arr.length + ' expected=' + (BOT_UIN || '(auto)'));
+  const hit = pickQuickLoginEntry(arr, BOT_UIN, OWNER_UIN);
   if (!hit) { log('no saved quick-login entry -> qr'); return false; }
-  log('quick-login-attempting uin=' + hit.uin);
+  const attemptUin = String(hit.uin).trim();
+  if (!BOT_UIN) {
+    BOT_UIN = attemptUin;
+    applyResolvedAccountToEnv({ botUin: BOT_UIN, ownerUin: OWNER_UIN }, process.env);
+  }
+  log('quick-login-attempting uin=' + attemptUin);
   try {
-    const r = await login.quickLoginWithUin(BOT_UIN);
+    const r = await login.quickLoginWithUin(attemptUin);
     if (r?.result === '0' && !r?.loginErrorInfo?.errMsg) { log('quick-login accepted'); return true; }
     log('quick-login rejected result=' + JSON.stringify(r?.result ?? null));
     return false;
@@ -390,11 +401,14 @@ const listener = {
   },
   onQRCodeLoginSucceed(value) {
     if (authenticated) return;
-    if (String(value?.uin) !== BOT_UIN || typeof value?.uid !== 'string' || !value.uid) {
-      die('unexpected-login-identity'); return;
+    const ver = isAcceptableLoginIdentity(value, { expectedBotUin: BOT_UIN, ownerUin: OWNER_UIN });
+    if (!ver.ok) {
+      die(ver.reason); return;
     }
+    BOT_UIN = ver.uin;
+    applyResolvedAccountToEnv({ botUin: ver.uin, ownerUin: OWNER_UIN, botUid: ver.uid }, process.env);
     authenticated = true;
-    state.uin = String(value.uin); state.uid = value.uid;
+    state.uin = ver.uin; state.uid = ver.uid;
     try { fs.unlinkSync(path.join(STATE, 'qr.url')); } catch {}
     try { fs.unlinkSync(path.join(STATE, 'qr.png')); } catch {}
     try { fs.writeFileSync(path.join(STATE, 'identity.json'),

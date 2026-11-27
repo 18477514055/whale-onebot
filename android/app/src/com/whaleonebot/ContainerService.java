@@ -697,6 +697,16 @@ public class ContainerService extends Service {
         try {
             String[] list = getAssets().list(assetPath);
             if (list == null || list.length == 0) {
+                if ("qq-protocol/config/account.mjs".equals(assetPath) && destDir.isFile()) {
+                    try {
+                        byte[] raw = java.nio.file.Files.readAllBytes(destDir.toPath());
+                        String existing = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+                        if (!existing.contains("'10000'") && !existing.contains("\"10000\"")) {
+                            log("asset skip placeholder over custom " + destDir);
+                            return;
+                        }
+                    } catch (Throwable ignored) {}
+                }
                 extractAssetAlways(assetPath, destDir, mode);
                 return;
             }

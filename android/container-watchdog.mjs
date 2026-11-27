@@ -106,3 +106,101 @@ export function recordRestartTimestamp(stampFile, now = Date.now()) {
   fs.writeFileSync(stampFile, JSON.stringify(next) + '\n', 'utf8');
   return next;
 }
+
+const PLACEHOLDER_BOT_UINS = new Set(['', '10000']);
+const PLACEHOLDER_OWNER_UINS = new Set(['', '10001']);
+const PLACEHOLDER_BOT_UIDS = new Set(['', 'u_placeholder']);
+const UIN_RE = /^[1-9]\d{4,15}$/;
+
+function cleanUin(value, placeholders) {
+  const s = String(value ?? '').trim();
+  if (!UIN_RE.test(s) || placeholders.has(s)) return '';
+  return s;
+}
+
+function cleanUid(value) {
+  const s = String(value ?? '').trim();
+  if (!s || PLACEHOLDER_BOT_UIDS.has(s)) return '';
+  return s;
+}
+
+function readAccountFileLiterals(accountFile) {
+  const out = { botUin: '', ownerUin: '', botUid: '' };
+  if (!accountFile) return out;
+  try {
+    const src = fs.readFileSync(accountFile, 'utf8');
+    const matchConst = (name) => {
+      const m = new RegExp(`export\\s+const\\s+${name}\\s*=[^;\\n]*['"]([^'"]+)['"]`).exec(src);
+      return m ? m[1].trim() : '';
+    };
+    out.botUin = cleanUin(matchConst('BOT_UIN'), PLACEHOLDER_BOT_UINS);
+    out.ownerUin = cleanUin(matchConst('OWNER_UIN'), PLACEHOLDER_OWNER_UINS);
+    out.botUid = cleanUid(matchConst('BOT_UID'));
+  } catch { /* ignore */ }
+  return out;
+}
+
+/**
+ * 解析容器运行时真实机器人/主人身份，绝不把仓库脱敏占位符（10000/10001/u_placeholder）当作有效账号，
+ * 也不提前 import src/config/account.mjs（避免冻结 ESM 缓存）。
+ */
+export function resolveContainerAccount({
+  env = process.env,
+  stateDir = '/opt/whale/qq-state',
+  agentConfigFile = '/agent/data/config.json',
+  accountFile = '/qq-onebot/src/config/account.mjs'
+} = {}) {
+  const fileLiterals = readAccountFileLiterals(accountFile);
+
+  let identity = null;
+  try {
+    identity = JSON.parse(fs.readFileSync(path.join(stateDir, 'identity.json'), 'utf8'));
+  } catch { identity = null; }
+
+  let agentCfg = null;
+  try {
+    agentCfg = JSON.parse(fs.readFileSync(agentConfigFile, 'utf8'));
+  } catch { agentCfg = null; }
+
+  const ownerUin =
+    cleanUin(env?.QQ_OWNER_UIN, PLACEHOLDER_OWNER_UINS)
+    || fileLiterals.ownerUin
+    || cleanUin(agentCfg?.admin?.ownerUin, PLACEHOLDER_OWNER_UINS);
+
+  const identityUin = cleanUin(identity?.uin, PLACEHOLDER_BOT_UINS);
+  let botUin =
+    cleanUin(env?.QQ_BOT_UIN, PLACEHOLDER_BOT_UINS)
+    || fileLiterals.botUin
+    || (identityUin && identityUin !== ownerUin ? identityUin : '');
+
+  const botUid =
+    cleanUid(env?.QQ_BOT_UID)
+    || fileLiterals.botUid
+    || cleanUid(identity?.uid);
+
+  return { botUin, ownerUin, botUid };
+}
+
+export function applyResolvedAccountToEnv({ botUin = '', ownerUin = '', botUid = '' } = {}, env = process.env) {
+  if (!env) return;
+  if (cleanUin(botUin, PLACEHOLDER_BOT_UINS)) env.QQ_BOT_UIN = String(botUin).trim();
+  if (cleanUin(ownerUin, PLACEHOLDER_OWNER_UINS)) env.QQ_OWNER_UIN = String(ownerUin).trim();
+  if (cleanUid(botUid)) env.QQ_BOT_UID = String(botUid).trim();
+}
+
+export function pickQuickLoginEntry(entries, botUin = '', ownerUin = '') {
+  const arr = Array.isArray(entries) ? entries.filter((x) => x && x.isQuickLogin === true && cleanUin(x.uin, PLACEHOLDER_BOT_UINS)) : [];
+  if (botUin) return arr.find((x) => String(x.uin).trim() === botUin) || null;
+  const nonOwner = arr.filter((x) => !ownerUin || String(x.uin).trim() !== ownerUin);
+  return nonOwner.length === 1 ? nonOwner[0] : null;
+}
+
+export function isAcceptableLoginIdentity(value, { expectedBotUin = '', ownerUin = '' } = {}) {
+  const uin = cleanUin(value?.uin, PLACEHOLDER_BOT_UINS);
+  const uid = typeof value?.uid === 'string' ? value.uid.trim() : '';
+  if (!uin || !uid) return { ok: false, reason: 'unexpected-login-identity' };
+  if (ownerUin && uin === ownerUin) return { ok: false, reason: 'unexpected-owner-identity' };
+  if (expectedBotUin && uin !== expectedBotUin) return { ok: false, reason: 'unexpected-login-identity' };
+  return { ok: true, uin, uid };
+}
+

@@ -3,17 +3,23 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  resolveContainerAccount,
+  applyResolvedAccountToEnv,
+  pickQuickLoginEntry
+} from './container-watchdog.mjs';
 
 const STATE = '/opt/whale/qq-state';
-// 账号标识不在本文件里写死：优先环境变量，其次读容器的 src/config/account.mjs（唯一来源）。
-// 账号标识不在本文件里写死：①环境变量 → ②容器的 src/config/account.mjs → ③上次登录留下的 identity.json。
-const BOT_UIN = await (async () => {
-  const fromEnv = (process.env.QQ_BOT_UIN || '').trim();
-  if (fromEnv) return fromEnv;
-  const fromConfig = await import('/qq-onebot/src/config/account.mjs').then(m => String(m.BOT_UIN || '')).catch(() => '');
-  if (fromConfig) return fromConfig;
-  try { return String(JSON.parse(fs.readFileSync(path.join(STATE, 'identity.json'), 'utf8')).uin || ''); } catch { return ''; }
-})();
+// 账号标识不在本文件里写死：①环境变量 → ②非占位 src/config/account.mjs → ③identity.json / agent config.json。
+const resolvedAccount = resolveContainerAccount({
+  env: process.env,
+  stateDir: STATE,
+  agentConfigFile: '/agent/data/config.json',
+  accountFile: '/qq-onebot/src/config/account.mjs',
+});
+const BOT_UIN = resolvedAccount.botUin;
+const OWNER_UIN = resolvedAccount.ownerUin;
+applyResolvedAccountToEnv(resolvedAccount, process.env);
 const GLOBAL = path.join(STATE, 'global');
 fs.mkdirSync(GLOBAL, { recursive: true });
 
@@ -173,8 +179,8 @@ try {
     //   {"result":0,"LocalLoginInfoList":[{"uin":"<BOT_UIN>","isQuickLogin":true,...}]}
     const arr = Array.isArray(list) ? list
       : (list?.LocalLoginInfoList || list?.localLoginInfoList || list?.list || []);
-    log('login list size=' + (arr?.length ?? 0));
-    const hit = (arr || []).find((x) => x && x.isQuickLogin === true && String(x.uin ?? '') === BOT_UIN);
+    log('login list size=' + (arr?.length ?? 0) + ' expected=' + (BOT_UIN || '(auto)'));
+    const hit = pickQuickLoginEntry(arr, BOT_UIN, OWNER_UIN);
     if (!hit) { log('no saved quick-login entry'); return false; }
     log('quick-login-attempting uin=' + hit.uin);
     try {
