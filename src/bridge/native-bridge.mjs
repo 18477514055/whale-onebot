@@ -9,7 +9,7 @@ import { isGroupFileId, isGroupFolderId, normalizeHistoryParams, validateParams 
 import { BridgeError } from './error.mjs';
 import { RkeyProvider, relativeDownloadParts, rkeyForAppid, rkeyImageUrl, rkeyDiagnostics } from './rkey.mjs';
 import { WebCgiClient } from './web-cgi.mjs';
-import { BOT_UIN, OWNER_UIN } from '../config/account.mjs';
+import { BOT_UIN, OWNER_UIN, currentBotUin } from '../config/account.mjs';
 // P1：语音/视频/文件的元素构建（纯函数模块，字段依据见该文件注释）
 import { buildPttElement, buildVideoElement, buildFileElement, validateLocalMedia } from '../media/element-builders.mjs';
 export { BridgeError };
@@ -780,7 +780,8 @@ export class NativeBridge extends EventEmitter {
           (value.online_known !== true || typeof value.online === 'boolean') &&
           this.session.getSessionId() === value.sessionId
         : value?.online === true;
-      if (String(value?.user_id) !== BOT || !authorized || typeof value?.sessionId !== 'string' || !value.sessionId) {
+      const expectedBot = currentBotUin();
+      if (String(value?.user_id) !== expectedBot || !authorized || typeof value?.sessionId !== 'string' || !value.sessionId) {
         this.detach();
         throw new BridgeError('IDENTITY_REJECTED', 'Runtime identity or authorization rejected', { retcode: 1403 });
       }
@@ -790,7 +791,7 @@ export class NativeBridge extends EventEmitter {
         this.detach();
         throw new BridgeError('STALE_SESSION', 'Runtime session changed; explicit attachment required', { retcode: 1503 });
       }
-      this.identity = { user_id: Number(BOT), nickname: typeof value.nickname === 'string' ? value.nickname : '',
+      this.identity = { user_id: Number(expectedBot), nickname: typeof value.nickname === 'string' ? value.nickname : '',
         ...(nativeSession ? {
           authenticated: true, sessionAuthorized: true,
           online: value.online_known === true && value.online === true,
@@ -1649,6 +1650,19 @@ export class NativeBridge extends EventEmitter {
         failed.push(`${label}:${String(err?.message || err || 'err').slice(0, 60)}`);
       }
     };
+    // ★ 在线态防误触保护：MSF 明确在线（1）且未断链、未显式 force 时，绝不乱发 setOnNetworkChanged / msf.online，
+    //   避免对健康会话人为触发底层网络切换诱发腾讯 -10004 票据吊销。
+    if (msfBefore === 1 && !this.msfDisconnected && options?.force !== true) {
+      await tryMethod('msg.startMsgSync', this.msg, 'startMsgSync');
+      return {
+        awake: true,
+        skippedOnlineMsf: true,
+        invoked: calls,
+        failed,
+        msfBefore,
+        msfAfter: readMsf()
+      };
+    }
     // 1. 切前后台触发桌面内核轻量状态同步（优先真实 wrapper.node session.switchTo*，兼容旧版/测试 app.switch*）
     if (typeof this.session?.switchToBackGround === 'function' || typeof this.session?.switchToFront === 'function') {
       await tryMethod('session.switchToBackGround', this.session, 'switchToBackGround');

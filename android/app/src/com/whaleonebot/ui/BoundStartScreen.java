@@ -622,8 +622,37 @@ final class BoundStartScreen extends Screen {
     }
 
     private String buildLogs() {
-        return "— QQ 实时日志 (bot.log) —\n" + tail(host().loginLog(40))
-                + "\n— 容器日志 —\n" + tail(host().containerLog(15));
+        // 把最新 bot.log 末尾放底部，配合 FOCUS_DOWN 一眼直达最新报错，不再被 container.log 顶掉
+        return "— 容器日志 (末尾 20 行) —\n" + tail(host().containerLog(20))
+                + "\n\n— QQ 实时日志 (bot.log 末尾 80 行) —\n" + tail(host().loginLog(80));
+    }
+
+    private void copyDiagnosticLogs() {
+        try {
+            QqAuthState auth = host().qqAuthState();
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== WhaleOneBot 诊断日志 ===\n");
+            sb.append("phase=").append(auth.phase)
+                    .append(" msf=").append(auth.msfStatus)
+                    .append(" offlineReason=").append(auth.offlineReason)
+                    .append(" error=").append(auth.error)
+                    .append(" ver=").append(auth.clientVer)
+                    .append(" host=").append(auth.hostname)
+                    .append(" kernel=").append(auth.kernelRelease).append("\n\n");
+            sb.append("--- bot.log (tail 120) ---\n").append(tail(host().loginLog(120))).append("\n\n");
+            sb.append("--- blackbox.log (tail 80) ---\n").append(tail(host().blackboxLog(80))).append("\n\n");
+            sb.append("--- container.log (tail 40) ---\n").append(tail(host().containerLog(40))).append("\n");
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("whale-diag-logs", sb.toString()));
+                host().toast("已复制完整诊断日志（bot.log + 黑匣子 + 容器日志）到剪贴板");
+            } else {
+                host().toast("剪贴板不可用");
+            }
+        } catch (Throwable e) {
+            host().toast("复制日志失败：" + e.getMessage());
+        }
     }
 
     private static String tail(String s) {
@@ -641,7 +670,12 @@ final class BoundStartScreen extends Screen {
         lbox.setPadding(dp(Theme.S2 + 2), dp(Theme.S2), dp(Theme.S2 + 2), dp(Theme.S2));
         LinearLayout lhead = Ui.row(activity);
         lhead.addView(sectionLabel("实时诊断日志"), new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        TextView bbBtn = Ui.text(activity, "防掉线黑匣子", Theme.T_CAP, t.accent);
+        TextView copyBtn = Ui.text(activity, "复制日志", Theme.T_CAP, t.accent);
+        copyBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        copyBtn.setClickable(true);
+        copyBtn.setOnClickListener(v -> copyDiagnosticLogs());
+        lhead.addView(copyBtn, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
+        TextView bbBtn = Ui.text(activity, "黑匣子", Theme.T_CAP, t.accent);
         bbBtn.setPadding(dp(8), dp(4), dp(4), dp(4));
         bbBtn.setClickable(true);
         bbBtn.setOnClickListener(v -> ModelsScreen.W.infoDialog(activity, t,
@@ -649,12 +683,18 @@ final class BoundStartScreen extends Screen {
         lhead.addView(bbBtn, Ui.llp(WRAP_CONTENT, WRAP_CONTENT));
         lbox.addView(lhead, Ui.llp(MATCH_PARENT, WRAP_CONTENT));
         logScroll = new ScrollView(activity);
-        logScroll.setVerticalScrollBarEnabled(false);
+        logScroll.setVerticalScrollBarEnabled(true);
+        // 阻止外层页面 ScrollView 抢走触摸事件，确保日志框内上下流畅滚动看到末尾报错
+        logScroll.setOnTouchListener((v, ev) -> {
+            if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+            return false;
+        });
         logText = Ui.mono(activity, Theme.T_MONO, t.logText);
         logText.setTextSize(11f);
         logText.setLineSpacing(dp(2), 1f);
+        logText.setTextIsSelectable(true);
         logScroll.addView(logText, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        lbox.addView(logScroll, Ui.llp(MATCH_PARENT, dp(180)));
+        lbox.addView(logScroll, Ui.llp(MATCH_PARENT, dp(200)));
         logCard.addView(lbox, new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         LinearLayout.LayoutParams lp = Ui.llp(MATCH_PARENT, WRAP_CONTENT);
         lp.topMargin = dp(Theme.S3);

@@ -27,12 +27,23 @@ public final class QqAuthState {
     public final String clientVer;
     public final String hostname;
     public final String kernelRelease;
+    public final String error;
 
     public QqAuthState(
             String phase, String uin, boolean canQuickLogin, boolean needsManualLogin,
             String offlineReason, String offlineMessage, String verifyUrl, long verifyAt,
             long qrAt, String msfStatus, long lastHealthyAt,
             String clientVer, String hostname, String kernelRelease) {
+        this(phase, uin, canQuickLogin, needsManualLogin, offlineReason, offlineMessage,
+                verifyUrl, verifyAt, qrAt, msfStatus, lastHealthyAt,
+                clientVer, hostname, kernelRelease, "");
+    }
+
+    public QqAuthState(
+            String phase, String uin, boolean canQuickLogin, boolean needsManualLogin,
+            String offlineReason, String offlineMessage, String verifyUrl, long verifyAt,
+            long qrAt, String msfStatus, long lastHealthyAt,
+            String clientVer, String hostname, String kernelRelease, String error) {
         this.phase = safe(phase);
         this.uin = safe(uin);
         this.canQuickLogin = canQuickLogin;
@@ -47,10 +58,11 @@ public final class QqAuthState {
         this.clientVer = safe(clientVer);
         this.hostname = safe(hostname);
         this.kernelRelease = safe(kernelRelease);
+        this.error = safe(error);
     }
 
     public static QqAuthState empty() {
-        return new QqAuthState("", "", false, false, "", "", "", 0L, 0L, "", 0L, "", "", "");
+        return new QqAuthState("", "", false, false, "", "", "", 0L, 0L, "", 0L, "", "", "", "");
     }
 
     /** 解析 bot.json 原文（使用仓内纯 Java BotConfigJson，不依赖 org.json / Android）。 */
@@ -72,11 +84,26 @@ public final class QqAuthState {
                     num(doc, "lastHealthyAt", 0L),
                     str(doc, "clientVer"),
                     str(doc, "hostname"),
-                    str(doc, "kernelRelease")
+                    str(doc, "kernelRelease"),
+                    str(doc, "error")
             );
         } catch (Throwable ignored) {
             return empty();
         }
+    }
+
+    /** 容器/协议进程是否因启动或运行时致命错误退出（不再误显示为「启动中…」）。 */
+    public boolean isFatalError() {
+        return "bot-start-failed".equals(phase)
+                || "uncaught".equals(phase)
+                || "unhandled-rejection".equals(phase)
+                || "connect-failed".equals(phase)
+                || "session-init-threw".equals(phase)
+                || "getMsgService-threw".equals(phase)
+                || "invalid-session-id".equals(phase)
+                || "machine-guid-unavailable".equals(phase)
+                || "machine-guid-invalid".equals(phase)
+                || "agent-failed".equals(phase);
     }
 
     /** 原生 MSF 长连接是否处于明确断开态（onMSFStatusChange 2 = kDisconnected / login-disconnected）。 */
@@ -121,7 +148,7 @@ public final class QqAuthState {
     public int healthLevel(boolean containerRunning) {
         if (!containerRunning) return LEVEL_OFFLINE_ACTION;
         if (isOnline()) return LEVEL_ONLINE;
-        if (isOfflineAlert()) return LEVEL_OFFLINE_ACTION;
+        if (isFatalError() || isOfflineAlert()) return LEVEL_OFFLINE_ACTION;
         if ("degraded".equals(phase) || isMsfDisconnected()) return LEVEL_DEGRADED;
         return LEVEL_CONNECTING;
     }
@@ -130,6 +157,7 @@ public final class QqAuthState {
     public String shortBadge(boolean containerRunning) {
         if (!containerRunning) return "容器未启动";
         if (isOnline()) return "在线 · " + uin;
+        if (isFatalError()) return "启动异常 · " + phase;
         if ("kicked-offline".equals(phase)) return "已掉线 · 被踢下线";
         if ("token-expired".equals(phase)) return "已掉线 · 票据过期";
         if ("verify-required".equals(phase)) return "待安全滑块验证";
@@ -149,6 +177,9 @@ public final class QqAuthState {
         if (!offlineMessage.isEmpty()) return offlineMessage;
         if (isOnline()) {
             return "QQ 原生会话在线（" + uin + "），支持免扫码快登：" + (canQuickLogin ? "是" : "待刷新");
+        }
+        if (isFatalError()) {
+            return "QQ 启动异常（" + phase + (error.isEmpty() ? "" : "：" + error) + "），请点击下方「复制诊断日志」查看末尾报错。";
         }
         if ("kicked-offline".equals(phase)) return "账号被 QQ 安全中心或异地终端踢下线，已停止自动重登，请核查网络后手动重新上线。";
         if ("token-expired".equals(phase)) return "QQ 快登令牌已过期（140022015），请选择按需扫码或账密重新上线。";

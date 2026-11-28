@@ -303,8 +303,17 @@ function clearQrArtifacts() {
 function die(phase, error) {
   if (finished) return;
   finished = true;
+  const errDetail = String(error?.code ?? error?.message ?? error ?? phase).slice(0, 200);
   log('FATAL phase=' + phase + ' ' + (error?.stack || error?.message || error || ''));
-  save(phase, { error: String(error?.code ?? error?.message ?? error ?? phase) });
+  recordBlackbox('FATAL', phase + ' ' + errDetail);
+  dumpBlackbox('fatal-' + phase + '-' + errDetail.slice(0, 48));
+  // 覆盖旧的 offlineReason（绝不保留陈旧的 manual_logout 误导诊断），并把真实错误写进 offlineMessage
+  save(phase, {
+    error: errDetail,
+    offlineReason: phase,
+    offlineMessage: 'QQ 启动或运行异常（' + phase + '：' + errDetail + '），请查看下方实时诊断日志或一键复制日志排查',
+    needsManualLogin: false
+  });
   void checkpointLoginDb('die').finally(() => setTimeout(() => process.exit(1), 200));
 }
 

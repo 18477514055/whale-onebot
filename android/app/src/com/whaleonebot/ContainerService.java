@@ -583,6 +583,10 @@ public class ContainerService extends Service {
                     com.whaleonebot.ui.QqAuthState lastAuth = com.whaleonebot.ui.QqAuthState.parseBotJson(readBotStateJson(files));
                     if (lastAuth.isOfflineAlert()) {
                         logLine("BOT: 处于需人工介入状态 (" + lastAuth.phase + "/" + lastAuth.offlineReason + ")，停止自动重启");
+                    } else if (lastAuth.isFatalError() && botRestarts >= 3) {
+                        logLine("BOT: 连续启动异常 (" + lastAuth.phase
+                                + (lastAuth.error.isEmpty() ? "" : ": " + lastAuth.error)
+                                + ") 已重试 " + botRestarts + " 次，停止自动重启，请复制诊断日志排查");
                     } else if (!botStopRequested && running && botRestarts < 20) {
                         long now = System.currentTimeMillis();
                         if (botRestarts > 0 && now - lastBotRestartAt > 30L * 60L * 1000L) {
